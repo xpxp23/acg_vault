@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="/static/vendor/tailwindcss.js"></script>
+  <script src="/static/vendor/vue.global.prod.js"></script>
+  <script src="/static/vendor/lucide.min.js"></script>
+</head>
+<body>
+  <div id="test">
+    Tailwind: <span id="t"></span>,
+    Vue: <span id="v"></span>,
+    Lucide: <span id="l"></span>
+  </div>
+  <script>
+    document.getElementById("t").textContent = typeof tailwind;
+    document.getElementById("v").textContent = typeof Vue;
+    document.getElementById("l").textContent = typeof lucide;
+  </script>
+</body>
+</html>

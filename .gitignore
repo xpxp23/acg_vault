@@ -1,0 +1,26 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database and backups
+*.db
+*.db-journal
+*.db.bak*
+data/*.db
+data/*.db.bak*
+data/acg_vault.db*
+
+# Local configuration & environment variables
+.env
+data/config.json
+
+# Local runtime & media assets
+data/covers/
+data/extracted_game_data/
+
+# Temporary / dump files & system files
+edge_dom.html
+*.lnk
+.DS_Store
+Thumbs.db

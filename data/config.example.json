@@ -1,0 +1,12 @@
+{
+  "game_directories": [
+    "E:\\ACG"
+  ],
+  "archive_directory": "E:\\ACG\\_Archive_Duplicates",
+  "mtool_directory": "E:\\ACG\\MTool",
+  "proxy": "",
+  "auto_scrape": true,
+  "scrape_source": "auto",
+  "theme": "dark",
+  "port": 8000
+}
