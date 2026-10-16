@@ -5,6 +5,15 @@ from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from config import DB_PATH
 
+def format_bytes_short(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+    elif size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.0f} KB"
+    return f"{size_bytes} B"
+
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=20.0)
     conn.row_factory = sqlite3.Row
@@ -38,7 +47,7 @@ def init_db():
         source_url TEXT,
         source_type TEXT DEFAULT 'none',
         rating_score REAL DEFAULT 0.0,
-        
+
         play_status TEXT DEFAULT 'unplayed',
         user_rating INTEGER DEFAULT 0,
         user_notes TEXT DEFAULT '',
@@ -48,36 +57,36 @@ def init_db():
         played_seconds INTEGER DEFAULT 0,
         last_played_at TEXT,
         first_played_at TEXT,
-        
+
         duplicate_group_id TEXT,
         duplicate_count INTEGER DEFAULT 0,
         is_archived INTEGER DEFAULT 0,
         is_tool INTEGER DEFAULT 0,
-        
+        has_translation INTEGER DEFAULT 0,
+        is_missing INTEGER DEFAULT 0,
+
         created_at TEXT,
         updated_at TEXT
     );
     """)
-    
-    # Auto-migration for downloaded_at, has_translation & is_missing columns if database was created earlier
-    try:
-        cursor.execute("ALTER TABLE games ADD COLUMN downloaded_at TEXT;")
-    except Exception:
-        pass
-    try:
-        cursor.execute("ALTER TABLE games ADD COLUMN has_translation INTEGER DEFAULT 0;")
-    except Exception:
-        pass
-    try:
-        cursor.execute("ALTER TABLE games ADD COLUMN is_missing INTEGER DEFAULT 0;")
-    except Exception:
-        pass
+
+    # Auto-migration for columns if database was created earlier
+    for col_sql in [
+        "ALTER TABLE games ADD COLUMN downloaded_at TEXT;",
+        "ALTER TABLE games ADD COLUMN has_translation INTEGER DEFAULT 0;",
+        "ALTER TABLE games ADD COLUMN is_missing INTEGER DEFAULT 0;"
+    ]:
+        try:
+            cursor.execute(col_sql)
+        except Exception:
+            pass
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_folder_path ON games(folder_path);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_play_status ON games(play_status);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_rj_code ON games(rj_code);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_clean_title ON games(clean_title);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_duplicate_group ON games(duplicate_group_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_engine_type ON games(engine_type);")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS scrape_cache (
@@ -135,12 +144,15 @@ def get_all_games(
     missing_only: bool = False,
     is_tool: bool = False,
     has_notes_only: bool = False,
+    engine_filter: Optional[str] = None,
+    trans_filter: Optional[str] = None,
+    unscraped_only: bool = False,
     sort_by: str = "title",
     sort_order: str = "asc"
 ) -> List[Dict[str, Any]]:
     conn = get_connection()
     cursor = conn.cursor()
-    
+
     query = "SELECT * FROM games WHERE is_archived = 0 AND is_tool = ?"
     params: List[Any] = [1 if is_tool else 0]
 
@@ -159,6 +171,18 @@ def get_all_games(
 
     if has_notes_only:
         query += " AND user_notes IS NOT NULL AND TRIM(user_notes) != ''"
+
+    if engine_filter and engine_filter != "all":
+        query += " AND engine_type LIKE ?"
+        params.append(f"%{engine_filter}%")
+
+    if trans_filter == "translated":
+        query += " AND (has_translation = 1 OR folder_name LIKE '%汉化%' OR folder_name LIKE '%官中%' OR folder_name LIKE '%中文%' OR tags LIKE '%汉化%')"
+    elif trans_filter == "raw":
+        query += " AND has_translation = 0 AND folder_name NOT LIKE '%汉化%' AND folder_name NOT LIKE '%官中%' AND folder_name NOT LIKE '%中文%'"
+
+    if unscraped_only:
+        query += " AND (cover_url IS NULL OR TRIM(cover_url) = '' OR synopsis IS NULL OR TRIM(synopsis) = '')"
 
     if keyword:
         k = f"%{keyword}%"
@@ -180,9 +204,9 @@ def get_all_games(
     }
     col = sort_map.get(sort_by, "display_title")
     order = "DESC" if sort_order.lower() == "desc" else "ASC"
-    
+
     if col in ("last_played_at", "release_date", "downloaded_at", "user_rating", "created_at"):
-        query += f" ORDER BY {col} IS NULL, {col} {order}, display_title ASC"
+        query += f" ORDER BY ({col} IS NULL OR {col} = '') ASC, {col} {order}, display_title ASC"
     else:
         query += f" ORDER BY {col} {order}"
 
@@ -211,9 +235,9 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.now().isoformat()
-    
+
     existing = get_game_by_path(game_data["folder_path"])
-    
+
     tags_str = json.dumps(game_data.get("tags", []), ensure_ascii=False) if isinstance(game_data.get("tags"), list) else game_data.get("tags", "[]")
     user_tags_str = json.dumps(game_data.get("user_tags", []), ensure_ascii=False) if isinstance(game_data.get("user_tags"), list) else game_data.get("user_tags", "[]")
     va_str = json.dumps(game_data.get("voice_actors", []), ensure_ascii=False) if isinstance(game_data.get("voice_actors"), list) else game_data.get("voice_actors", "[]")
@@ -230,11 +254,11 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
             game_data.get("clean_title") or existing["clean_title"],
             game_data.get("engine_type") or existing["engine_type"],
             game_data.get("executable_path") or existing["executable_path"],
-            game_data.get("folder_size_bytes", 0),
-            game_data.get("folder_size_str", ""),
-            game_data.get("folder_modified_at", ""),
+            game_data.get("folder_size_bytes", existing.get("folder_size_bytes", 0)),
+            game_data.get("folder_size_str") or existing.get("folder_size_str", ""),
+            game_data.get("folder_modified_at") or existing.get("folder_modified_at", ""),
             now,
-            game_data.get("is_tool", 0)
+            game_data.get("is_tool", existing.get("is_tool", 0))
         ]
 
         if "downloaded_at" in game_data and game_data["downloaded_at"]:
@@ -244,7 +268,7 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
         if "has_translation" in game_data and game_data["has_translation"] is not None:
             update_fields.append("has_translation = ?")
             values.append(int(game_data["has_translation"]))
-        
+
         for field in ["rj_code", "display_title", "original_title", "cover_url", "banner_url",
                       "synopsis", "circle_name", "release_date", "source_url", "source_type", "rating_score"]:
             if field in game_data and game_data[field] is not None:
@@ -312,7 +336,7 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
     return game_id
 
 def batch_upsert_games(games_list: List[Dict[str, Any]]):
-    """Performs fast transaction batch upsert for scanned games."""
+    """Performs fast transaction batch upsert for scanned games, including has_translation sync."""
     if not games_list:
         return
     conn = get_connection()
@@ -326,7 +350,8 @@ def batch_upsert_games(games_list: List[Dict[str, Any]]):
         fpath = g["folder_path"]
         tags_str = json.dumps(g.get("tags", []), ensure_ascii=False)
         va_str = json.dumps(g.get("voice_actors", []), ensure_ascii=False)
-        
+        has_trs = int(g.get("has_translation", 0))
+
         if fpath in existing_map:
             gid = existing_map[fpath]["id"]
             cursor.execute("""
@@ -340,13 +365,16 @@ def batch_upsert_games(games_list: List[Dict[str, Any]]):
                     folder_modified_at = ?,
                     downloaded_at = COALESCE(NULLIF(?, ''), downloaded_at),
                     is_tool = ?,
+                    has_translation = ?,
+                    is_missing = 0,
                     rj_code = CASE WHEN (rj_code IS NULL OR rj_code = '') AND ? != '' THEN ? ELSE rj_code END,
                     updated_at = ?
                 WHERE id = ?
             """, (
                 g["folder_name"], g.get("clean_title"), g.get("engine_type"), g.get("executable_path"),
                 g.get("folder_size_bytes", 0), g.get("folder_size_str", ""), g.get("folder_modified_at", ""),
-                g.get("downloaded_at", ""), g.get("is_tool", 0), g.get("rj_code", ""), g.get("rj_code", ""), now, gid
+                g.get("downloaded_at", ""), g.get("is_tool", 0), has_trs,
+                g.get("rj_code", ""), g.get("rj_code", ""), now, gid
             ))
         else:
             fields = [
@@ -355,7 +383,7 @@ def batch_upsert_games(games_list: List[Dict[str, Any]]):
                 "folder_modified_at", "downloaded_at", "cover_url", "banner_url", "synopsis", "circle_name",
                 "release_date", "voice_actors", "tags", "source_url", "source_type", "rating_score",
                 "play_status", "user_rating", "user_notes", "user_tags", "is_favorite",
-                "is_tool", "created_at", "updated_at"
+                "is_tool", "has_translation", "is_missing", "created_at", "updated_at"
             ]
             cursor.execute(f"INSERT INTO games ({', '.join(fields)}) VALUES ({', '.join(['?']*len(fields))})", (
                 g["folder_name"], g["folder_path"], g.get("clean_title", g["folder_name"]),
@@ -363,7 +391,7 @@ def batch_upsert_games(games_list: List[Dict[str, Any]]):
                 g.get("rj_code", ""), g.get("engine_type", "Unknown"), g.get("executable_path", ""),
                 g.get("folder_size_bytes", 0), g.get("folder_size_str", "0 MB"), g.get("folder_modified_at", ""),
                 g.get("downloaded_at", ""), "", "", "", "", "", va_str, tags_str, "", "none", 0.0,
-                "unplayed", 0, "", "[]", 0, g.get("is_tool", 0), now, now
+                "unplayed", 0, "", "[]", 0, g.get("is_tool", 0), has_trs, 0, now, now
             ))
 
     conn.commit()
@@ -374,7 +402,7 @@ def manual_update_game_metadata(game_id: int, data: Dict[str, Any]) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
     now = datetime.now().isoformat()
-    
+
     fields = ["updated_at = ?"]
     values = [now]
 
@@ -469,7 +497,7 @@ def get_stats() -> Dict[str, Any]:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT 
+        SELECT
             COUNT(*) as total,
             SUM(CASE WHEN play_status = 'unplayed' THEN 1 ELSE 0 END) as unplayed,
             SUM(CASE WHEN play_status = 'playing' THEN 1 ELSE 0 END) as playing,
@@ -480,12 +508,16 @@ def get_stats() -> Dict[str, Any]:
             SUM(CASE WHEN duplicate_count > 0 THEN 1 ELSE 0 END) as duplicates,
             SUM(CASE WHEN is_missing = 1 THEN 1 ELSE 0 END) as missing,
             SUM(CASE WHEN user_notes IS NOT NULL AND TRIM(user_notes) != '' THEN 1 ELSE 0 END) as has_notes,
-            SUM(played_seconds) as total_seconds
-        FROM games 
+            SUM(CASE WHEN has_translation = 1 OR folder_name LIKE '%汉化%' OR folder_name LIKE '%官中%' OR folder_name LIKE '%中文%' THEN 1 ELSE 0 END) as translated,
+            SUM(CASE WHEN cover_url IS NULL OR TRIM(cover_url) = '' OR synopsis IS NULL OR TRIM(synopsis) = '' THEN 1 ELSE 0 END) as unscraped,
+            SUM(played_seconds) as total_seconds,
+            SUM(folder_size_bytes) as total_size_bytes
+        FROM games
         WHERE is_archived = 0 AND is_tool = 0
     """)
     row = cursor.fetchone()
     conn.close()
+    total_bytes = row["total_size_bytes"] or 0
     return {
         "total": row["total"] or 0,
         "unplayed": row["unplayed"] or 0,
@@ -497,6 +529,10 @@ def get_stats() -> Dict[str, Any]:
         "duplicates": row["duplicates"] or 0,
         "missing": row["missing"] or 0,
         "has_notes": row["has_notes"] or 0,
+        "translated": row["translated"] or 0,
+        "unscraped": row["unscraped"] or 0,
+        "total_size_bytes": total_bytes,
+        "total_size_str": format_bytes_short(total_bytes),
         "total_played_hours": round((row["total_seconds"] or 0) / 3600, 1)
     }
 
@@ -517,13 +553,13 @@ def get_duplicate_groups() -> Dict[str, List[Dict[str, Any]]]:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT * FROM games 
+        SELECT * FROM games
         WHERE is_archived = 0 AND is_tool = 0 AND duplicate_group_id IS NOT NULL AND duplicate_count > 0
         ORDER BY duplicate_group_id ASC, folder_modified_at DESC
     """)
     rows = cursor.fetchall()
     conn.close()
-    
+
     groups: Dict[str, List[Dict[str, Any]]] = {}
     for r in rows:
         d = row_to_dict(r)
@@ -540,14 +576,6 @@ def add_duplicate_ignore(id1: int, id2: int):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS duplicate_ignores (
-            game_id_1 INTEGER NOT NULL,
-            game_id_2 INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY (game_id_1, game_id_2)
-        );
-    """)
-    cursor.execute("""
         INSERT OR IGNORE INTO duplicate_ignores (game_id_1, game_id_2, created_at)
         VALUES (?, ?, ?)
     """, (g1, g2, datetime.now().isoformat()))
@@ -557,25 +585,12 @@ def add_duplicate_ignore(id1: int, id2: int):
 def get_all_duplicate_ignores() -> set:
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS duplicate_ignores (
-            game_id_1 INTEGER NOT NULL,
-            game_id_2 INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY (game_id_1, game_id_2)
-        );
-    """)
     cursor.execute("SELECT game_id_1, game_id_2 FROM duplicate_ignores")
     rows = cursor.fetchall()
     conn.close()
     return {(r["game_id_1"], r["game_id_2"]) for r in rows}
 
 def dismiss_game_from_duplicates(game_id: int, target_id: Optional[int] = None) -> bool:
-    """
-    Unlinks a game from duplicates.
-    If target_id is provided, marks (game_id, target_id) as ignored.
-    If target_id is None, marks game_id as ignored against all other games in its current duplicate group.
-    """
     conn = get_connection()
     cursor = conn.cursor()
     if target_id and target_id != game_id:
@@ -600,7 +615,6 @@ def mark_archived(game_id: int):
     conn.close()
 
 def delete_game_by_id(game_id: int) -> bool:
-    """Permanently deletes a single game record from the database."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM games WHERE id = ?", (game_id,))
@@ -610,7 +624,6 @@ def delete_game_by_id(game_id: int) -> bool:
     return deleted
 
 def mark_game_missing(game_id: int, is_missing: int = 1):
-    """Marks a game as missing from local storage."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("UPDATE games SET is_missing = ?, updated_at = ? WHERE id = ?", (is_missing, datetime.now().isoformat(), game_id))
@@ -618,7 +631,6 @@ def mark_game_missing(game_id: int, is_missing: int = 1):
     conn.close()
 
 def get_all_stored_game_paths() -> List[Tuple[int, str, int]]:
-    """Returns (id, folder_path, is_missing) for all non-archived games."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, folder_path, is_missing FROM games WHERE is_archived = 0")
@@ -627,7 +639,6 @@ def get_all_stored_game_paths() -> List[Tuple[int, str, int]]:
     return [(r["id"], r["folder_path"], r["is_missing"]) for r in rows]
 
 def set_games_missing_batch(missing_ids: List[int], existing_ids: List[int]):
-    """Batch updates missing status."""
     if not missing_ids and not existing_ids:
         return
     conn = get_connection()
@@ -641,7 +652,6 @@ def set_games_missing_batch(missing_ids: List[int], existing_ids: List[int]):
     conn.close()
 
 def cleanup_all_missing_games() -> int:
-    """Deletes all games flagged as is_missing = 1 from the database."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM games WHERE is_missing = 1 AND is_archived = 0")
@@ -651,7 +661,6 @@ def cleanup_all_missing_games() -> int:
     return count
 
 def batch_update_games_status(game_ids: List[int], play_status: str) -> int:
-    """Batch updates play_status for a list of games."""
     if not game_ids:
         return 0
     conn = get_connection()
@@ -667,7 +676,6 @@ def batch_update_games_status(game_ids: List[int], play_status: str) -> int:
     return count
 
 def batch_delete_games_by_ids(game_ids: List[int]) -> int:
-    """Batch deletes a list of game records from the database."""
     if not game_ids:
         return 0
     conn = get_connection()
@@ -680,4 +688,3 @@ def batch_delete_games_by_ids(game_ids: List[int]) -> int:
     conn.commit()
     conn.close()
     return count
-

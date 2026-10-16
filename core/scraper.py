@@ -28,18 +28,19 @@ def download_and_cache_cover(img_url: str, filename_stem: str, proxy: Optional[s
     """Downloads remote image and saves locally to prevent broken hotlinks."""
     if not img_url:
         return ""
+    if img_url.startswith("/api/covers/"):
+        return img_url
     try:
         ext = ".jpg"
         if ".png" in img_url.lower():
             ext = ".png"
         elif ".webp" in img_url.lower():
             ext = ".webp"
-        
-        # Clean invalid filename characters
+
         safe_stem = re.sub(r'[\\/*?:"<>|]', "_", str(filename_stem))
         target_name = f"{safe_stem}{ext}"
         target_path = COVERS_DIR / target_name
-        
+
         if target_path.exists() and target_path.stat().st_size > 1024:
             return f"/api/covers/{target_name}"
 
@@ -58,7 +59,7 @@ def scrape_dlsite(rj_code: str, proxy: Optional[str] = None) -> Optional[Dict[st
     if not rj_code:
         return None
 
-    code = rj_code.upper()
+    code = rj_code.strip().upper()
     subdomains = ["maniax", "home", "pro"]
     html_content = ""
     target_url = ""
@@ -79,7 +80,7 @@ def scrape_dlsite(rj_code: str, proxy: Optional[str] = None) -> Optional[Dict[st
         return None
 
     soup = BeautifulSoup(html_content, "html.parser")
-    
+
     # Title
     title_el = soup.find("h1", id="work_name")
     title = title_el.get_text(strip=True) if title_el else ""
@@ -108,7 +109,7 @@ def scrape_dlsite(rj_code: str, proxy: Optional[str] = None) -> Optional[Dict[st
     release_date = ""
     voice_actors = []
     tags = []
-    
+
     if table:
         for tr in table.find_all("tr"):
             th = tr.find("th")
@@ -117,7 +118,7 @@ def scrape_dlsite(rj_code: str, proxy: Optional[str] = None) -> Optional[Dict[st
                 continue
             header_text = th.get_text(strip=True)
             val_text = td.get_text(strip=True)
-            
+
             if "販売日" in header_text or "配信開始日" in header_text:
                 release_date = re.sub(r"[^\d年-月日]", "", val_text).strip()
             elif "声優" in header_text:
@@ -162,11 +163,9 @@ def scrape_steam(keyword_or_appid: str, proxy: Optional[str] = None) -> Optional
     query = keyword_or_appid.strip()
     appid = None
 
-    # If already an appid
     if query.isdigit():
         appid = int(query)
     else:
-        # Search via Steam suggest API
         with get_http_client(proxy, timeout=5.0) as client:
             try:
                 url_suggest = f"https://store.steampowered.com/search/suggest?term={urllib.parse.quote(query)}&f=games&cc=US&l=schinese"
@@ -182,7 +181,6 @@ def scrape_steam(keyword_or_appid: str, proxy: Optional[str] = None) -> Optional
     if not appid:
         return None
 
-    # Fetch appdetails from Steam Store API in Simplified Chinese
     with get_http_client(proxy, timeout=5.0) as client:
         try:
             url_details = f"https://store.steampowered.com/api/appdetails?appids={appid}&l=schinese"
@@ -199,11 +197,10 @@ def scrape_steam(keyword_or_appid: str, proxy: Optional[str] = None) -> Optional
             publishers = data.get("publishers", [])
             circle = ", ".join(devs if devs else publishers)
             release_date = data.get("release_date", {}).get("date", "")
-            
+
             header_img = data.get("header_image") or ""
             cached_cover = download_and_cache_cover(header_img, f"steam_{appid}", proxy)
 
-            # Synopsis: clean html tags from short_description or detailed_description
             synopsis_raw = data.get("short_description") or data.get("detailed_description") or data.get("about_the_game") or ""
             synopsis_clean = re.sub(r"<[^>]+>", "", synopsis_raw).strip()
 
@@ -221,7 +218,7 @@ def scrape_steam(keyword_or_appid: str, proxy: Optional[str] = None) -> Optional
                 "circle_name": circle,
                 "release_date": release_date,
                 "cover_url": cached_cover,
-                "banner_url": header_img,
+                "banner_url": cached_cover or header_img,
                 "synopsis": synopsis_clean,
                 "voice_actors": [],
                 "tags": list(dict.fromkeys(tags)),
@@ -241,7 +238,7 @@ def scrape_bangumi(keyword: str, proxy: Optional[str] = None) -> Optional[Dict[s
     cleaned_kw = keyword.strip()
     with get_http_client(proxy, timeout=5.0) as client:
         try:
-            url = f"https://api.bgm.tv/search/subject/{cleaned_kw}?type=4&responseGroup=large"
+            url = f"https://api.bgm.tv/search/subject/{urllib.parse.quote(cleaned_kw)}?type=4&responseGroup=large"
             r = client.get(url)
             if r.status_code != 200:
                 return None
@@ -265,10 +262,10 @@ def scrape_bangumi(keyword: str, proxy: Optional[str] = None) -> Optional[Dict[s
             name_jp = best.get("name") or ""
             summary = best.get("summary") or ""
             rating = best.get("rating", {}).get("score", 0.0)
-            
+
             imgs = best.get("images") or {}
             cover_url = imgs.get("large") or imgs.get("common") or imgs.get("medium") or ""
-            
+
             tags = [t.get("name") for t in best.get("tags", []) if t.get("name")]
             release_date = best.get("air_date") or best.get("date") or ""
 
@@ -322,7 +319,7 @@ def scrape_vndb(keyword: str, proxy: Optional[str] = None) -> Optional[Dict[str,
             released = best.get("released") or ""
             devs = [d.get("name") for d in best.get("developers", []) if d.get("name")]
             tags = [t.get("name") for t in best.get("tags", []) if t.get("name")][:10]
-            
+
             img_obj = best.get("image") or {}
             cover_url = img_obj.get("url") or ""
             cached_cover = download_and_cache_cover(cover_url, f"vndb_{vn_id}", proxy)
@@ -353,7 +350,6 @@ def scrape_game_auto(
     preferred_source: str = "auto"
 ) -> Optional[Dict[str, Any]]:
     """Aggregated automatic scraper pipeline."""
-    # 1. Preferred source direct check
     if preferred_source == "steam" and (clean_title or folder_name):
         res = scrape_steam(clean_title or folder_name, proxy=proxy)
         if res:
@@ -364,7 +360,6 @@ def scrape_game_auto(
         if res:
             return res
 
-    # 2. Auto pipeline: DLsite -> Bangumi -> Steam -> VNDB
     if rj_code and rj_code.strip():
         res = scrape_dlsite(rj_code.strip(), proxy=proxy)
         if res:
@@ -377,12 +372,10 @@ def scrape_game_auto(
             if bgm_res:
                 return bgm_res
 
-        # Try Steam
         steam_res = scrape_steam(search_query, proxy=proxy)
         if steam_res:
             return steam_res
 
-        # Try VNDB
         vndb_res = scrape_vndb(search_query, proxy=proxy)
         if vndb_res:
             return vndb_res
@@ -396,6 +389,7 @@ def search_scraper_candidates(
 ) -> List[Dict[str, Any]]:
     """
     Searches multiple sources (DLsite, Bangumi, Steam, VNDB) and returns candidate matches for user selection.
+    Includes both canonical keys (cover_url, circle_name) and alias keys (cover_image, circle) for full compatibility.
     """
     candidates: List[Dict[str, Any]] = []
 
@@ -404,15 +398,19 @@ def search_scraper_candidates(
         try:
             dl_res = scrape_dlsite(rj_code.strip(), proxy=proxy)
             if dl_res:
+                cov = dl_res.get("cover_url", "")
+                cir = dl_res.get("circle_name", "")
                 candidates.append({
                     "source": "dlsite",
                     "source_name": "DLsite (精确编号)",
                     "source_url": dl_res.get("source_url", ""),
                     "title": dl_res.get("title", ""),
                     "original_title": dl_res.get("original_title", ""),
-                    "circle_name": dl_res.get("circle_name", ""),
+                    "circle_name": cir,
+                    "circle": cir,
                     "release_date": dl_res.get("release_date", ""),
-                    "cover_url": dl_res.get("cover_url", ""),
+                    "cover_url": cov,
+                    "cover_image": cov,
                     "synopsis": dl_res.get("synopsis", ""),
                     "tags": dl_res.get("tags", []),
                     "voice_actors": dl_res.get("voice_actors", []),
@@ -440,6 +438,7 @@ def search_scraper_candidates(
                         imgs = item.get("images") or {}
                         raw_cover = imgs.get("large") or imgs.get("common") or imgs.get("medium") or ""
                         cached_cover = download_and_cache_cover(raw_cover, f"bgm_{sub_id}", proxy) if raw_cover else ""
+                        final_cov = cached_cover or raw_cover
                         tags = [t.get("name") for t in item.get("tags", []) if t.get("name")][:8]
                         candidates.append({
                             "source": "bangumi",
@@ -448,8 +447,10 @@ def search_scraper_candidates(
                             "title": name_cn or name_jp,
                             "original_title": name_jp,
                             "circle_name": "",
+                            "circle": "",
                             "release_date": item.get("air_date") or item.get("date") or "",
-                            "cover_url": cached_cover or raw_cover,
+                            "cover_url": final_cov,
+                            "cover_image": final_cov,
                             "synopsis": summary,
                             "tags": tags,
                             "voice_actors": [],
@@ -459,7 +460,7 @@ def search_scraper_candidates(
         except Exception as e:
             print(f"Candidate Bangumi error: {e}")
 
-    # 3. Steam Search (up to 2 items)
+    # 3. Steam Search (up to 2 items, fixed to pass str(appid) per item)
     if kw and len(kw) >= 2:
         try:
             with get_http_client(proxy, timeout=5.0) as client:
@@ -469,17 +470,21 @@ def search_scraper_candidates(
                     items = r.json().get("items", [])[:2]
                     for item in items:
                         appid = item.get("id")
-                        steam_detail = scrape_steam(kw, proxy=proxy) if appid else None
-                        if steam_detail and steam_detail.get("source_url") and str(appid) in steam_detail["source_url"]:
+                        steam_detail = scrape_steam(str(appid), proxy=proxy) if appid else None
+                        if steam_detail:
+                            cov = steam_detail.get("cover_url") or item.get("tiny_image", "")
+                            cir = steam_detail.get("circle_name", "")
                             candidates.append({
                                 "source": "steam",
                                 "source_name": "Steam 商店",
-                                "source_url": steam_detail.get("source_url", ""),
+                                "source_url": steam_detail.get("source_url", f"https://store.steampowered.com/app/{appid}"),
                                 "title": steam_detail.get("title", item.get("name", "")),
                                 "original_title": steam_detail.get("original_title", item.get("name", "")),
-                                "circle_name": steam_detail.get("circle_name", ""),
+                                "circle_name": cir,
+                                "circle": cir,
                                 "release_date": steam_detail.get("release_date", ""),
-                                "cover_url": steam_detail.get("cover_url", item.get("tiny_image", "")),
+                                "cover_url": cov,
+                                "cover_image": cov,
                                 "synopsis": steam_detail.get("synopsis", ""),
                                 "tags": steam_detail.get("tags", []),
                                 "voice_actors": [],
@@ -487,6 +492,7 @@ def search_scraper_candidates(
                                 "rating_score": 0.0
                             })
                         else:
+                            cov = item.get("tiny_image", "")
                             candidates.append({
                                 "source": "steam",
                                 "source_name": "Steam 商店",
@@ -494,8 +500,10 @@ def search_scraper_candidates(
                                 "title": item.get("name", ""),
                                 "original_title": item.get("name", ""),
                                 "circle_name": "",
+                                "circle": "",
                                 "release_date": "",
-                                "cover_url": item.get("tiny_image", ""),
+                                "cover_url": cov,
+                                "cover_image": cov,
                                 "synopsis": "",
                                 "tags": [],
                                 "voice_actors": [],
@@ -505,12 +513,11 @@ def search_scraper_candidates(
         except Exception as e:
             print(f"Candidate Steam error: {e}")
 
-    # 4. VNDB Search (if we have fewer than 3 candidates)
-    if kw and len(candidates) < 3:
+    # 4. VNDB Search (if we have fewer than 4 candidates)
+    if kw and len(candidates) < 4:
         try:
             with get_http_client(proxy, timeout=5.0) as client:
                 payload = {
-                    "user": "acg_vault",
                     "filters": ["search", "=", kw],
                     "fields": "title, alttitle, released, rating, image.url, description, developers.name"
                 }
@@ -521,23 +528,27 @@ def search_scraper_candidates(
                         vn_id = item.get("id")
                         raw_img = (item.get("image") or {}).get("url") or ""
                         cached_cover = download_and_cache_cover(raw_img, f"vndb_{vn_id}", proxy) if raw_img else ""
+                        final_cov = cached_cover or raw_img
+                        cir = ", ".join([d.get("name", "") for d in item.get("developers", []) if d.get("name")])
+                        desc = re.sub(r"\[/?\w+.*?\]", "", item.get("description") or "")
                         candidates.append({
                             "source": "vndb",
                             "source_name": "VNDB (视觉小说数据库)",
                             "source_url": f"https://vndb.org/{vn_id}",
                             "title": item.get("title") or "",
                             "original_title": item.get("alttitle") or item.get("title") or "",
-                            "circle_name": ", ".join([d.get("name", "") for d in item.get("developers", []) if d.get("name")]),
+                            "circle_name": cir,
+                            "circle": cir,
                             "release_date": item.get("released") or "",
-                            "cover_url": cached_cover or raw_img,
-                            "synopsis": item.get("description") or "",
+                            "cover_url": final_cov,
+                            "cover_image": final_cov,
+                            "synopsis": desc,
                             "tags": [],
                             "voice_actors": [],
                             "rj_code": "",
-                            "rating_score": float(item.get("rating") or 0.0)
+                            "rating_score": round((float(item.get("rating") or 0.0)) / 10.0, 1)
                         })
         except Exception as e:
             print(f"Candidate VNDB error: {e}")
 
     return candidates
-

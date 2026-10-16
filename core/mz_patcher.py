@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, Callable
 
 from db.database import get_game_by_id, update_game_user_state
+from core.scanner import is_valid_translation_json
 
 BLACKLIST_KEYS = {
     'characterName', 'faceName', 'battlerName', 'bgm', 'bgs', 'me', 'se',
@@ -64,7 +65,7 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
                     }
                 }
             }
-            
+
             // XHR Fallback
             const xhr = new XMLHttpRequest();
             xhr.open('GET', '翻译文件.json', false);
@@ -221,7 +222,6 @@ class MZPatcher:
     def find_game_root(folder_path: str) -> Optional[str]:
         if not folder_path or not os.path.exists(folder_path):
             return None
-        # Check folder_path/data or folder_path/www/data
         if os.path.isdir(os.path.join(folder_path, 'data')):
             return folder_path
         if os.path.isdir(os.path.join(folder_path, 'www', 'data')):
@@ -233,13 +233,14 @@ class MZPatcher:
         with open(dict_path, 'r', encoding='utf-8-sig') as f:
             raw = json.load(f)
         cleaned = {}
-        for k, v in raw.items():
-            if isinstance(k, str) and isinstance(v, str):
-                cleaned[k] = v
-                if '\r\n' in k:
-                    cleaned[k.replace('\r\n', '\n')] = v.replace('\r\n', '\n')
-                elif '\n' in k:
-                    cleaned[k.replace('\n', '\r\n')] = v.replace('\n', '\r\n')
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    cleaned[k] = v
+                    if '\r\n' in k:
+                        cleaned[k.replace('\r\n', '\n')] = v.replace('\r\n', '\n')
+                    elif '\n' in k:
+                        cleaned[k.replace('\n', '\r\n')] = v.replace('\n', '\r\n')
         return cleaned
 
     @staticmethod
@@ -332,15 +333,16 @@ class MZPatcher:
 
         data_dir = os.path.join(game_root, 'data')
         backup_dir = os.path.join(game_root, 'data_original_backup')
-        
-        # Backup original data if not backed up yet
+
         if not os.path.exists(backup_dir):
             shutil.copytree(data_dir, backup_dir)
 
         trans_dict = self.load_dict(dict_path)
+        if not trans_dict:
+            return {"success": False, "message": "翻译字典内容为空或格式无效"}
+
         stats = {'count': 0, 'files': 0}
 
-        # 1. Translate static json files
         for fname in os.listdir(backup_dir):
             if fname.endswith('.json'):
                 src_path = os.path.join(backup_dir, fname)
@@ -351,7 +353,6 @@ class MZPatcher:
                     file_stats = {'count': 0}
                     self.traverse_and_translate(data, trans_dict, file_stats)
 
-                    # Inject fallback font in System.json
                     if fname == 'System.json':
                         if 'advanced' in data and isinstance(data['advanced'], dict):
                             orig = data['advanced'].get('fallbackFonts', '')
@@ -367,10 +368,9 @@ class MZPatcher:
 
                     stats['count'] += file_stats['count']
                     stats['files'] += 1
-                except Exception as e:
+                except Exception:
                     shutil.copy2(src_path, dst_path)
 
-        # 2. Copy dictionary to game_root for runtime hook
         target_dict_dest = os.path.join(game_root, '翻译文件.json')
         if not os.path.exists(target_dict_dest) or os.path.abspath(dict_path) != os.path.abspath(target_dict_dest):
             try:
@@ -378,14 +378,12 @@ class MZPatcher:
             except Exception:
                 pass
 
-        # 3. Install runtime hook plugin
         plugins_dir = os.path.join(game_root, 'js', 'plugins')
         os.makedirs(plugins_dir, exist_ok=True)
         patch_js = os.path.join(plugins_dir, 'translation_patch.js')
         with open(patch_js, 'w', encoding='utf-8') as f:
             f.write(RUNTIME_PLUGIN_CODE)
 
-        # 4. Register in plugins.js
         plugins_file = os.path.join(game_root, 'js', 'plugins.js')
         if os.path.exists(plugins_file):
             plugins_bak = plugins_file + '.original_bak'
@@ -418,10 +416,9 @@ def bake_game_translation(game_id: int) -> Dict[str, Any]:
     if not folder_path or not os.path.exists(folder_path):
         return {"success": False, "message": "游戏目录不存在"}
 
-    # Find translation JSON file
     trs_file = None
     p = Path(folder_path)
-    for cand in ["翻译文件.json", "translation.json"]:
+    for cand in ["翻译文件.json", "translation.json", "trs.json"]:
         if (p / cand).exists():
             trs_file = str(p / cand)
             break
@@ -429,21 +426,22 @@ def bake_game_translation(game_id: int) -> Dict[str, Any]:
         try:
             with open(p / "lastLoadedTrsFile", "r", encoding="utf-8-sig") as f:
                 ref = f.read().strip()
-                if (p / ref).exists():
+                if ref and (p / ref).exists() and is_valid_translation_json(str(p / ref)):
                     trs_file = str(p / ref)
         except Exception:
             pass
     if not trs_file:
         try:
             for f in os.listdir(p):
-                if f.endswith(".json") and f.lower() not in ("package.json", "packagev.json") and "config" not in f.lower():
-                    trs_file = str(p / f)
+                full_p = p / f
+                if full_p.is_file() and f.lower().endswith(".json") and is_valid_translation_json(str(full_p)):
+                    trs_file = str(full_p)
                     break
         except Exception:
             pass
 
     if not trs_file or not os.path.exists(trs_file):
-        return {"success": False, "message": "未在游戏目录中检测到外挂翻译 JSON 字典文件"}
+        return {"success": False, "message": "未在游戏目录中检测到有效的外挂翻译 JSON 字典文件"}
 
     patcher = MZPatcher()
     res = patcher.bake(folder_path, trs_file)

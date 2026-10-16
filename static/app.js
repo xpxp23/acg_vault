@@ -1,4 +1,4 @@
-const { createApp, ref, reactive, onMounted, nextTick, watch } = Vue;
+const { createApp, ref, reactive, computed, onMounted, nextTick } = Vue;
 
 createApp({
   setup() {
@@ -14,10 +14,14 @@ createApp({
       duplicates: 0,
       missing: 0,
       has_notes: 0,
+      translated: 0,
+      unscraped: 0,
+      total_size_bytes: 0,
+      total_size_str: '0 MB',
       total_played_hours: 0
     });
 
-    // Toast Notifications System (Replaces native alerts)
+    // Toast Notifications System (Fixed removeToast bug)
     const toasts = ref([]);
     let toastSeq = 0;
     const showToast = (message, type = 'success', duration = 2800) => {
@@ -28,19 +32,23 @@ createApp({
       }, duration);
     };
     const removeToast = (id) => {
-      toasts.value.filter(t => t.id !== id);
+      toasts.value = toasts.value.filter(t => t.id !== id);
     };
 
     const isLoading = ref(true);
-    const viewMode = ref('grid'); // 'grid' | 'list'
+    const viewMode = ref(localStorage.getItem('acg_view_mode') || 'grid'); // 'grid' | 'list'
+    const coverFitMode = ref(localStorage.getItem('acg_cover_fit') || 'smart'); // 'smart' | 'portrait' | 'landscape'
     const searchKeyword = ref('');
     const currentStatus = ref('all');
     const favoriteOnly = ref(false);
     const missingOnly = ref(false);
     const showToolsOnly = ref(false);
     const hasNotesOnly = ref(false);
-    const sortBy = ref('downloaded_at'); // Default sort by download time (下载时间)
-    const sortOrder = ref('desc'); // Default latest download first
+    const unscrapedOnly = ref(false);
+    const engineFilter = ref('all');
+    const transFilter = ref('all'); // 'all' | 'translated' | 'raw'
+    const sortBy = ref('downloaded_at');
+    const sortOrder = ref('desc');
 
     // Fullscreen Notes & Walkthrough Workspace states
     const showNotesFullscreen = ref(false);
@@ -48,13 +56,28 @@ createApp({
     const showNotesToc = ref(true);
     const notesSaveStatus = ref('saved'); // 'saved' | 'saving' | 'dirty'
     const notesTocList = ref([]);
+    const tocSearchQuery = ref('');
+    const activeHeadingId = ref('');
+    const syncScrollEnabled = ref(true);
     const isBrowserFullscreen = ref(false);
     let notesAutoSaveTimer = null;
+    let isSyncingLeft = false;
+    let isSyncingRight = false;
+
+    const filteredTocList = computed(() => {
+      const q = tocSearchQuery.value.trim().toLowerCase();
+      if (!q) return notesTocList.value;
+      return notesTocList.value.filter(item => item.title.toLowerCase().includes(q));
+    });
 
     // Selected game & details
     const selectedGame = ref(null);
     const selectedGameVariants = ref([]);
     const selectedGameMTool = ref(null);
+    const selectedGameSave = ref(null);
+    const isBackingUpSave = ref(false);
+    const showRescrapePanel = ref(false);
+    const showDangerMenu = ref(false);
     const isScrapingSingle = ref(false);
     const scrapeInputRJ = ref('');
     const scrapeInputKeyword = ref('');
@@ -98,13 +121,21 @@ createApp({
     const configData = ref({
       game_directories: ['E:\\ACG'],
       archive_directory: 'E:\\ACG\\_Archive_Duplicates',
+      save_backup_directory: 'E:\\ACG\\_Save_Backups',
+      mtool_directory: 'E:\\ACG\\MTool',
+      leproc_path: '',
       proxy: '',
       auto_scrape: true,
-      scrape_source: 'auto'
+      scrape_source: 'auto',
+      cover_fit_mode: 'smart',
+      port: 8000
     });
 
     const scanState = ref({
       is_running: false,
+      progress: 0,
+      total: 0,
+      current_folder: '',
       status_message: 'Idle'
     });
 
@@ -124,6 +155,25 @@ createApp({
       { label: '🔴 搁置', value: 'dropped' }
     ];
 
+    const setViewMode = (mode) => {
+      viewMode.value = mode;
+      localStorage.setItem('acg_view_mode', mode);
+      refreshIcons();
+    };
+
+    const cycleCoverFitMode = () => {
+      const order = ['smart', 'portrait', 'landscape'];
+      const next = order[(order.indexOf(coverFitMode.value) + 1) % order.length];
+      coverFitMode.value = next;
+      localStorage.setItem('acg_cover_fit', next);
+      const labels = {
+        smart: '智能模糊自适应 (完整保留横竖立绘)',
+        portrait: '3:4 经典竖版海报',
+        landscape: '4:3 同人横版海报 (适合 DLsite/Steam)'
+      };
+      showToast(`封面显示已切换为: ${labels[next]}`, 'info', 2000);
+    };
+
     const refreshIcons = () => {
       nextTick(() => {
         if (window.lucide) {
@@ -134,13 +184,26 @@ createApp({
 
     const formatEngineShort = (eng) => {
       if (!eng) return 'PC';
-      if (eng.includes('RPG Maker')) return 'RPG';
+      if (eng.includes('RPG Maker MZ')) return 'RMMZ';
+      if (eng.includes('RPG Maker MV')) return 'RMMV';
+      if (eng.includes('RPG Maker VX')) return 'RMVX';
+      if (eng.includes('RPG Maker XP')) return 'RMXP';
+      if (eng.includes('RPG Maker')) return 'RPGM';
       if (eng.includes('Kirikiri')) return 'KRKR';
       if (eng.includes('Unity')) return 'UNITY';
       if (eng.includes('Wolf')) return 'WOLF';
       if (eng.includes('Ren\'Py')) return 'RENPY';
       if (eng.includes('Unreal')) return 'UE';
-      return eng.slice(0, 7);
+      if (eng.includes('Godot')) return 'GODOT';
+      return eng.slice(0, 7).toUpperCase();
+    };
+
+    const formatPlayedTime = (seconds) => {
+      if (!seconds || seconds < 60) return '尚未记录';
+      const mins = Math.floor(seconds / 60);
+      if (mins < 60) return `${mins} 分钟`;
+      const hrs = (seconds / 3600).toFixed(1);
+      return `${hrs} 小时`;
     };
 
     const getStatusLabel = (status) => {
@@ -167,11 +230,11 @@ createApp({
 
     const getStatusBadgeClass = (status) => {
       switch (status) {
-        case 'unplayed': return 'bg-slate-700 text-white font-bold';
-        case 'playing': return 'bg-amber-500 text-black font-bold';
-        case 'completed': return 'bg-emerald-500 text-white font-bold';
-        case 'dropped': return 'bg-rose-500 text-white font-bold';
-        case 'backlog': return 'bg-purple-500 text-white font-bold';
+        case 'unplayed': return 'bg-slate-700 text-white font-bold shadow-sm';
+        case 'playing': return 'bg-amber-500 text-black font-bold shadow-sm shadow-amber-500/30';
+        case 'completed': return 'bg-emerald-500 text-white font-bold shadow-sm shadow-emerald-500/30';
+        case 'dropped': return 'bg-rose-500 text-white font-bold shadow-sm shadow-rose-500/30';
+        case 'backlog': return 'bg-purple-500 text-white font-bold shadow-sm shadow-purple-500/30';
         default: return 'bg-slate-700 text-white';
       }
     };
@@ -191,6 +254,9 @@ createApp({
           missing_only: missingOnly.value,
           is_tool: showToolsOnly.value,
           has_notes_only: hasNotesOnly.value,
+          unscraped_only: unscrapedOnly.value,
+          engine_filter: engineFilter.value,
+          trans_filter: transFilter.value,
           sort_by: sortBy.value,
           sort_order: sortOrder.value
         });
@@ -218,7 +284,11 @@ createApp({
     const fetchConfig = async () => {
       try {
         const res = await fetch('/api/config');
-        configData.value = await res.json();
+        const data = await res.json();
+        configData.value = data;
+        if (data.cover_fit_mode && !localStorage.getItem('acg_cover_fit')) {
+          coverFitMode.value = data.cover_fit_mode;
+        }
       } catch (err) {
         console.error('Failed to load config:', err);
       }
@@ -226,6 +296,7 @@ createApp({
 
     const saveConfigAction = async () => {
       try {
+        configData.value.cover_fit_mode = coverFitMode.value;
         const res = await fetch('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -233,7 +304,7 @@ createApp({
         });
         if (res.ok) {
           showSettingsModal.value = false;
-          showToast('设置保存成功！', 'success');
+          showToast('系统设置已保存！', 'success');
         } else {
           showToast('保存设置失败', 'error');
         }
@@ -291,6 +362,9 @@ createApp({
       missingOnly.value = false;
       showToolsOnly.value = false;
       hasNotesOnly.value = false;
+      unscrapedOnly.value = false;
+      engineFilter.value = 'all';
+      transFilter.value = 'all';
       sortBy.value = 'downloaded_at';
       sortOrder.value = 'desc';
       fetchGames();
@@ -301,7 +375,7 @@ createApp({
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         fetchGames();
-      }, 300);
+      }, 260);
     };
 
     const populateEditForm = (game) => {
@@ -347,6 +421,7 @@ createApp({
     };
 
     const closeGameDetail = (fromBackdrop = false) => {
+      showDangerMenu.value = false;
       if (isEditMode.value) {
         if (fromBackdrop) {
           showToast('正在编辑内容，点击背景不会关闭。请保存或点击 ✖ 退出编辑', 'warning', 2200);
@@ -366,7 +441,10 @@ createApp({
       selectedGame.value = { ...game };
       selectedGameVariants.value = [];
       selectedGameMTool.value = null;
+      selectedGameSave.value = null;
       isEditMode.value = false;
+      showDangerMenu.value = false;
+      showRescrapePanel.value = !game.cover_url || !game.synopsis;
       scrapeInputRJ.value = game.rj_code || '';
       scrapeInputKeyword.value = game.clean_title || game.folder_name || '';
       scrapePreferredSource.value = 'auto';
@@ -378,17 +456,15 @@ createApp({
         selectedGame.value = data.data;
         selectedGameVariants.value = data.variants || [];
         selectedGameMTool.value = data.mtool_status || null;
+        selectedGameSave.value = data.save_status || null;
         populateEditForm(data.data);
       } catch (err) {
         console.error('Failed to get game detail:', err);
       } finally {
-        nextTick(() => {
-          refreshIcons();
-        });
+        refreshIcons();
       }
     };
 
-    // Click-to-filter by Tag, CV, or Circle
     const filterByKeyword = (kw) => {
       if (!kw) return;
       searchKeyword.value = kw.trim();
@@ -402,14 +478,12 @@ createApp({
       showToast(`已按关键词筛选: "${kw}"`, 'info');
     };
 
-    // Trigger local file upload
     const triggerLocalCoverUpload = () => {
       if (coverFileInput.value) {
         coverFileInput.value.click();
       }
     };
 
-    // Upload local file to backend
     const uploadImageBlob = async (file) => {
       if (!selectedGame.value || !file) return;
       isUploadingCover.value = true;
@@ -428,6 +502,7 @@ createApp({
           selectedGame.value.banner_url = result.cover_url;
           const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
           if (idx !== -1) games.value[idx].cover_url = result.cover_url;
+          fetchStats();
           showToast('封面图片上传并更新成功！', 'success');
         } else {
           showToast('上传失败: ' + (result.detail || '未知错误'), 'error');
@@ -448,7 +523,6 @@ createApp({
       if (coverFileInput.value) coverFileInput.value.value = '';
     };
 
-    // Paste image directly from clipboard
     const pasteClipboardImage = async () => {
       try {
         const items = await navigator.clipboard.read();
@@ -467,9 +541,8 @@ createApp({
       }
     };
 
-    // Global Paste Listener
     const handleGlobalPaste = (e) => {
-      if (!selectedGame.value) return;
+      if (!selectedGame.value || showNotesFullscreen.value) return;
       if (e.clipboardData && e.clipboardData.items) {
         for (const item of e.clipboardData.items) {
           if (item.type.indexOf('image') !== -1) {
@@ -483,7 +556,6 @@ createApp({
       }
     };
 
-    // Clear all edit fields at once (一键清空)
     const clearAllEditFields = () => {
       if (!confirm('确定要一键清空当前所有封面图片、标题、社团、简介与标签等内容吗？（清空后点击保存生效）')) {
         return;
@@ -500,7 +572,6 @@ createApp({
       showToast('表单内容已清空，点击保存即可生效', 'info');
     };
 
-    // Save Manual Edit
     const saveManualEdit = async () => {
       if (!selectedGame.value) return;
 
@@ -533,6 +604,7 @@ createApp({
           const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
           if (idx !== -1) games.value[idx] = result.data;
           isEditMode.value = false;
+          fetchStats();
           showToast('元数据修改已保存！', 'success');
         } else {
           showToast('保存失败', 'error');
@@ -584,7 +656,6 @@ createApp({
     };
 
     const notesEditMode = ref(false);
-
     let markedConfigured = false;
     let headingCounterMap = {};
 
@@ -597,7 +668,6 @@ createApp({
       }
     };
 
-    // Normalizer: strip #, punctuation, whitespace, and convert to lowercase
     const normalizeHeadingKey = (str) => {
       if (!str) return '';
       return safeDecodeUri(str)
@@ -627,7 +697,7 @@ createApp({
           return `<h${depth} id="${slug}" data-norm-key="${normKey}" data-toc-title="${rawText}" class="notes-heading notes-heading-${depth}">${parsedText}</h${depth}>\n`;
         };
 
-        renderer.link = function({ href, title, tokens, text }) {
+        renderer.link = function({ href, title, tokens }) {
           const parsedText = this.parser.parseInline(tokens);
           const titleAttr = title ? ` title="${title}"` : '';
           if (href && href.startsWith('#')) {
@@ -646,13 +716,20 @@ createApp({
 
     const renderNotesMarkdown = (text) => {
       if (!text || !text.trim()) {
-        return '<span class="text-slate-500 italic">暂无通关笔记或攻略，点击【编辑笔记】或【⛶ 全屏】添加...</span>';
+        return '<span class="text-slate-500 italic">暂无通关笔记或攻略，点击【编辑笔记】、【✨ 插入攻略模板】或【⛶ 全屏】添加...</span>';
       }
       setupMarkedRenderer();
       if (typeof marked !== 'undefined' && marked.parse) {
         try {
           headingCounterMap = {};
-          return marked.parse(text);
+          // Enable interactive checkboxes in rendered HTML so user can click to check/uncheck
+          const rawHtml = marked.parse(text);
+          let boxIdx = 0;
+          return rawHtml.replace(/<input([^>]*?)type="checkbox"([^>]*?)>/gi, (match) => {
+            const isChecked = /checked/i.test(match);
+            const idx = boxIdx++;
+            return `<input type="checkbox" data-checkbox-idx="${idx}" ${isChecked ? 'checked' : ''} class="notes-interactive-checkbox" />`;
+          });
         } catch (e) {
           console.error('Markdown parse error:', e);
         }
@@ -693,13 +770,11 @@ createApp({
     const scrollToHeading = async (id, tocIndex = -1) => {
       if (!id && tocIndex < 0) return;
 
-      // Q3: In full-screen editor mode, auto-switch to split mode so preview pane is visible
       if (showNotesFullscreen.value && notesFullscreenLayout.value === 'editor') {
         notesFullscreenLayout.value = 'split';
         await nextTick();
       }
 
-      // Determine active scroll container with strict boundary isolation (Q1)
       let container = null;
       if (showNotesFullscreen.value) {
         container = document.getElementById('notes-preview-scroll-container');
@@ -713,7 +788,6 @@ createApp({
       const allHeadings = Array.from(container.querySelectorAll('h1, h2, h3, h4, h5, h6'));
       let target = null;
 
-      // Level 1: Match by exact ID or data-anchor in active container
       if (id) {
         const decoded = safeDecodeUri(id).replace(/^#+/, '');
         try {
@@ -725,7 +799,6 @@ createApp({
         }
       }
 
-      // Level 2: Match by normalized key (strips punctuation and whitespace)
       if (!target && targetNorm) {
         target = allHeadings.find(el => {
           const elNorm = el.getAttribute('data-norm-key') || normalizeHeadingKey(el.innerText || el.textContent);
@@ -733,7 +806,6 @@ createApp({
         });
       }
 
-      // Level 3: Fuzzy match (contains / contained in)
       if (!target && targetNorm) {
         target = allHeadings.find(el => {
           const elNorm = el.getAttribute('data-norm-key') || normalizeHeadingKey(el.innerText || el.textContent);
@@ -748,33 +820,49 @@ createApp({
         }
       }
 
-      // Level 4: TOC index fallback
       if (!target && tocIndex >= 0 && tocIndex < allHeadings.length) {
         target = allHeadings[tocIndex];
       }
 
       if (target) {
-        // Calculate exact relative scroll offset inside container (Q1 & Q4)
+        activeHeadingId.value = target.id || id;
         const targetRect = target.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
         const currentScrollTop = container.scrollTop;
         const relativeTop = targetRect.top - containerRect.top + currentScrollTop;
-        const finalTop = Math.max(0, relativeTop - 56); // 56px comfortable breathing room
+        const finalTop = Math.max(0, relativeTop - 48);
 
         container.scrollTo({
           top: finalTop,
           behavior: 'smooth'
         });
 
-        // Trigger 1.8s glowing wave focus animation
         target.classList.remove('heading-highlight-flash');
-        void target.offsetWidth; // Force CSS reflow
+        void target.offsetWidth;
         target.classList.add('heading-highlight-flash');
         setTimeout(() => target.classList.remove('heading-highlight-flash'), 1800);
       }
     };
 
     const handleNotesContentClick = (event) => {
+      // Interactive checkbox toggle in preview mode
+      const checkbox = event.target.closest('input.notes-interactive-checkbox');
+      if (checkbox && selectedGame.value && selectedGame.value.user_notes) {
+        const targetIdx = parseInt(checkbox.getAttribute('data-checkbox-idx'), 10);
+        if (!isNaN(targetIdx)) {
+          let currentMatch = 0;
+          selectedGame.value.user_notes = selectedGame.value.user_notes.replace(/^(\s*[-*+]\s+\[)([ xX])(\])/gm, (full, p1, state, p3) => {
+            if (currentMatch++ === targetIdx) {
+              const nextState = state === ' ' ? 'x' : ' ';
+              return `${p1}${nextState}${p3}`;
+            }
+            return full;
+          });
+          onNotesInput();
+          return;
+        }
+      }
+
       const anchor = event.target.closest('a');
       if (!anchor) return;
       const href = anchor.getAttribute('href');
@@ -785,6 +873,88 @@ createApp({
         const id = href.replace(/^#+/, '');
         scrollToHeading(id);
       }
+    };
+
+    // ScrollSpy & Proportional Scroll Sync for Fullscreen Walkthrough
+    const onEditorScroll = (e) => {
+      if (!syncScrollEnabled.value || notesFullscreenLayout.value !== 'split' || isSyncingLeft) return;
+      const editor = e.target;
+      const preview = document.getElementById('notes-preview-scroll-container');
+      if (!editor || !preview) return;
+
+      isSyncingRight = true;
+      const maxEditor = editor.scrollHeight - editor.clientHeight;
+      const maxPreview = preview.scrollHeight - preview.clientHeight;
+      if (maxEditor > 0 && maxPreview > 0) {
+        const ratio = editor.scrollTop / maxEditor;
+        preview.scrollTop = ratio * maxPreview;
+      }
+      setTimeout(() => { isSyncingRight = false; }, 40);
+    };
+
+    const onPreviewScroll = (e) => {
+      const preview = e.target;
+      if (!preview) return;
+
+      // Update ScrollSpy active heading
+      const headings = Array.from(preview.querySelectorAll('h1, h2, h3, h4'));
+      const previewTop = preview.getBoundingClientRect().top;
+      let currentId = '';
+      for (const h of headings) {
+        const offset = h.getBoundingClientRect().top - previewTop;
+        if (offset <= 100) {
+          currentId = h.id;
+        } else {
+          break;
+        }
+      }
+      if (currentId) {
+        activeHeadingId.value = currentId;
+      } else if (headings.length > 0) {
+        activeHeadingId.value = headings[0].id;
+      }
+
+      if (!syncScrollEnabled.value || notesFullscreenLayout.value !== 'split' || isSyncingRight) return;
+      const editor = document.getElementById('notes-editor-textarea');
+      if (!editor) return;
+
+      isSyncingLeft = true;
+      const maxPreview = preview.scrollHeight - preview.clientHeight;
+      const maxEditor = editor.scrollHeight - editor.clientHeight;
+      if (maxPreview > 0 && maxEditor > 0) {
+        const ratio = preview.scrollTop / maxPreview;
+        editor.scrollTop = ratio * maxEditor;
+      }
+      setTimeout(() => { isSyncingLeft = false; }, 40);
+    };
+
+    const insertMarkdownSnippet = (type) => {
+      if (!selectedGame.value) return;
+      const snippets = {
+        h2: '\n## 章节标题\n',
+        bold: '**重点内容**',
+        checklist: '\n- [ ] 结局/CG收集项 1\n- [ ] 结局/CG收集项 2\n',
+        table: '\n| 章节/阶段 | 关键选项 / 触发条件 | 好感度/属性变化 | 解锁结局 / 备注 |\n| :--- | :--- | :--- | :--- |\n| 第一章 | 选择「留下来帮忙」 | 好感 +10 | 关键主线分支 |\n| 终章 | 满足好感 ≥ 80 | 触发 True End | 解锁全回想 |\n',
+        spoiler: '\n<details>\n<summary>🔒 点击展开隐藏剧透 / 作弊密码</summary>\n\n- 全回想开启位置：标题画面右侧隐藏开关\n- 保险箱密码：`1024`\n\n</details>\n',
+        template: `# 《${selectedGame.value.display_title || selectedGame.value.clean_title}》全流程全结局攻略\n\n## 一、 核心机制与通关提示\n- **全CG/回想解锁方式**：\n- **关键数值/状态说明**：\n\n## 二、 主线流程与关键分支表\n| 阶段 | 地点 / NPC | 关键行动与选项 | 结果 / 解锁内容 |\n| :--- | :--- | :--- | :--- |\n| 序章 | 初始房间 | 调查书桌获取道具 | 开启主线 |\n| 中盘 | 王都广场 | 夜晚前往酒馆触发支线 | 解锁支线事件 |\n\n## 三、 全结局达成条件 Checklist\n- [ ] **True End (真结局)**：\n- [ ] **Normal End (普通结局)**：\n- [ ] **Bad End / 特殊结局**：\n`
+      };
+      const textToInsert = snippets[type] || '';
+      if (!textToInsert) return;
+
+      const ta = document.getElementById('notes-editor-textarea');
+      const currentVal = selectedGame.value.user_notes || '';
+      if (ta && (notesFullscreenLayout.value === 'split' || notesFullscreenLayout.value === 'editor')) {
+        const start = ta.selectionStart || currentVal.length;
+        const end = ta.selectionEnd || currentVal.length;
+        selectedGame.value.user_notes = currentVal.slice(0, start) + textToInsert + currentVal.slice(end);
+        nextTick(() => {
+          ta.focus();
+          ta.selectionStart = ta.selectionEnd = start + textToInsert.length;
+        });
+      } else {
+        selectedGame.value.user_notes = currentVal ? (currentVal + '\n' + textToInsert) : textToInsert;
+      }
+      onNotesInput();
     };
 
     const saveGameNotes = async (silent = false) => {
@@ -802,7 +972,6 @@ createApp({
           body: JSON.stringify({ user_notes: notesContent })
         });
 
-        // Sync reactively with main games list
         const target = games.value.find(g => g.id === selectedGame.value.id);
         if (target) {
           target.user_notes = notesContent;
@@ -828,12 +997,27 @@ createApp({
       }, 1200);
     };
 
-    const openNotesFullscreen = (game = null) => {
-      if (game) {
+    // Fixed openNotesFullscreen bug: ensures full detail (mtool, variants, save_status) is fetched if opened from grid/list
+    const openNotesFullscreen = async (game = null) => {
+      if (game && (!selectedGame.value || selectedGame.value.id !== game.id)) {
         selectedGame.value = { ...game };
+        populateEditForm(game);
+        fetch(`/api/games/${game.id}`)
+          .then(r => r.json())
+          .then(data => {
+            if (selectedGame.value && selectedGame.value.id === game.id) {
+              selectedGame.value = data.data;
+              selectedGameVariants.value = data.variants || [];
+              selectedGameMTool.value = data.mtool_status || null;
+              selectedGameSave.value = data.save_status || null;
+              notesTocList.value = extractNotesToc(selectedGame.value.user_notes);
+            }
+          })
+          .catch(() => {});
       }
       if (!selectedGame.value) return;
       showNotesFullscreen.value = true;
+      tocSearchQuery.value = '';
       notesSaveStatus.value = 'saved';
       notesTocList.value = extractNotesToc(selectedGame.value.user_notes);
       refreshIcons();
@@ -912,7 +1096,7 @@ createApp({
             selectedGame.value.play_status = 'playing';
           }
           fetchStats();
-          showToast('游戏正在启动...', 'success', 2000);
+          showToast(data.message || '游戏正在启动...', 'success', 2000);
         } else {
           showToast(data.message || '启动失败', 'error');
         }
@@ -931,12 +1115,62 @@ createApp({
             selectedGame.value.play_status = 'playing';
           }
           fetchStats();
-          showToast('MTool 辅助环境已就绪，正在拉起游戏...', 'success', 2500);
+          showToast(data.message || 'MTool 辅助环境已就绪，正在拉起游戏...', 'success', 2500);
         } else {
           showToast(data.message || 'MTool 启动失败', 'error');
         }
       } catch (err) {
         showToast('MTool 启动发生异常: ' + err, 'error');
+      }
+    };
+
+    const launchLEAction = async (game) => {
+      try {
+        const res = await fetch(`/api/games/${game.id}/launch_le`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          game.play_status = 'playing';
+          if (selectedGame.value && selectedGame.value.id === game.id) {
+            selectedGame.value.play_status = 'playing';
+          }
+          fetchStats();
+          showToast(data.message || '已通过 Locale Emulator 转区启动', 'success', 2500);
+        } else {
+          showToast(data.message || '转区启动失败', 'warning', 3200);
+        }
+      } catch (err) {
+        showToast('转区启动异常: ' + err, 'error');
+      }
+    };
+
+    const openSaveFolderAction = async (game) => {
+      try {
+        const res = await fetch(`/api/games/${game.id}/open_save`, { method: 'POST' });
+        const data = await res.json();
+        showToast(data.message || '已打开存档目录', data.success ? 'info' : 'warning', 2000);
+      } catch (err) {
+        showToast('打开存档目录异常: ' + err, 'error');
+      }
+    };
+
+    const backupSaveAction = async (game) => {
+      if (!game) return;
+      isBackingUpSave.value = true;
+      try {
+        const res = await fetch(`/api/games/${game.id}/backup_save`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          if (data.save_status) {
+            selectedGameSave.value = data.save_status;
+          }
+          showToast(data.message || '存档快照备份成功！', 'success', 2800);
+        } else {
+          showToast(data.message || '备份存档失败', 'warning');
+        }
+      } catch (err) {
+        showToast('备份存档异常: ' + err, 'error');
+      } finally {
+        isBackingUpSave.value = false;
       }
     };
 
@@ -956,9 +1190,9 @@ createApp({
       }
     };
 
-    // Single game deletion / removal
     const deleteGameAction = async (game, deleteLocal = false) => {
       if (!game) return;
+      showDangerMenu.value = false;
       const msg = deleteLocal
         ? `⚠️ 警告：确定要彻底删除本地游戏文件夹【${game.folder_name}】并将其移入回收站吗？\n（此操作将同时从游戏库中清除记录）`
         : `确定要将游戏【${game.display_title || game.folder_name}】从游戏库中移除吗？\n（本地文件将完好保留）`;
@@ -987,7 +1221,6 @@ createApp({
       }
     };
 
-    // Clean up all missing games
     const cleanupMissingAction = async () => {
       if (!confirm('确定要一键从游戏库中清理所有本地文件已不存在的失效游戏吗？')) return;
       try {
@@ -1005,7 +1238,6 @@ createApp({
       }
     };
 
-    // Batch management actions
     const toggleBatchMode = () => {
       isBatchMode.value = !isBatchMode.value;
       if (!isBatchMode.value) {
@@ -1082,7 +1314,6 @@ createApp({
       }
     };
 
-    // Scraper Candidates Picker actions
     const openCandidatePicker = async () => {
       if (!selectedGame.value) return;
       showCandidateModal.value = true;
@@ -1125,6 +1356,7 @@ createApp({
           const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
           if (idx !== -1) games.value[idx] = result.data;
           showCandidateModal.value = false;
+          fetchStats();
           showToast(`已采纳来自【${candidate.source_name}】的元数据！`, 'success');
         } else {
           showToast('应用候选数据失败', 'error');
@@ -1153,6 +1385,7 @@ createApp({
           populateEditForm(result.data);
           const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
           if (idx !== -1) games.value[idx] = result.data;
+          fetchStats();
           showToast('元数据抓取并更新成功！', 'success');
         } else {
           showToast(result.message || '未抓取到匹配信息', 'warning');
@@ -1189,11 +1422,20 @@ createApp({
             fetchStats();
             refreshIcons();
             showToast(data.status_message || '扫描完成！', 'success');
+            // Check if auto_scrape kicked off in backend
+            setTimeout(async () => {
+              const sRes = await fetch('/api/games/batch_scrape/status');
+              const sData = await sRes.json();
+              if (sData.is_running) {
+                batchScrapeState.value = sData;
+                pollBatchScrapeStatus();
+              }
+            }, 600);
           }
         } catch (err) {
           clearInterval(timer);
         }
-      }, 1000);
+      }, 800);
     };
 
     const triggerBatchScrape = async () => {
@@ -1217,13 +1459,14 @@ createApp({
           if (!data.is_running) {
             clearInterval(timer);
             fetchGames();
+            fetchStats();
             refreshIcons();
-            showToast('批量刮削已完成！', 'success');
+            showToast(data.status_message || '批量刮削已完成！', 'success');
           }
         } catch (err) {
           clearInterval(timer);
         }
-      }, 1500);
+      }, 1200);
     };
 
     const openDuplicateModal = async () => {
@@ -1238,7 +1481,7 @@ createApp({
       }
     };
 
-    const openDuplicateModalForGame = (game) => {
+    const openDuplicateModalForGame = () => {
       openDuplicateModal();
     };
 
@@ -1292,7 +1535,6 @@ createApp({
     };
 
     const handleGlobalKeydown = (e) => {
-      // Ctrl + S or Cmd + S
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         if (showNotesFullscreen.value) {
           e.preventDefault();
@@ -1301,7 +1543,6 @@ createApp({
         }
       }
 
-      // Esc key handling
       if (e.key === 'Escape') {
         if (showNotesFullscreen.value) {
           e.preventDefault();
@@ -1355,22 +1596,35 @@ createApp({
       removeToast,
       isLoading,
       viewMode,
+      setViewMode,
+      coverFitMode,
+      cycleCoverFitMode,
       searchKeyword,
       currentStatus,
       favoriteOnly,
       missingOnly,
       showToolsOnly,
       hasNotesOnly,
+      unscrapedOnly,
+      engineFilter,
+      transFilter,
       sortBy,
       sortOrder,
       statusTabs,
       selectedGame,
       selectedGameVariants,
       selectedGameMTool,
+      selectedGameSave,
+      isBackingUpSave,
+      openSaveFolderAction,
+      backupSaveAction,
+      showRescrapePanel,
+      showDangerMenu,
       isMToolEngine,
       isBakingTranslation,
       bakeTranslationAction,
       launchMToolAction,
+      launchLEAction,
       isScrapingSingle,
       scrapeInputRJ,
       scrapeInputKeyword,
@@ -1403,6 +1657,7 @@ createApp({
       openCandidatePicker,
       applySelectedCandidate,
       formatEngineShort,
+      formatPlayedTime,
       getStatusLabel,
       getStatusDotColor,
       getStatusBadgeClass,
@@ -1432,6 +1687,13 @@ createApp({
       showNotesToc,
       notesSaveStatus,
       notesTocList,
+      filteredTocList,
+      tocSearchQuery,
+      activeHeadingId,
+      syncScrollEnabled,
+      onEditorScroll,
+      onPreviewScroll,
+      insertMarkdownSnippet,
       isBrowserFullscreen,
       openNotesFullscreen,
       closeNotesFullscreen,

@@ -3,10 +3,13 @@
     "E:\\ACG"
   ],
   "archive_directory": "E:\\ACG\\_Archive_Duplicates",
+  "save_backup_directory": "E:\\ACG\\_Save_Backups",
   "mtool_directory": "E:\\ACG\\MTool",
+  "leproc_path": "",
   "proxy": "",
   "auto_scrape": true,
   "scrape_source": "auto",
+  "cover_fit_mode": "smart",
   "theme": "dark",
   "port": 8000
 }

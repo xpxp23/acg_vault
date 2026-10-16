@@ -1,8 +1,10 @@
 import os
 import re
+import json
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable, Set
 from datetime import datetime
+from config import load_config
 
 TOOL_KEYWORDS = [
     "agth", "dangotranslator", "团子翻译器", "misakatranslator", "lunatranslator",
@@ -24,13 +26,73 @@ IGNORE_EXE_PATTERNS = [
     re.compile(r"setup\.exe$", re.I),
     re.compile(r"agth\.exe$", re.I),
     re.compile(r"mtool.*\.exe$", re.I),
+    re.compile(r"leproc\.exe$", re.I),
+    re.compile(r"leupdater\.exe$", re.I),
+    re.compile(r"leinstaller\.exe$", re.I),
+    re.compile(r"notification_helper\.exe$", re.I),
 ]
 
 SKIP_WALK_DIRS = {
     "node_modules", ".git", "audio", "sound", "voice", "bgm", "se", "bgs",
     "img", "image", "images", "picture", "pictures", "cg", "movie", "movies", "video",
-    "locales", "swiftshader", "monobleedingedge", "streamingassets", "plugins"
+    "locales", "swiftshader", "monobleedingedge", "streamingassets", "plugins",
+    "data_original_backup", "_archive_duplicates", "_save_backups"
 }
+
+KNOWN_TRS_FILENAMES = {
+    "翻译文件.json", "translation.json", "trs.json", "zh_cn.json", "chs.json",
+    "customtrs.json", "autotrans.json", "manualtransfile.json"
+}
+
+NON_TRS_JSON_NAMES = {
+    "package.json", "packagev.json", "tsconfig.json", "jsconfig.json",
+    "manifest.json", "settings.json", "config.json", "save.json", "system.json",
+    "actors.json", "animations.json", "armors.json", "classes.json", "commonevents.json",
+    "enemies.json", "items.json", "mapinfos.json", "skills.json", "states.json",
+    "tilesets.json", "troops.json", "weapons.json", "credits.json", "options.json",
+    "deps.json", "runtimeconfig.json", "global.json", "project.json"
+}
+
+def is_valid_translation_json(file_path: str) -> bool:
+    """
+    Validates whether a .json file is actually an external translation dictionary
+    (key-value string mapping) rather than a game engine/plugin config file.
+    """
+    p = Path(file_path)
+    name_low = p.name.lower()
+    if name_low in KNOWN_TRS_FILENAMES:
+        return True
+    if name_low in NON_TRS_JSON_NAMES:
+        return False
+    if any(k in name_low for k in ("config", "setting", "manifest", "runtime", " map", "save", "plugin", "shader", "asset", "catalog", "bundle")):
+        return False
+    if re.match(r"^map\d+\.json$", name_low):
+        return False
+
+    try:
+        st = p.stat()
+        if st.st_size < 20 or st.st_size > 35 * 1024 * 1024:
+            return False
+        with open(p, "r", encoding="utf-8-sig", errors="ignore") as f:
+            head = f.read(65536).strip()
+            if not head.startswith("{"):
+                return False
+            f.seek(0)
+            data = json.load(f)
+        if not isinstance(data, dict) or len(data) < 3:
+            return False
+        sample_pairs = 0
+        cjk_hits = 0
+        for idx, (k, v) in enumerate(data.items()):
+            if idx >= 15:
+                break
+            if isinstance(k, str) and isinstance(v, str):
+                sample_pairs += 1
+                if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", k) or re.search(r"[\u4e00-\u9fff]", v):
+                    cjk_hits += 1
+        return sample_pairs >= 3 and cjk_hits >= 1
+    except Exception:
+        return False
 
 def format_size(size_bytes: int) -> str:
     if size_bytes >= 1024 * 1024 * 1024:
@@ -51,16 +113,20 @@ def is_tool_folder(folder_name: str) -> bool:
 def clean_title_from_folder(folder_name: str) -> str:
     """Cleans messy folder prefixes, tags, versions, suffixes to find raw game title."""
     title = folder_name
-    
+
     # Remove leading tags like 【PC官中SLG】, [NitroPlus], [RJxxxxxx]
-    title = re.sub(r"^\[[^\]]+\]", "", title)
-    title = re.sub(r"^【[^】]+】", "", title)
-    title = re.sub(r"^\([^\)]+\)", "", title)
-    
+    while True:
+        prev = title
+        title = re.sub(r"^\s*\[[^\]]+\]\s*", "", title)
+        title = re.sub(r"^\s*【[^】]+】\s*", "", title)
+        title = re.sub(r"^\s*\([^\)]+\)\s*", "", title)
+        if title == prev:
+            break
+
     # Remove inner layer tag (内层)
     title = re.sub(r"\(内层\)", "", title, flags=re.I)
     title = re.sub(r"\(ڲ\)", "", title)
-    
+
     # Remove trailing common words
     trailing_patterns = [
         r"电脑$",
@@ -85,14 +151,14 @@ def clean_title_from_folder(folder_name: str) -> str:
     ]
     for pat in trailing_patterns:
         title = re.sub(pat, "", title, flags=re.I).strip()
-    
+
     # Clean whitespace and trailing symbols
     title = title.strip(" -_+=~()[]{}【】")
     return title if title else folder_name
 
 def extract_rj_code(text: str) -> Optional[str]:
     """Extracts RJ/VJ/BJ code from folder name or file names."""
-    m = re.search(r"\b([R|V|B]J\d{6,8})\b", text, re.I)
+    m = re.search(r"([RVB]J\d{6,8})", text, re.I)
     if m:
         return m.group(1).upper()
     return None
@@ -128,10 +194,11 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str]
 
                         if entry.is_file():
                             name_low = entry.name.lower()
-                            if name_low in ("翻译文件.json", "与工具一同启动.bat", "lastloadedtrsfile", "startwithtool.bat"):
+                            if name_low in ("翻译文件.json", "translation.json", "与工具一同启动.bat", "lastloadedtrsfile", "startwithtool.bat"):
                                 has_trs = True
-                            elif name_low.endswith(".json") and name_low not in ("package.json", "packagev.json") and "config" not in name_low:
-                                has_trs = True
+                            elif depth <= 1 and name_low.endswith(".json") and not has_trs:
+                                if is_valid_translation_json(entry.path):
+                                    has_trs = True
 
                             if name_low.endswith(".exe"):
                                 if not any(pat.search(entry.name) for pat in IGNORE_EXE_PATTERNS):
@@ -139,7 +206,7 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str]
                             elif name_low.endswith(".xp3") or name_low.endswith(".kagex"):
                                 if engine == "Unknown":
                                     engine = "Kirikiri (吉里吉里)"
-                            elif name_low in ("package.json", "rpg_core.js"):
+                            elif name_low in ("package.json", "rpg_core.js", "rmmz_core.js"):
                                 if engine == "Unknown":
                                     engine = "RPG Maker MV/MZ"
                             elif name_low.endswith(".rgss3a"):
@@ -156,9 +223,11 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str]
                                 engine = "Godot"
                             elif name_low in ("siglusengine.exe", "reallive.exe"):
                                 engine = "Siglus / Key"
-                        elif entry.is_dir() and depth < max_depth:
+                        elif entry.is_dir():
                             dname_low = entry.name.lower()
-                            if dname_low not in SKIP_WALK_DIRS:
+                            if dname_low == "data_original_backup":
+                                has_trs = True
+                            if depth < max_depth and dname_low not in SKIP_WALK_DIRS:
                                 if dname_low == "www" and engine == "Unknown":
                                     engine = "RPG Maker MV/MZ"
                                 elif dname_low.endswith("_data") and engine == "Unknown":
@@ -185,42 +254,74 @@ def choose_best_executable(root_path: str, exes: List[str]) -> Optional[str]:
     if not exes:
         return None
     root_stem = Path(root_path).name.lower()
-    
+
     # 1. Match folder name
     for exe in exes:
         stem = Path(exe).stem.lower()
-        if stem in root_stem or root_stem in stem:
+        if len(stem) >= 2 and (stem in root_stem or root_stem in stem):
             return exe
-            
+
     # 2. Match Game.exe, Start.exe
     for exe in exes:
         name = Path(exe).name.lower()
-        if name in ("game.exe", "start.exe", "play.exe", "launch.exe"):
+        if name in ("game.exe", "gamepro.exe", "start.exe", "play.exe", "launch.exe"):
             return exe
 
     # 3. Choose the shortest depth relative to root
     exes_sorted = sorted(exes, key=lambda x: (len(Path(x).relative_to(root_path).parts), -os.path.getsize(x) if os.path.exists(x) else 0))
     return exes_sorted[0]
 
-def scan_directory(dir_path_str: str) -> List[Dict[str, Any]]:
+def get_excluded_scan_paths() -> Set[str]:
+    """Returns normalized lowercase paths that must never be scanned as game folders."""
+    cfg = load_config()
+    excluded: Set[str] = set()
+    for key in ("archive_directory", "save_backup_directory", "mtool_directory"):
+        val = cfg.get(key)
+        if val and isinstance(val, str) and val.strip():
+            excluded.add(os.path.normcase(os.path.normpath(val.strip())))
+    return excluded
+
+def scan_directory(
+    dir_path_str: str,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
+) -> List[Dict[str, Any]]:
     """Scans a root directory (e.g. E:\\ACG) and returns parsed game items."""
     results: List[Dict[str, Any]] = []
     root = Path(dir_path_str)
     if not root.exists() or not root.is_dir():
         return results
 
+    excluded_paths = get_excluded_scan_paths()
+
     try:
         with os.scandir(str(root)) as it:
-            entries = [e for e in it if e.is_dir()]
+            entries = []
+            for e in it:
+                if not e.is_dir():
+                    continue
+                # Skip hidden or system/archive directories starting with '.' or '_'
+                if e.name.startswith(".") or e.name.startswith("_"):
+                    continue
+                norm_p = os.path.normcase(os.path.normpath(e.path))
+                if norm_p in excluded_paths:
+                    continue
+                entries.append(e)
     except Exception as e:
         print(f"Error reading directory {dir_path_str}: {e}")
         return results
 
     entries.sort(key=lambda x: x.name)
+    total_entries = len(entries)
 
-    for entry in entries:
+    for idx, entry in enumerate(entries):
         folder_name = entry.name
         folder_path = entry.path
+        if progress_callback:
+            try:
+                progress_callback(idx + 1, total_entries, folder_name)
+            except Exception:
+                pass
+
         is_tool = is_tool_folder(folder_name)
         rj_code = extract_rj_code(folder_name)
         clean_title = clean_title_from_folder(folder_name)

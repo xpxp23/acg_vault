@@ -1,13 +1,16 @@
 import os
+import re
 import time
+import zipfile
 import subprocess
 import threading
 import ctypes
 from ctypes import wintypes
 from pathlib import Path
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import Dict, Any, Optional, List
 from db.database import get_game_by_id, record_game_launch
-from core.scanner import fast_inspect_folder, choose_best_executable
+from core.scanner import fast_inspect_folder, choose_best_executable, is_valid_translation_json
 from config import load_config
 
 # ---------------------------------------------------------
@@ -153,11 +156,36 @@ def monitor_game_pid(game_id: int, target_pid: Optional[int], hProcess: Optional
         if game_id in RUNNING_GAMES:
             del RUNNING_GAMES[game_id]
 
+def resolve_leproc_path() -> Optional[str]:
+    """Resolves Locale Emulator (LEProc.exe) path from config or common installation locations."""
+    cfg = load_config()
+    custom_le = (cfg.get("leproc_path") or "").strip()
+    if custom_le and os.path.exists(custom_le):
+        return custom_le
+
+    candidates = [
+        r"E:\ACG\Locale.Emulator\LEProc.exe",
+        r"E:\ACG\Locale_Emulator\LEProc.exe",
+        r"E:\ACG\转区工具\LEProc.exe",
+        r"C:\Locale.Emulator\LEProc.exe",
+        r"D:\Locale.Emulator\LEProc.exe",
+    ]
+    for gdir in cfg.get("game_directories", []):
+        if gdir and os.path.exists(gdir):
+            candidates.append(os.path.join(gdir, "Locale.Emulator", "LEProc.exe"))
+            candidates.append(os.path.join(gdir, "LEProc.exe"))
+
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
 def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
     """Launches the primary executable for a game with normal interactive window and tracks play session."""
-    # Check if MTool launch is explicitly requested or smart-defaulted
     if mode == "mtool":
         return launch_game_with_mtool(game_id)
+    elif mode == "le":
+        return launch_game_with_le(game_id)
     elif mode is None:
         try:
             mstatus = get_game_mtool_status(game_id)
@@ -173,7 +201,6 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
     exe_path = game.get("executable_path")
     folder_path = game.get("folder_path")
 
-    # If exe_path is missing or invalid, try to rediscover it
     if not exe_path or not os.path.exists(exe_path):
         if folder_path and os.path.exists(folder_path):
             exes, *rest = fast_inspect_folder(folder_path, max_depth=2)
@@ -189,7 +216,6 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
     exe_name = Path(exe_path).name
 
     try:
-        # Launch using ShellExecuteExW with SW_SHOWNORMAL (1) to guarantee foreground interactive window!
         success, pid, hProcess = shell_launch(exe_path, working_dir=working_dir, show_cmd=SW_SHOWNORMAL)
         if not success:
             os.startfile(exe_path)
@@ -222,6 +248,69 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "message": f"启动失败: {str(e)}"}
 
+def launch_game_with_le(game_id: int) -> Dict[str, Any]:
+    """Launches game via Locale Emulator (LEProc.exe) for Japanese Shift-JIS locale emulation."""
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"success": False, "message": "游戏记录不存在"}
+
+    le_exe = resolve_leproc_path()
+    if not le_exe:
+        return {
+            "success": False,
+            "message": "未找到 Locale Emulator (LEProc.exe)，请在【系统设置】中配置 LEProc.exe 路径"
+        }
+
+    folder_path = game.get("folder_path")
+    exe_path = game.get("executable_path")
+    if not exe_path or not os.path.exists(exe_path):
+        if folder_path and os.path.exists(folder_path):
+            exes, *rest = fast_inspect_folder(folder_path, max_depth=2)
+            exe_path = choose_best_executable(folder_path, exes)
+
+    if not exe_path or not os.path.exists(exe_path):
+        return {"success": False, "message": "未找到游戏主程序"}
+
+    working_dir = os.path.dirname(os.path.abspath(exe_path))
+    exe_name = Path(exe_path).name
+
+    try:
+        success, _, _ = shell_launch(
+            exe_path=le_exe,
+            parameters=f'-run "{exe_path}"',
+            working_dir=working_dir,
+            show_cmd=SW_SHOWNORMAL
+        )
+        if not success:
+            subprocess.Popen([le_exe, "-run", exe_path], cwd=working_dir)
+
+        time.sleep(1.0)
+        real_pid = find_game_pid_in_folder(working_dir, exe_name)
+        start_time = time.time()
+        record_game_launch(game_id, duration_seconds=0)
+
+        RUNNING_GAMES[game_id] = {
+            "pid": real_pid,
+            "start_time": start_time,
+            "exe": exe_name,
+            "mode": "le"
+        }
+
+        t = threading.Thread(
+            target=monitor_game_pid,
+            args=(game_id, real_pid, None, start_time, working_dir, exe_name),
+            daemon=True
+        )
+        t.start()
+
+        return {
+            "success": True,
+            "pid": real_pid,
+            "message": f"已通过 Locale Emulator 转区启动: {exe_name}"
+        }
+    except Exception as e:
+        return {"success": False, "message": f"LE 转区启动失败: {str(e)}"}
+
 def open_game_folder(folder_path: str) -> bool:
     if os.path.exists(folder_path):
         try:
@@ -242,7 +331,7 @@ def reveal_in_explorer(file_or_dir_path: str) -> bool:
     return False
 
 def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
-    """Inspects game folder to determine if MTool translation is available/supported."""
+    """Inspects game folder to determine if MTool translation or Locale Emulator is available/supported."""
     game = get_game_by_id(game_id)
     if not game:
         return {"supported": False, "message": "游戏不存在"}
@@ -255,6 +344,7 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
     mtool_dir = cfg.get("mtool_directory", r"E:\ACG\MTool")
     inject_exe = Path(mtool_dir) / "Tool" / "loaders" / "inject.exe"
     mtool_installed = os.path.exists(mtool_dir) and inject_exe.exists()
+    leproc_path = resolve_leproc_path()
 
     folder = Path(folder_path)
 
@@ -267,29 +357,32 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
             bat_file = str(folder / cand)
             break
 
-    # Check for translation JSON
+    # Check for validated translation JSON
     has_trs = False
     trs_file = None
-    if (folder / "翻译文件.json").exists():
-        has_trs = True
-        trs_file = str(folder / "翻译文件.json")
-    elif (folder / "lastLoadedTrsFile").exists():
-        has_trs = True
+    for cand in ["翻译文件.json", "translation.json", "trs.json"]:
+        if (folder / cand).exists():
+            has_trs = True
+            trs_file = str(folder / cand)
+            break
+
+    if not has_trs and (folder / "lastLoadedTrsFile").exists():
         try:
             with open(folder / "lastLoadedTrsFile", "r", encoding="utf-8-sig") as f:
                 ref = f.read().strip()
-                if (folder / ref).exists():
+                if ref and (folder / ref).exists() and is_valid_translation_json(str(folder / ref)):
+                    has_trs = True
                     trs_file = str(folder / ref)
-                else:
-                    trs_file = "lastLoadedTrsFile"
         except Exception:
-            trs_file = "lastLoadedTrsFile"
-    else:
+            pass
+
+    if not has_trs:
         try:
             for f in os.listdir(folder):
-                if f.endswith(".json") and f not in ("package.json", "packageV.json") and "config" not in f.lower():
+                full_p = folder / f
+                if full_p.is_file() and f.lower().endswith(".json") and is_valid_translation_json(str(full_p)):
                     has_trs = True
-                    trs_file = str(folder / f)
+                    trs_file = str(full_p)
                     break
         except Exception:
             pass
@@ -307,28 +400,32 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
         is_mtool_engine = True
         hook_dll_name = "mzHook.dll"
 
-    # Check if translation has already been baked into the game files (Decision 4A)
+    # Check if translation has already been baked into the game files
     is_baked = False
-    if (folder / "data_original_backup").exists() or (folder / "index.html.original_bak").exists():
+    if (
+        (folder / "data_original_backup").exists()
+        or (folder / "www" / "data_original_backup").exists()
+        or (folder / "index.html.original_bak").exists()
+    ):
         is_baked = True
 
-    # Supported if MTool is installed AND the game engine is supported by MTool
     supported = mtool_installed and is_mtool_engine
-    has_translation = bool(has_bat or has_trs)
+    has_translation = bool(has_bat or has_trs or is_baked)
 
-    # If already baked, default to native (Decision 4A); if unbaked and has translation, default to mtool
     if is_baked:
         launch_mode_default = "native"
-    elif supported and has_translation:
+    elif supported and (has_bat or has_trs):
         launch_mode_default = "mtool"
     else:
         launch_mode_default = "native"
 
-    can_bake_patch = bool(supported and has_trs and not is_baked and ("MV" in engine_type or "MZ" in engine_type or "RPG Maker MV/MZ" in engine_type))
+    can_bake_patch = bool(has_trs and not is_baked and ("MV" in engine_type or "MZ" in engine_type or "RPG Maker MV/MZ" in engine_type))
 
     return {
         "supported": supported,
         "mtool_installed": mtool_installed,
+        "le_installed": bool(leproc_path),
+        "leproc_path": leproc_path or "",
         "is_mtool_engine": is_mtool_engine,
         "mtool_dir": str(mtool_dir),
         "has_bat": has_bat,
@@ -374,7 +471,6 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
     nw_exe = mtool_dir / "Tool" / "nw.exe"
     tool_dir = mtool_dir / "Tool"
 
-    # Ensure lastLoadedTrsFile exists if translation file exists
     if status.get("trs_file") and os.path.exists(status["trs_file"]):
         trs_name = os.path.basename(status["trs_file"])
         last_trs = os.path.join(working_dir, "lastLoadedTrsFile")
@@ -385,7 +481,6 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
             pass
 
     try:
-        # Step 1: Launch game via inject.exe using ShellExecuteExW with SW_SHOWNORMAL (1) (Decision 1A)
         if inject_exe.exists() and hook_dll.exists():
             success, _, _ = shell_launch(
                 exe_path=str(inject_exe),
@@ -404,7 +499,6 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
         else:
             return {"success": False, "message": "缺少 MTool inject.exe 或 hook DLL，无法注入"}
 
-        # Step 2: Launch MTool companion app nw.exe minimized to taskbar (SW_SHOWMINNOACTIVE = 7) (Decision 2A)
         if nw_exe.exists():
             try:
                 shell_launch(
@@ -416,7 +510,6 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
             except Exception:
                 pass
 
-        # Step 3: Wait 1.0s to scan and lock the real Game.exe PID (Decision 3A)
         time.sleep(1.0)
         real_game_pid = find_game_pid_in_folder(working_dir, exe_name)
 
@@ -446,3 +539,152 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "message": f"MTool 启动失败: {str(e)}"}
 
+# ---------------------------------------------------------
+# Save Data Detection & Snapshot Backup Manager
+# ---------------------------------------------------------
+SAVE_DIR_CANDIDATES = [
+    "save",
+    os.path.join("www", "save"),
+    "Save",
+    "SaveData",
+    "savedata",
+    "Saves",
+    "saves",
+    os.path.join("game", "saves"),
+    os.path.join("UserData", "save"),
+    os.path.join("Data", "Save"),
+    os.path.join("contents", "save"),
+    os.path.join("contents", "www", "save"),
+]
+
+SAVE_FILE_EXTENSIONS = (
+    ".rpgsave", ".rmmzsave", ".rvdata2", ".rvdata", ".rxdata",
+    ".sav", ".save", ".lsd", ".ksd", ".dat"
+)
+
+def find_game_save_dir(folder_path: str) -> Optional[str]:
+    if not folder_path or not os.path.exists(folder_path):
+        return None
+    root = Path(folder_path)
+    for rel in SAVE_DIR_CANDIDATES:
+        cand = root / rel
+        if cand.exists() and cand.is_dir():
+            return str(cand)
+    # Check loose save files in root
+    try:
+        for f in os.listdir(root):
+            low = f.lower()
+            if low.startswith("save") and low.endswith(SAVE_FILE_EXTENSIONS):
+                return str(root)
+    except Exception:
+        pass
+    return None
+
+def get_game_save_status(game_id: int) -> Dict[str, Any]:
+    """Inspects local game save folder and existing backup snapshots."""
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"has_save_dir": False, "save_count": 0, "backups": []}
+
+    folder_path = game.get("folder_path", "")
+    save_dir = find_game_save_dir(folder_path)
+    save_files: List[str] = []
+    latest_save_time = ""
+
+    if save_dir and os.path.exists(save_dir):
+        latest_ts = 0.0
+        try:
+            for root, _, files in os.walk(save_dir):
+                # If save_dir is the game root itself, only check top-level save files
+                if os.path.normpath(root) != os.path.normpath(save_dir) and os.path.normpath(save_dir) == os.path.normpath(folder_path):
+                    continue
+                for fn in files:
+                    low = fn.lower()
+                    if low.endswith(SAVE_FILE_EXTENSIONS) or "save" in low or "file" in low or "global" in low:
+                        fp = os.path.join(root, fn)
+                        save_files.append(fp)
+                        st = os.stat(fp)
+                        if st.st_mtime > latest_ts:
+                            latest_ts = st.st_mtime
+        except Exception:
+            pass
+        if latest_ts > 0:
+            latest_save_time = datetime.fromtimestamp(latest_ts).strftime("%Y-%m-%d %H:%M")
+
+    # Find backups in save_backup_directory
+    cfg = load_config()
+    backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
+    backups = []
+    if backup_root.exists():
+        prefix = f"game_{game_id}_"
+        for bf in sorted(backup_root.glob(f"{prefix}*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
+            st = bf.stat()
+            backups.append({
+                "filename": bf.name,
+                "path": str(bf),
+                "size_kb": round(st.st_size / 1024, 1),
+                "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            })
+
+    return {
+        "has_save_dir": bool(save_dir),
+        "save_dir": save_dir or "",
+        "save_count": len(save_files),
+        "latest_save_at": latest_save_time,
+        "backups": backups[:10]
+    }
+
+def open_game_save_folder(game_id: int) -> Dict[str, Any]:
+    status = get_game_save_status(game_id)
+    if status.get("has_save_dir") and status.get("save_dir"):
+        open_game_folder(status["save_dir"])
+        return {"success": True, "message": "已打开游戏存档目录"}
+    game = get_game_by_id(game_id)
+    if game and game.get("folder_path") and os.path.exists(game["folder_path"]):
+        open_game_folder(game["folder_path"])
+        return {"success": True, "message": "未检测到独立 save 文件夹，已为您打开游戏根目录"}
+    return {"success": False, "message": "游戏目录不存在"}
+
+def backup_game_saves(game_id: int) -> Dict[str, Any]:
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"success": False, "message": "游戏不存在"}
+
+    status = get_game_save_status(game_id)
+    if not status.get("has_save_dir") or not status.get("save_dir"):
+        return {"success": False, "message": "未在该游戏目录内检测到存档文件夹"}
+
+    save_dir = Path(status["save_dir"])
+    cfg = load_config()
+    backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    safe_title = re.sub(r'[\\/*?:"<>|\s]+', "_", (game.get("clean_title") or game.get("folder_name") or "game"))[:30]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_name = f"game_{game_id}_{safe_title}_{ts}.zip"
+    zip_path = backup_root / zip_name
+
+    try:
+        file_count = 0
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _, files in os.walk(save_dir):
+                if os.path.normpath(root) != os.path.normpath(save_dir) and os.path.normpath(save_dir) == os.path.normpath(game["folder_path"]):
+                    continue
+                for fn in files:
+                    fp = Path(root) / fn
+                    rel_p = fp.relative_to(save_dir)
+                    zf.write(fp, arcname=str(rel_p))
+                    file_count += 1
+        if file_count == 0:
+            if zip_path.exists():
+                zip_path.unlink()
+            return {"success": False, "message": "存档目录为空，暂无可备份的存档文件"}
+        return {
+            "success": True,
+            "zip_path": str(zip_path),
+            "file_count": file_count,
+            "message": f"已成功备份 {file_count} 个存档文件至 {zip_name}",
+            "save_status": get_game_save_status(game_id)
+        }
+    except Exception as e:
+        return {"success": False, "message": f"存档备份失败: {str(e)}"}

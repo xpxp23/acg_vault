@@ -3,11 +3,15 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime
+from config import DB_PATH
 
-sys.stdout.reconfigure(encoding='utf-8')
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
-db_path = r"E:\项目\AiProgram\apps\acg_vault\data\acg_vault.db"
-conn = sqlite3.connect(db_path)
+conn = sqlite3.connect(DB_PATH)
 cur = conn.cursor()
 
 def get_folder_size(p):

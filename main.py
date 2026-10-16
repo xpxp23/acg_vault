@@ -58,7 +58,11 @@ from core.launcher import (
     open_game_folder,
     reveal_in_explorer,
     get_game_mtool_status,
-    launch_game_with_mtool
+    launch_game_with_mtool,
+    launch_game_with_le,
+    get_game_save_status,
+    open_game_save_folder,
+    backup_game_saves
 )
 from core.dedup import (
     compute_duplicates_and_update_db,
@@ -102,13 +106,26 @@ def send_to_recycle_bin(path_str: str) -> bool:
         print(f"shutil removal fallback error: {e}")
         return False
 
+def cleanup_old_custom_covers(game_id: int, keep_filename: Optional[str] = None):
+    """Deletes old custom uploaded covers for a game to prevent disk bloat."""
+    try:
+        for old_file in COVERS_DIR.glob(f"custom_{game_id}_*"):
+            if keep_filename and old_file.name == keep_filename:
+                continue
+            try:
+                old_file.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     yield
 
-app = FastAPI(title="ACG Game Vault", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="ACG Game Vault", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -145,6 +162,7 @@ SCAN_STATE = {
     "is_running": False,
     "progress": 0,
     "total": 0,
+    "current_folder": "",
     "status_message": "Idle",
     "last_completed_at": None
 }
@@ -206,8 +224,9 @@ def serve_index():
 
 @app.get("/api/covers/{filename}")
 def get_cover_image(filename: str):
-    file_path = COVERS_DIR / filename
-    if file_path.exists():
+    safe_name = Path(filename).name
+    file_path = COVERS_DIR / safe_name
+    if file_path.exists() and file_path.is_file():
         return FileResponse(str(file_path))
     raise HTTPException(status_code=404, detail="Cover not found")
 
@@ -220,6 +239,9 @@ def list_games(
     missing_only: bool = Query(False),
     is_tool: bool = Query(False),
     has_notes_only: bool = Query(False),
+    engine_filter: Optional[str] = Query(None),
+    trans_filter: Optional[str] = Query(None),
+    unscraped_only: bool = Query(False),
     sort_by: str = Query("title"),
     sort_order: str = Query("asc")
 ):
@@ -231,6 +253,9 @@ def list_games(
         missing_only=missing_only,
         is_tool=is_tool,
         has_notes_only=has_notes_only,
+        engine_filter=engine_filter,
+        trans_filter=trans_filter,
+        unscraped_only=unscraped_only,
         sort_by=sort_by,
         sort_order=sort_order
     )
@@ -241,14 +266,20 @@ def get_game_detail(game_id: int):
     game = get_game_by_id(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
-    
+
     variants = []
     if game.get("duplicate_group_id"):
         all_dups = get_duplicate_groups()
         variants = all_dups.get(game["duplicate_group_id"], [])
-    
+
     mtool_status = get_game_mtool_status(game_id)
-    return {"data": game, "variants": variants, "mtool_status": mtool_status}
+    save_status = get_game_save_status(game_id)
+    return {
+        "data": game,
+        "variants": variants,
+        "mtool_status": mtool_status,
+        "save_status": save_status
+    }
 
 @app.post("/api/games/{game_id}/update")
 def update_game(game_id: int, req: UpdateGameStateRequest):
@@ -286,6 +317,7 @@ async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
         with open(target_path, "wb") as f:
             f.write(content)
 
+        cleanup_old_custom_covers(game_id, keep_filename=target_filename)
         cover_url = f"/api/covers/{target_filename}"
         manual_update_game_metadata(game_id, {
             "cover_url": cover_url,
@@ -298,28 +330,28 @@ async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
 @app.post("/api/games/{game_id}/manual_update")
 def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest):
     """Allows manual editing/customization of all scraped fields."""
-    update_data = req.dict(exclude_unset=True)
+    update_data = req.model_dump(exclude_unset=True)
 
-    # Handle cover_url downloading or local file copying if needed
     if update_data.get("cover_url"):
         cov = update_data["cover_url"].strip()
         cfg = load_config()
         proxy = cfg.get("proxy")
 
-        # If HTTP URL, cache it locally
         if cov.startswith("http://") or cov.startswith("https://"):
-            cached = download_and_cache_cover(cov, f"custom_{game_id}_{int(time.time())}", proxy=proxy)
+            stem = f"custom_{game_id}_{int(time.time())}"
+            cached = download_and_cache_cover(cov, stem, proxy=proxy)
             if cached:
+                cleanup_old_custom_covers(game_id, keep_filename=Path(cached).name)
                 update_data["cover_url"] = cached
                 update_data["banner_url"] = cached
 
-        # If local Windows absolute file path, copy to covers dir
         elif os.path.exists(cov) and os.path.isfile(cov):
             ext = Path(cov).suffix.lower()
             if ext not in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
                 ext = ".jpg"
             target_name = f"custom_{game_id}_{int(time.time())}{ext}"
             shutil.copy(cov, str(COVERS_DIR / target_name))
+            cleanup_old_custom_covers(game_id, keep_filename=target_name)
             update_data["cover_url"] = f"/api/covers/{target_name}"
             update_data["banner_url"] = f"/api/covers/{target_name}"
 
@@ -338,9 +370,8 @@ def scrape_single_game(game_id: int, req: ScrapeGameRequest):
     proxy = cfg.get("proxy")
     preferred_source = req.preferred_source or cfg.get("scrape_source", "auto")
 
-    # Custom cover override
     if req.custom_cover_url:
-        cached = download_and_cache_cover(req.custom_cover_url, f"custom_{game_id}", proxy)
+        cached = download_and_cache_cover(req.custom_cover_url, f"custom_{game_id}_{int(time.time())}", proxy)
         game_update = {
             "folder_name": game["folder_name"],
             "folder_path": game["folder_path"],
@@ -406,12 +437,27 @@ def launch_game_api(game_id: int, req: Optional[LaunchGameRequest] = None):
 
 @app.post("/api/games/{game_id}/launch_mtool")
 def launch_mtool_api(game_id: int):
-    res = launch_game_with_mtool(game_id)
-    return res
+    return launch_game_with_mtool(game_id)
+
+@app.post("/api/games/{game_id}/launch_le")
+def launch_le_api(game_id: int):
+    return launch_game_with_le(game_id)
 
 @app.get("/api/games/{game_id}/mtool_status")
 def get_mtool_status_api(game_id: int):
     return get_game_mtool_status(game_id)
+
+@app.get("/api/games/{game_id}/save_status")
+def get_save_status_api(game_id: int):
+    return get_game_save_status(game_id)
+
+@app.post("/api/games/{game_id}/open_save")
+def open_save_api(game_id: int):
+    return open_game_save_folder(game_id)
+
+@app.post("/api/games/{game_id}/backup_save")
+def backup_save_api(game_id: int):
+    return backup_game_saves(game_id)
 
 @app.post("/api/games/{game_id}/bake_translation")
 def bake_translation_api(game_id: int):
@@ -508,15 +554,24 @@ def apply_candidate_api(game_id: int, req: ApplyCandidateRequest):
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
     c = req.candidate
+    cfg = load_config()
+    proxy = cfg.get("proxy")
+
+    raw_cover = c.get("cover_url") or c.get("cover_image") or game.get("cover_url", "")
+    if raw_cover and (raw_cover.startswith("http://") or raw_cover.startswith("https://")):
+        raw_cover = download_and_cache_cover(raw_cover, f"cand_{game_id}_{int(time.time())}", proxy=proxy)
+
+    circle_val = c.get("circle_name") or c.get("circle") or game.get("circle_name", "")
+
     update_dict = {
         "folder_path": game["folder_path"],
         "folder_name": game["folder_name"],
         "display_title": c.get("title") or game.get("display_title", ""),
         "original_title": c.get("original_title") or game.get("original_title", ""),
         "rj_code": c.get("rj_code") or game.get("rj_code", ""),
-        "circle_name": c.get("circle_name") or game.get("circle_name", ""),
-        "cover_url": c.get("cover_url") or game.get("cover_url", ""),
-        "banner_url": c.get("cover_url") or game.get("banner_url", ""),
+        "circle_name": circle_val,
+        "cover_url": raw_cover,
+        "banner_url": raw_cover or game.get("banner_url", ""),
         "synopsis": c.get("synopsis") or game.get("synopsis", ""),
         "release_date": c.get("release_date") or game.get("release_date", ""),
         "voice_actors": c.get("voice_actors") or game.get("voice_actors", []),
@@ -531,20 +586,30 @@ def apply_candidate_api(game_id: int, req: ApplyCandidateRequest):
 def background_scan_task():
     global SCAN_STATE
     SCAN_STATE["is_running"] = True
-    SCAN_STATE["status_message"] = "Scanning directories..."
+    SCAN_STATE["progress"] = 0
+    SCAN_STATE["total"] = 0
+    SCAN_STATE["current_folder"] = ""
+    SCAN_STATE["status_message"] = "正在准备扫描游戏目录..."
     try:
         cfg = load_config()
         dirs = cfg.get("game_directories", [])
         all_items = []
+
+        def on_scan_progress(idx: int, total: int, folder_name: str):
+            SCAN_STATE["progress"] = idx
+            SCAN_STATE["total"] = total
+            SCAN_STATE["current_folder"] = folder_name
+            SCAN_STATE["status_message"] = f"正在扫描 ({idx}/{total}): {folder_name[:28]}"
+
         for d in dirs:
             if os.path.exists(d):
-                items = scan_directory(d)
+                items = scan_directory(d, progress_callback=on_scan_progress)
                 all_items.extend(items)
-        
-        SCAN_STATE["status_message"] = "Updating database..."
+
+        SCAN_STATE["status_message"] = "正在同步数据库..."
         batch_upsert_games(all_items)
-        
-        SCAN_STATE["status_message"] = "Checking missing folders..."
+
+        SCAN_STATE["status_message"] = "正在校验缺失目录..."
         stored_paths = get_all_stored_game_paths()
         missing_ids = []
         valid_ids = []
@@ -555,16 +620,22 @@ def background_scan_task():
                 valid_ids.append(gid)
         set_games_missing_batch(missing_ids, valid_ids)
 
-        SCAN_STATE["status_message"] = "Computing duplicates..."
+        SCAN_STATE["status_message"] = "正在计算重复游戏分组..."
         compute_duplicates_and_update_db()
 
         missing_count = len(missing_ids)
-        msg = f"扫描完成！共入库 {len(all_items)} 部"
+        msg = f"扫描完成！共同步 {len(all_items)} 部作品"
         if missing_count > 0:
-            msg += f"，检测到 {missing_count} 部游戏本地文件已缺失"
+            msg += f"，发现 {missing_count} 部作品本地目录缺失"
         SCAN_STATE["status_message"] = msg
+
+        # Trigger auto_scrape if configured and there are unscraped games
+        if cfg.get("auto_scrape", False) and not BATCH_SCRAPE_STATE["is_running"]:
+            unscraped_games = get_all_games(status="all", is_tool=False, unscraped_only=True)
+            if unscraped_games:
+                threading.Thread(target=background_batch_scrape, daemon=True).start()
     except Exception as e:
-        SCAN_STATE["status_message"] = f"Error: {str(e)}"
+        SCAN_STATE["status_message"] = f"扫描异常: {str(e)}"
     finally:
         SCAN_STATE["is_running"] = False
         from datetime import datetime
@@ -585,20 +656,25 @@ def get_scan_status():
 
 def background_batch_scrape():
     global BATCH_SCRAPE_STATE
+    if BATCH_SCRAPE_STATE["is_running"]:
+        return
     BATCH_SCRAPE_STATE["is_running"] = True
     try:
         cfg = load_config()
         proxy = cfg.get("proxy")
 
-        games = get_all_games(status="all", is_tool=False)
-        unscraped = [g for g in games if not g.get("cover_url") or not g.get("synopsis")]
+        unscraped = get_all_games(status="all", is_tool=False, unscraped_only=True)
         BATCH_SCRAPE_STATE["total"] = len(unscraped)
         BATCH_SCRAPE_STATE["current_index"] = 0
+
+        if not unscraped:
+            BATCH_SCRAPE_STATE["status_message"] = "所有游戏元数据均已完整，无需刮削！"
+            return
 
         def worker(g):
             try:
                 process_single_game_ai_scrape(g, proxy=proxy)
-            except Exception as e:
+            except Exception:
                 pass
             return g.get("clean_title", "")
 
@@ -608,9 +684,9 @@ def background_batch_scrape():
                 title = future.result()
                 BATCH_SCRAPE_STATE["current_index"] = idx + 1
                 BATCH_SCRAPE_STATE["current_game_title"] = title
-                BATCH_SCRAPE_STATE["status_message"] = f"Scraping ({idx+1}/{len(unscraped)}): {title[:20]}"
+                BATCH_SCRAPE_STATE["status_message"] = f"正在刮削 ({idx+1}/{len(unscraped)}): {title[:24]}"
 
-        BATCH_SCRAPE_STATE["status_message"] = "Batch scrape completed!"
+        BATCH_SCRAPE_STATE["status_message"] = "批量刮削已完成！"
     except Exception as e:
         BATCH_SCRAPE_STATE["status_message"] = f"Error: {str(e)}"
     finally:
@@ -669,15 +745,16 @@ def test_proxy(req: TestProxyRequest):
     except Exception as e:
         return {"success": False, "message": f"连接失败: {str(e)}"}
 
-def open_browser():
-    import time
+def open_browser(port: int):
     time.sleep(1.2)
-    webbrowser.open("http://127.0.0.1:8000")
+    webbrowser.open(f"http://127.0.0.1:{port}")
 
 if __name__ == "__main__":
     import uvicorn
-    threading.Thread(target=open_browser, daemon=True).start()
+    cfg = load_config()
+    app_port = int(cfg.get("port", 8000))
+    threading.Thread(target=open_browser, args=(app_port,), daemon=True).start()
     print("====================================================")
-    print("      ACG Game Vault is running at http://127.0.0.1:8000")
+    print(f"      ACG Game Vault is running at http://127.0.0.1:{app_port}")
     print("====================================================")
-    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=app_port, log_level="info")

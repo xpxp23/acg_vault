@@ -14,10 +14,13 @@ DB_PATH = DATA_DIR / "acg_vault.db"
 DEFAULT_CONFIG = {
     "game_directories": [r"E:\ACG"],
     "archive_directory": r"E:\ACG\_Archive_Duplicates",
+    "save_backup_directory": r"E:\ACG\_Save_Backups",
     "mtool_directory": r"E:\ACG\MTool",
+    "leproc_path": "",  # e.g. "E:\\ACG\\Locale.Emulator\\LEProc.exe"
     "proxy": "",  # e.g. "http://127.0.0.1:7890"
     "auto_scrape": True,
-    "scrape_source": "auto",  # "auto", "dlsite", "bangumi"
+    "scrape_source": "auto",  # "auto", "dlsite", "bangumi", "steam", "vndb"
+    "cover_fit_mode": "smart",  # "smart" (blur backdrop + contain), "portrait" (3:4), "landscape" (4:3)
     "theme": "dark",
     "port": 8000
 }
@@ -36,6 +39,8 @@ def load_config() -> dict:
     return DEFAULT_CONFIG.copy()
 
 def save_config(cfg: dict) -> dict:
+    merged = DEFAULT_CONFIG.copy()
+    merged.update(cfg)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    return cfg
+        json.dump(merged, f, ensure_ascii=False, indent=2)
+    return merged
