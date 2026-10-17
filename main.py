@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, File
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +19,8 @@ from config import (
     APP_VERSION,
     BASE_DIR,
     COVERS_DIR,
+    THUMBS_DIR,
+    GALLERY_DIR,
     load_config,
     save_config
 )
@@ -33,6 +35,7 @@ from db.database import (
     update_game_user_state,
     manual_update_game_metadata,
     get_stats,
+    get_analytics_data,
     get_duplicate_groups,
     upsert_game,
     delete_game_by_id,
@@ -41,7 +44,9 @@ from db.database import (
     set_games_missing_batch,
     cleanup_all_missing_games,
     batch_update_games_status,
-    batch_delete_games_by_ids
+    batch_delete_games_by_ids,
+    get_game_screenshots,
+    update_screenshot_caption
 )
 from core.scanner import scan_directory
 from core.scraper import (
@@ -51,13 +56,27 @@ from core.scraper import (
     scrape_bangumi,
     scrape_vndb,
     download_and_cache_cover,
+    generate_cover_thumbnail,
     search_scraper_candidates,
-    is_valid_image_bytes
+    is_valid_image_bytes,
+    get_http_client
 )
 from core.ai_scraper import (
     process_single_game_ai_scrape,
     search_dlsite_by_keyword,
-    translate_japanese_to_chinese
+    translate_japanese_to_chinese,
+    llm_parse_folder_metadata,
+    find_internal_clues,
+    test_llm_connection
+)
+from core.guide_generator import generate_game_walkthrough
+from core.gallery_cg import (
+    get_game_gallery_dir,
+    capture_game_window_screenshot,
+    save_uploaded_screenshot,
+    remove_game_screenshot_file,
+    unlock_game_all_cg,
+    import_cg_save_archive
 )
 from core.launcher import (
     launch_game,
@@ -106,7 +125,6 @@ def send_to_recycle_bin(path_str: str) -> bool:
     if sys.platform != "win32":
         return False
     try:
-        # Must use absolute normalized path without trailing slash for SHFileOperationW
         abs_norm = os.path.abspath(os.path.normpath(path_str)).rstrip("\\/") + "\0\0"
         fileop = SHFILEOPSTRUCTW()
         fileop.wFunc = 0x0003  # FO_DELETE
@@ -123,12 +141,15 @@ def send_to_recycle_bin(path_str: str) -> bool:
 
 
 def cleanup_old_custom_covers(game_id: int, keep_filename: Optional[str] = None):
-    """Deletes old custom uploaded covers for a game to prevent disk bloat."""
+    """Deletes old custom uploaded covers and their thumbnails for a game to prevent disk bloat."""
     try:
         for old_file in COVERS_DIR.glob(f"custom_{game_id}_*"):
             if keep_filename and old_file.name == keep_filename:
                 continue
             try:
+                thumb = THUMBS_DIR / f"{old_file.name}.webp"
+                if thumb.exists():
+                    thumb.unlink()
                 old_file.unlink()
             except Exception:
                 pass
@@ -219,6 +240,7 @@ class ManualUpdateMetadataRequest(BaseModel):
     rj_code: Optional[str] = None
     executable_path: Optional[str] = None
     tags: Optional[List[str]] = None
+    user_tags: Optional[List[str]] = None
     voice_actors: Optional[List[str]] = None
 
 
@@ -239,7 +261,23 @@ class DismissDuplicateRequest(BaseModel):
 
 
 class TestProxyRequest(BaseModel):
-    proxy: str
+    proxy: Optional[str] = ""
+
+
+class TestLLMRequest(BaseModel):
+    llm_api_base: Optional[str] = None
+    llm_api_key: Optional[str] = None
+    llm_model: Optional[str] = None
+    proxy: Optional[str] = None
+
+
+class GenerateGuideRequest(BaseModel):
+    use_llm: bool = True
+    overwrite: bool = False
+
+
+class ScreenshotCaptionRequest(BaseModel):
+    caption: str = ""
 
 
 class SaveBackupActionRequest(BaseModel):
@@ -251,7 +289,7 @@ class PickPathRequest(BaseModel):
     mode: str = "folder"  # "folder" or "file"
     title: Optional[str] = None
     initial_dir: Optional[str] = None
-    filetypes: Optional[str] = None  # "exe" or "image"
+    filetypes: Optional[str] = None  # "exe", "image", "archive"
 
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -265,6 +303,21 @@ def serve_index():
     return {"message": f"ACG Game Vault v{APP_VERSION} API is running."}
 
 
+@app.get("/api/covers/thumb/{filename}")
+def get_cover_thumbnail(filename: str):
+    """Serves a lightweight WebP thumbnail for fast grid rendering, generating on-the-fly if needed."""
+    safe_name = Path(filename).name
+    orig_path = COVERS_DIR / safe_name
+    if not orig_path.exists() or not orig_path.is_file():
+        raise HTTPException(status_code=404, detail="Cover not found")
+    thumb_path = THUMBS_DIR / f"{safe_name}.webp"
+    if not thumb_path.exists():
+        generate_cover_thumbnail(orig_path)
+    if thumb_path.exists() and thumb_path.is_file():
+        return FileResponse(str(thumb_path), media_type="image/webp")
+    return FileResponse(str(orig_path))
+
+
 @app.get("/api/covers/{filename}")
 def get_cover_image(filename: str):
     safe_name = Path(filename).name
@@ -272,6 +325,15 @@ def get_cover_image(filename: str):
     if file_path.exists() and file_path.is_file():
         return FileResponse(str(file_path))
     raise HTTPException(status_code=404, detail="Cover not found")
+
+
+@app.get("/api/gallery/{game_id}/{filename}")
+def get_gallery_image(game_id: int, filename: str):
+    safe_name = Path(filename).name
+    file_path = get_game_gallery_dir(game_id) / safe_name
+    if file_path.exists() and file_path.is_file():
+        return FileResponse(str(file_path))
+    raise HTTPException(status_code=404, detail="Screenshot not found")
 
 
 @app.get("/api/games")
@@ -301,7 +363,8 @@ def list_games(
         trans_filter=trans_filter,
         unscraped_only=unscraped_only,
         sort_by=sort_by,
-        sort_order=sort_order
+        sort_order=sort_order,
+        include_full_notes=False
     )
     status_counts = get_filtered_status_counts(
         keyword=keyword,
@@ -341,12 +404,14 @@ def get_game_detail(game_id: int):
 
     mtool_status = get_game_mtool_status(game_id)
     save_status = get_game_save_status(game_id)
+    screenshots = get_game_screenshots(game_id)
     running_map = get_running_games_info()
     return {
         "data": game,
         "variants": variants,
         "mtool_status": mtool_status,
         "save_status": save_status,
+        "screenshots": screenshots,
         "running_info": running_map.get(game_id)
     }
 
@@ -370,7 +435,7 @@ def update_game(game_id: int, req: UpdateGameStateRequest):
 
 @app.post("/api/games/{game_id}/upload_cover")
 async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
-    """Uploads a local image file and sets it as the game cover."""
+    """Uploads a local image file, sets it as the game cover, and builds a WebP thumbnail."""
     game = get_game_by_id(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -390,6 +455,7 @@ async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
         with open(target_path, "wb") as f:
             f.write(content)
 
+        generate_cover_thumbnail(target_path)
         cleanup_old_custom_covers(game_id, keep_filename=target_filename)
         cover_url = f"/api/covers/{target_filename}"
         manual_update_game_metadata(game_id, {
@@ -404,7 +470,7 @@ async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
 
 
 @app.post("/api/games/{game_id}/manual_update")
-def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest):
+def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest, bg_tasks: BackgroundTasks):
     """Allows manual editing/customization of all scraped fields, including clearing cover_url & banner_url."""
     update_data = req.model_dump(exclude_unset=True)
 
@@ -437,7 +503,9 @@ def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest):
             if not is_valid_image_bytes(head_bytes):
                 raise HTTPException(status_code=400, detail="指定的本地文件不是合法的图片文件")
             target_name = f"custom_{game_id}_{int(time.time())}{ext}"
-            shutil.copy(cov, str(COVERS_DIR / target_name))
+            target_p = COVERS_DIR / target_name
+            shutil.copy(cov, str(target_p))
+            generate_cover_thumbnail(target_p)
             cleanup_old_custom_covers(game_id, keep_filename=target_name)
             update_data["cover_url"] = f"/api/covers/{target_name}"
             update_data["banner_url"] = f"/api/covers/{target_name}"
@@ -445,6 +513,11 @@ def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest):
     success = manual_update_game_metadata(game_id, update_data)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to update metadata")
+
+    # If title or RJ code changed, recalculate duplicate groups in background
+    if any(k in update_data for k in ("display_title", "original_title", "rj_code")):
+        bg_tasks.add_task(compute_duplicates_and_update_db)
+
     return {"success": True, "data": get_game_by_id(game_id)}
 
 
@@ -477,6 +550,8 @@ def scrape_single_game(game_id: int, req: ScrapeGameRequest):
 
     if preferred_source == "steam":
         meta = scrape_steam(rj_code if rj_code.isdigit() else search_keyword, proxy=proxy, force=True)
+        if meta and meta.get("synopsis"):
+            meta["synopsis"] = translate_japanese_to_chinese(meta["synopsis"], proxy=proxy)
     elif preferred_source == "dlsite":
         target_rj = rj_code
         if not target_rj and search_keyword:
@@ -492,16 +567,13 @@ def scrape_single_game(game_id: int, req: ScrapeGameRequest):
         if meta and meta.get("synopsis"):
             meta["synopsis"] = translate_japanese_to_chinese(meta["synopsis"], proxy=proxy)
     else:
-        game_copy = dict(game)
-        if req.rj_code:
-            game_copy["rj_code"] = req.rj_code
-        if req.search_keyword:
-            game_copy["clean_title"] = req.search_keyword
         success, result_data = process_single_game_ai_scrape(
-            game_copy,
+            game,
             proxy=proxy,
             preferred_source=preferred_source,
-            force=True
+            force=True,
+            explicit_keyword=req.search_keyword,
+            explicit_rj=req.rj_code
         )
         if success:
             return {"success": True, "data": get_game_by_id(game_id)}
@@ -513,21 +585,112 @@ def scrape_single_game(game_id: int, req: ScrapeGameRequest):
         "folder_name": game["folder_name"],
         "folder_path": game["folder_path"],
         "rj_code": meta.get("rj_code") or rj_code or game.get("rj_code", ""),
-        "display_title": meta.get("title") or game["clean_title"],
-        "original_title": meta.get("original_title") or "",
+        "display_title": meta.get("title") or game.get("display_title") or game["clean_title"],
+        "original_title": meta.get("original_title") or game.get("original_title", ""),
         "cover_url": meta.get("cover_url") or game.get("cover_url", ""),
-        "banner_url": meta.get("banner_url") or game.get("banner_url", ""),
+        "banner_url": meta.get("banner_url") or meta.get("cover_url") or game.get("banner_url", ""),
         "synopsis": meta.get("synopsis") or game.get("synopsis", ""),
         "circle_name": meta.get("circle_name") or game.get("circle_name", ""),
         "release_date": meta.get("release_date") or game.get("release_date", ""),
-        "voice_actors": meta.get("voice_actors") or [],
-        "tags": meta.get("tags") or [],
-        "source_url": meta.get("source_url") or "",
+        "voice_actors": meta.get("voice_actors") or game.get("voice_actors") or [],
+        "tags": meta.get("tags") or game.get("tags") or [],
+        "source_url": meta.get("source_url") or game.get("source_url", ""),
         "source_type": meta.get("source_type") or preferred_source,
-        "rating_score": meta.get("rating_score") or 0.0
+        "rating_score": meta.get("rating_score") or game.get("rating_score") or 0.0
     }
     upsert_game(update_dict)
     return {"success": True, "data": get_game_by_id(game_id)}
+
+
+@app.post("/api/games/{game_id}/ai_parse_folder")
+def ai_parse_folder_api(game_id: int):
+    """Uses LLM (or smart regex fallback) to parse messy folder names and polish synopsis."""
+    game = get_game_by_id(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    clues = find_internal_clues(game.get("folder_path", ""))
+    parsed = llm_parse_folder_metadata(game.get("folder_name", ""), clues)
+    cfg = load_config()
+    proxy = cfg.get("proxy")
+
+    update_fields: Dict[str, Any] = {}
+    if parsed.get("clean_title"):
+        update_fields["display_title"] = parsed["clean_title"]
+    if parsed.get("original_title") and not game.get("original_title"):
+        update_fields["original_title"] = parsed["original_title"]
+    if parsed.get("circle_name") and not game.get("circle_name"):
+        update_fields["circle_name"] = parsed["circle_name"]
+    if parsed.get("rj_code") and not game.get("rj_code"):
+        update_fields["rj_code"] = parsed["rj_code"]
+    if parsed.get("tags"):
+        merged_tags = list(dict.fromkeys((game.get("tags") or []) + parsed["tags"]))
+        update_fields["tags"] = merged_tags
+
+    if game.get("synopsis"):
+        translated = translate_japanese_to_chinese(game["synopsis"], proxy=proxy)
+        if translated and translated != game["synopsis"]:
+            update_fields["synopsis"] = translated
+
+    if update_fields:
+        manual_update_game_metadata(game_id, update_fields)
+
+    return {
+        "success": True,
+        "parsed": parsed,
+        "data": get_game_by_id(game_id),
+        "message": "AI 语义提取与简介润色完成！" if parsed.get("used_llm") else "已完成文件夹智能语义清洗与提取！"
+    }
+
+
+@app.post("/api/games/{game_id}/generate_guide")
+def generate_guide_api(game_id: int, req: Optional[GenerateGuideRequest] = None):
+    use_llm = req.use_llm if req else True
+    overwrite = req.overwrite if req else False
+    res = generate_game_walkthrough(game_id, use_llm=use_llm, overwrite=overwrite)
+    if res.get("success"):
+        res["data"] = get_game_by_id(game_id)
+    return res
+
+
+@app.get("/api/games/{game_id}/screenshots")
+def list_game_screenshots_api(game_id: int):
+    return {"screenshots": get_game_screenshots(game_id)}
+
+
+@app.post("/api/games/{game_id}/screenshots/capture")
+def capture_screenshot_api(game_id: int):
+    running = get_running_games_info()
+    pid = running.get(game_id, {}).get("pid") if game_id in running else None
+    return capture_game_window_screenshot(game_id, pid=pid)
+
+
+@app.post("/api/games/{game_id}/screenshots/upload")
+async def upload_screenshot_api(game_id: int, file: UploadFile = File(...), caption: str = Form("")):
+    content = await file.read()
+    return save_uploaded_screenshot(game_id, content, orig_filename=file.filename or "shot.png", caption=caption)
+
+
+@app.post("/api/games/{game_id}/screenshots/{shot_id}/caption")
+def update_screenshot_caption_api(game_id: int, shot_id: int, req: ScreenshotCaptionRequest):
+    ok = update_screenshot_caption(shot_id, game_id, req.caption)
+    return {"success": ok, "screenshots": get_game_screenshots(game_id)}
+
+
+@app.delete("/api/games/{game_id}/screenshots/{shot_id}")
+def delete_screenshot_api(game_id: int, shot_id: int):
+    return remove_game_screenshot_file(game_id, shot_id)
+
+
+@app.post("/api/games/{game_id}/unlock_cg")
+def unlock_cg_api(game_id: int):
+    return unlock_game_all_cg(game_id)
+
+
+@app.post("/api/games/{game_id}/import_cg_save")
+async def import_cg_save_api(game_id: int, file: UploadFile = File(...)):
+    content = await file.read()
+    return import_cg_save_archive(game_id, content, orig_filename=file.filename or "cg_save.zip")
 
 
 class LaunchGameRequest(BaseModel):
@@ -626,7 +789,7 @@ class DeleteGameRequest(BaseModel):
 
 
 @app.post("/api/games/{game_id}/delete")
-def delete_game_api(game_id: int, req: Optional[DeleteGameRequest] = None):
+def delete_game_api(game_id: int, req: Optional[DeleteGameRequest] = None, bg_tasks: BackgroundTasks = None):
     game = get_game_by_id(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
@@ -637,7 +800,10 @@ def delete_game_api(game_id: int, req: Optional[DeleteGameRequest] = None):
             raise HTTPException(status_code=500, detail="移入系统回收站失败，文件可能正被游戏进程或资源管理器占用")
     cleanup_old_custom_covers(game_id)
     delete_game_by_id(game_id)
-    compute_duplicates_and_update_db()
+    if bg_tasks:
+        bg_tasks.add_task(compute_duplicates_and_update_db)
+    else:
+        compute_duplicates_and_update_db()
     return {"success": True, "message": "游戏已成功移入回收站并从库中移除" if delete_local else "游戏已从库中移出（本地文件已保留）"}
 
 
@@ -725,7 +891,15 @@ def apply_candidate_api(game_id: int, req: ApplyCandidateRequest):
         cached = download_and_cache_cover(raw_cover, f"cand_{game_id}_{int(time.time())}", proxy=proxy, force=True)
         raw_cover = cached or game.get("cover_url", "")
 
+    raw_banner = c.get("banner_url") or raw_cover or game.get("banner_url", "")
+    if raw_banner and (raw_banner.startswith("http://") or raw_banner.startswith("https://")):
+        cached_b = download_and_cache_cover(raw_banner, f"cand_banner_{game_id}_{int(time.time())}", proxy=proxy, force=True)
+        raw_banner = cached_b or raw_cover
+
     circle_val = c.get("circle_name") or c.get("circle") or game.get("circle_name", "")
+    synopsis_val = c.get("synopsis") or game.get("synopsis", "")
+    if synopsis_val and c.get("source") in ("dlsite", "vndb"):
+        synopsis_val = translate_japanese_to_chinese(synopsis_val, proxy=proxy)
 
     update_dict = {
         "folder_path": game["folder_path"],
@@ -735,8 +909,8 @@ def apply_candidate_api(game_id: int, req: ApplyCandidateRequest):
         "rj_code": c.get("rj_code") or game.get("rj_code", ""),
         "circle_name": circle_val,
         "cover_url": raw_cover,
-        "banner_url": raw_cover or game.get("banner_url", ""),
-        "synopsis": c.get("synopsis") or game.get("synopsis", ""),
+        "banner_url": raw_banner,
+        "synopsis": synopsis_val,
         "release_date": c.get("release_date") or game.get("release_date", ""),
         "voice_actors": c.get("voice_actors") or game.get("voice_actors", []),
         "tags": c.get("tags") or game.get("tags", []),
@@ -901,6 +1075,11 @@ def get_dashboard_stats():
     return st
 
 
+@app.get("/api/analytics")
+def get_analytics_api():
+    return get_analytics_data()
+
+
 @app.get("/api/config")
 def get_system_config():
     return load_config()
@@ -914,14 +1093,50 @@ def update_system_config(cfg: dict):
 
 @app.post("/api/config/test_proxy")
 def test_proxy(req: TestProxyRequest):
-    import httpx
-    try:
-        proxies = req.proxy.strip() if req.proxy else None
-        with httpx.Client(proxy=proxies, timeout=6.0) as client:
-            r = client.get("https://www.dlsite.com" if proxies else "https://api.bgm.tv")
-            return {"success": True, "status_code": r.status_code, "message": f"连接成功 (HTTP {r.status_code})"}
-    except Exception as e:
-        return {"success": False, "message": f"连接失败: {str(e)}"}
+    """Concurrently tests connectivity and latency across all 4 scraper data sources (DLsite, Bangumi, Steam, VNDB)."""
+    proxies = (req.proxy or "").strip() or None
+    targets = [
+        ("DLsite", "https://www.dlsite.com/maniax/"),
+        ("Bangumi", "https://api.bgm.tv/calendar"),
+        ("Steam", "https://store.steampowered.com/api/storesearch/?term=test&l=schinese&cc=CN"),
+        ("VNDB", "https://api.vndb.org/kana/stats")
+    ]
+    results = []
+
+    def probe(name: str, url: str):
+        t0 = time.time()
+        try:
+            with get_http_client(proxy=proxies, timeout=5.0) as client:
+                r = client.get(url)
+                ms = int((time.time() - t0) * 1000)
+                ok = 200 <= r.status_code < 400
+                return {"source": name, "ok": ok, "status_code": r.status_code, "latency_ms": ms}
+        except Exception as e:
+            ms = int((time.time() - t0) * 1000)
+            return {"source": name, "ok": False, "status_code": 0, "latency_ms": ms, "error": str(e)[:60]}
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = [ex.submit(probe, n, u) for n, u in targets]
+        for f in futs:
+            results.append(f.result())
+
+    ok_sources = [r for r in results if r["ok"]]
+    summary_parts = [
+        f"{r['source']}: {'✓ ' + str(r['latency_ms']) + 'ms' if r['ok'] else '✕ 超时/阻断'}"
+        for r in results
+    ]
+    return {
+        "success": len(ok_sources) > 0,
+        "all_ok": len(ok_sources) == len(targets),
+        "results": results,
+        "message": " | ".join(summary_parts)
+    }
+
+
+@app.post("/api/config/test_llm")
+def test_llm_api(req: TestLLMRequest):
+    custom = {k: v for k, v in req.model_dump().items() if v is not None}
+    return test_llm_connection(custom)
 
 
 @app.post("/api/system/pick_path")
@@ -946,6 +1161,8 @@ def pick_local_path(req: PickPathRequest):
                     ftypes = [("可执行程序 (*.exe)", "*.exe"), ("所有文件", "*.*")]
                 elif req.filetypes == "image":
                     ftypes = [("图片文件", "*.jpg *.jpeg *.png *.webp *.bmp *.gif"), ("所有文件", "*.*")]
+                elif req.filetypes == "archive":
+                    ftypes = [("存档与压缩包", "*.zip *.rpgsave *.rmmzsave *.rvdata2 *.sav *.dat"), ("所有文件", "*.*")]
                 chosen = filedialog.askopenfilename(
                     title=req.title or "选择文件",
                     initialdir=init_dir,

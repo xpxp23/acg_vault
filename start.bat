@@ -1,5 +1,6 @@
 @echo off
-title ACG Game Vault
+chcp 65001 >nul 2>&1
+title ACG Game Vault v2.2
 cd /d "%~dp0"
 
 echo [1/2] Checking Python environment...
@@ -10,8 +11,12 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [2/2] Starting ACG Game Vault on http://127.0.0.1:8000 ...
-python main.py
+echo [2/2] Starting ACG Game Vault v2.2 ...
+if "%1"=="--server" (
+    python main.py
+) else (
+    python desktop_app.py
+)
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] Application exited unexpectedly.

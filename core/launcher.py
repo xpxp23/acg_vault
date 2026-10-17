@@ -17,7 +17,7 @@ from config import load_config
 IS_WINDOWS = sys.platform == "win32"
 
 # ---------------------------------------------------------
-# Win32 Constants & ShellExecuteEx API
+# Win32 Constants, Explicit 64-bit Signatures & ShellExecuteEx
 # ---------------------------------------------------------
 SEE_MASK_NOCLOSEPROCESS = 0x00000040
 SW_SHOWNORMAL = 1
@@ -27,6 +27,17 @@ SW_SHOW = 5
 SW_MINIMIZE = 6
 SW_SHOWMINNOACTIVE = 7
 TH32CS_SNAPPROCESS = 0x00000002
+WAIT_OBJECT_0 = 0x00000000
+WAIT_TIMEOUT = 0x00000102
+
+HOTKEY_VK_MAP = {
+    "F9": 0x78,
+    "F10": 0x79,
+    "F11": 0x7A,
+    "F12": 0x7B,
+    "PRTSC": 0x2C,
+    "INS": 0x2D
+}
 
 if IS_WINDOWS:
     from ctypes import wintypes
@@ -64,9 +75,54 @@ if IS_WINDOWS:
             ("szExeFile", wintypes.WCHAR * 260)
         ]
 
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.GetProcessId.argtypes = [wintypes.HANDLE]
+        kernel32.GetProcessId.restype = wintypes.DWORD
+        ctypes.windll.shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+        ctypes.windll.shell32.ShellExecuteExW.restype = wintypes.BOOL
+    except Exception:
+        pass
+else:
+    INVALID_HANDLE_VALUE = -1
+
+
+def is_subpath(child_path: str, parent_path: str) -> bool:
+    """
+    Strictly verifies whether child_path is equal to or inside parent_path.
+    Prevents sibling prefix false positives (e.g. 'E:\\ACG\\Game2' matching 'E:\\ACG\\Game').
+    """
+    if not child_path or not parent_path:
+        return False
+    try:
+        c = Path(os.path.normcase(os.path.abspath(os.path.normpath(child_path))))
+        p = Path(os.path.normcase(os.path.abspath(os.path.normpath(parent_path))))
+        return c == p or c.is_relative_to(p)
+    except Exception:
+        c_str = os.path.normcase(os.path.abspath(os.path.normpath(child_path))).rstrip("\\/") + os.sep
+        p_str = os.path.normcase(os.path.abspath(os.path.normpath(parent_path))).rstrip("\\/") + os.sep
+        return c_str.startswith(p_str)
+
 
 def close_win32_handle(h: Any):
-    if IS_WINDOWS and h:
+    if IS_WINDOWS and h and h != INVALID_HANDLE_VALUE:
         try:
             ctypes.windll.kernel32.CloseHandle(h)
         except Exception:
@@ -85,7 +141,7 @@ def is_pid_alive(pid: Optional[int]) -> bool:
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
     h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
-    if not h:
+    if not h or h == INVALID_HANDLE_VALUE:
         return False
     try:
         exit_code = wintypes.DWORD()
@@ -101,7 +157,7 @@ def get_process_image_path(pid: int) -> str:
         return ""
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not h:
+    if not h or h == INVALID_HANDLE_VALUE:
         return ""
     try:
         buf = ctypes.create_unicode_buffer(1024)
@@ -113,12 +169,11 @@ def get_process_image_path(pid: int) -> str:
 
 
 def find_game_pid_in_folder(folder_path: str, exe_filename: Optional[str] = None) -> Optional[int]:
-    """Finds the PID of a running game process inside a specific folder."""
+    """Finds the PID of a running game process strictly inside a specific folder."""
     if not IS_WINDOWS or not folder_path:
         return None
-    norm_folder = os.path.normcase(os.path.normpath(folder_path))
     hSnap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if hSnap == -1:
+    if not hSnap or hSnap == INVALID_HANDLE_VALUE:
         return None
     try:
         pe = PROCESSENTRY32W()
@@ -130,7 +185,7 @@ def find_game_pid_in_folder(folder_path: str, exe_filename: Optional[str] = None
                 pid = pe.th32ProcessID
                 sz_name = pe.szExeFile
                 path = get_process_image_path(pid)
-                if path and os.path.normcase(os.path.normpath(path)).startswith(norm_folder):
+                if path and is_subpath(path, folder_path):
                     if exe_filename and sz_name.lower() == exe_filename.lower():
                         exact_candidates.append(pid)
                     elif not any(pat.search(sz_name) for pat in IGNORE_EXE_PATTERNS):
@@ -203,6 +258,40 @@ def get_running_games_info() -> Dict[int, Dict[str, Any]]:
     return active
 
 
+def _poll_screenshot_hotkey_if_needed(game_id: int, active_pid: Optional[int], search_root: Optional[str], last_shot_ts: float) -> float:
+    """Checks if the configured in-game screenshot hotkey (e.g. F12) is pressed while the game window is focused."""
+    if not IS_WINDOWS:
+        return last_shot_ts
+    now = time.time()
+    if now - last_shot_ts < 1.2:
+        return last_shot_ts
+    try:
+        cfg = load_config()
+        if not cfg.get("enable_ingame_screenshot", True):
+            return last_shot_ts
+        hk = (cfg.get("screenshot_hotkey") or "F12").strip().upper()
+        vk = HOTKEY_VK_MAP.get(hk, 0x7B)
+        state = ctypes.windll.user32.GetAsyncKeyState(vk)
+        if state & 0x8000:
+            from core.gallery_cg import is_pid_foreground, capture_game_window_screenshot
+            if is_pid_foreground(active_pid, search_root):
+                capture_game_window_screenshot(game_id, pid=active_pid)
+                return time.time()
+    except Exception:
+        pass
+    return last_shot_ts
+
+
+def _wait_handle_with_hotkey_poll(hProc: Any, game_id: int, pid: Optional[int], search_root: Optional[str]):
+    """Waits on a Win32 process handle in 200ms intervals so F12 screenshot hotkeys respond in real time."""
+    last_shot = 0.0
+    while True:
+        res = ctypes.windll.kernel32.WaitForSingleObject(hProc, 200)
+        if res != WAIT_TIMEOUT:
+            break
+        last_shot = _poll_screenshot_hotkey_if_needed(game_id, pid, search_root, last_shot)
+
+
 def monitor_game_pid(
     game_id: int,
     target_pid: Optional[int],
@@ -212,14 +301,14 @@ def monitor_game_pid(
     exe_name: Optional[str] = None,
     game_folder: Optional[str] = None
 ):
-    """Monitors the real game process until it closes and records play session duration without double-counting play_count."""
+    """Monitors the real game process until it closes, listens for screenshot hotkeys, and records play duration."""
     search_root = game_folder or working_dir
+    last_shot = 0.0
     try:
         SYNCHRONIZE = 0x00100000
-        INFINITE = 0xFFFFFFFF
 
         if hProcess and IS_WINDOWS:
-            ctypes.windll.kernel32.WaitForSingleObject(hProcess, INFINITE)
+            _wait_handle_with_hotkey_poll(hProcess, game_id, target_pid, search_root)
             close_win32_handle(hProcess)
             hProcess = None
             time.sleep(1.5)
@@ -229,8 +318,11 @@ def monitor_game_pid(
                     if game_id in RUNNING_GAMES:
                         RUNNING_GAMES[game_id]["pid"] = child_pid
                 while True:
-                    time.sleep(2.0)
-                    if not find_game_pid_in_folder(search_root, exe_name):
+                    for _ in range(10):
+                        time.sleep(0.2)
+                        last_shot = _poll_screenshot_hotkey_if_needed(game_id, child_pid, search_root, last_shot)
+                    child_pid = find_game_pid_in_folder(search_root, exe_name)
+                    if not child_pid:
                         break
         else:
             if hProcess:
@@ -250,13 +342,16 @@ def monitor_game_pid(
 
             if active_pid and IS_WINDOWS:
                 h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, active_pid)
-                if h:
-                    ctypes.windll.kernel32.WaitForSingleObject(h, INFINITE)
+                if h and h != INVALID_HANDLE_VALUE:
+                    _wait_handle_with_hotkey_poll(h, game_id, active_pid, search_root)
                     close_win32_handle(h)
                 else:
                     while True:
-                        time.sleep(2.0)
-                        if not find_game_pid_in_folder(search_root, exe_name):
+                        for _ in range(10):
+                            time.sleep(0.2)
+                            last_shot = _poll_screenshot_hotkey_if_needed(game_id, active_pid, search_root, last_shot)
+                        active_pid = find_game_pid_in_folder(search_root, exe_name)
+                        if not active_pid:
                             break
             else:
                 while True:
@@ -568,7 +663,6 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
     if (
         (folder / "data_original_backup").exists()
         or (folder / "www" / "data_original_backup").exists()
-        or (folder / "index.html.original_bak").exists()
     ):
         is_baked = True
 
@@ -765,7 +859,7 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
     """Inspects local game save folder and existing backup snapshots."""
     game = get_game_by_id(game_id)
     if not game:
-        return {"has_save_dir": False, "save_count": 0, "backups": []}
+        return {"has_save_dir": False, "save_count": 0, "backups": [], "can_unlock_cg": False}
 
     folder_path = game.get("folder_path", "")
     save_dir = find_game_save_dir(folder_path)
@@ -774,12 +868,16 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
 
     if save_dir and os.path.exists(save_dir):
         latest_ts = 0.0
+        is_root_save = os.path.normcase(os.path.normpath(save_dir)) == os.path.normcase(os.path.normpath(folder_path))
         try:
-            for root, _, files in os.walk(save_dir):
-                if os.path.normpath(root) != os.path.normpath(save_dir) and os.path.normpath(save_dir) == os.path.normpath(folder_path):
-                    continue
+            for root, dirs, files in os.walk(save_dir):
+                if is_root_save:
+                    dirs.clear()
                 for fn in files:
                     low = fn.lower()
+                    if is_root_save:
+                        if not (low.startswith("save") and low.endswith(SAVE_FILE_EXTENSIONS)):
+                            continue
                     if low.endswith(SAVE_FILE_EXTENSIONS) or "save" in low or "file" in low or "global" in low:
                         fp = os.path.join(root, fn)
                         save_files.append(fp)
@@ -805,13 +903,21 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
                 "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
             })
 
+    engine_type = game.get("engine_type", "") or ""
+    can_unlock_cg = bool(
+        "MV" in engine_type or "MZ" in engine_type or "RPG Maker" in engine_type
+        or (folder_path and ((Path(folder_path) / "data" / "System.json").exists() or (Path(folder_path) / "www" / "data" / "System.json").exists()))
+    )
+
     return {
         "has_save_dir": bool(save_dir),
         "save_dir": save_dir or "",
         "save_count": len(save_files),
         "latest_save_at": latest_save_time,
         "backup_root": str(backup_root),
-        "backups": backups[:20]
+        "backups": backups[:20],
+        "can_unlock_cg": can_unlock_cg,
+        "cg_unlocked": int(game.get("cg_unlocked") or 0)
     }
 
 
@@ -857,11 +963,11 @@ def backup_game_saves(game_id: int, label: str = "") -> Dict[str, Any]:
 
     try:
         file_count = 0
-        is_root_save = os.path.normpath(str(save_dir)) == os.path.normpath(game["folder_path"])
+        is_root_save = os.path.normcase(os.path.normpath(str(save_dir))) == os.path.normcase(os.path.normpath(game["folder_path"]))
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, _, files in os.walk(save_dir):
-                if is_root_save and os.path.normpath(root) != os.path.normpath(str(save_dir)):
-                    continue
+            for root, dirs, files in os.walk(save_dir):
+                if is_root_save:
+                    dirs.clear()
                 for fn in files:
                     if is_root_save:
                         low = fn.lower()
@@ -887,7 +993,7 @@ def backup_game_saves(game_id: int, label: str = "") -> Dict[str, Any]:
 
 
 def restore_game_saves(game_id: int, filename: str) -> Dict[str, Any]:
-    """Restores a save backup zip into the game's save directory with ZipSlip protection."""
+    """Restores a save backup zip into the game's save directory with strict ZipSlip protection."""
     game = get_game_by_id(game_id)
     if not game:
         return {"success": False, "message": "游戏不存在"}
@@ -924,7 +1030,7 @@ def restore_game_saves(game_id: int, filename: str) -> Dict[str, Any]:
                 if member.is_dir():
                     continue
                 dest_path = (target_root / member.filename).resolve()
-                if not str(dest_path).startswith(str(target_root)):
+                if not is_subpath(str(dest_path), str(target_root)):
                     continue
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 with zf.open(member, "r") as src, open(dest_path, "wb") as dst:

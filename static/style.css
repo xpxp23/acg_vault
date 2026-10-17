@@ -1,15 +1,16 @@
 /* ==========================================================================
-   ACG Vault 2.1 - Collector's Edition Glassmorphic & Ambient Dark UI
+   ACG Vault 2.2 - Collector's Edition Glassmorphic & Ambient Dark UI
+   GPU-Optimized Compositing, Unobstructed Artwork Hover & Magazine Typography
    ========================================================================== */
 
 :root {
   --bg-main: #070a12;
-  --bg-surface: rgba(15, 21, 35, 0.82);
-  --bg-card: rgba(19, 27, 46, 0.74);
-  --bg-card-hover: rgba(28, 39, 66, 0.94);
-  --border-glass: rgba(255, 255, 255, 0.075);
-  --border-highlight: rgba(255, 255, 255, 0.15);
-  --border-glow: rgba(99, 102, 241, 0.58);
+  --bg-surface: rgba(15, 21, 35, 0.86);
+  --bg-card: rgba(19, 27, 46, 0.92);
+  --bg-card-hover: rgba(28, 39, 66, 0.97);
+  --border-glass: rgba(255, 255, 255, 0.08);
+  --border-highlight: rgba(255, 255, 255, 0.16);
+  --border-glow: rgba(99, 102, 241, 0.62);
   --accent-primary: #6366f1;
   --accent-glow: rgba(99, 102, 241, 0.28);
   --accent-pink: #ec4899;
@@ -24,9 +25,9 @@
 body {
   background-color: var(--bg-main);
   background-image:
-    radial-gradient(circle at 8% 0%, rgba(99, 102, 241, 0.16) 0px, transparent 45%),
-    radial-gradient(circle at 92% 5%, rgba(236, 72, 153, 0.11) 0px, transparent 42%),
-    radial-gradient(circle at 50% 95%, rgba(14, 165, 233, 0.10) 0px, transparent 50%),
+    radial-gradient(circle at 8% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 45%),
+    radial-gradient(circle at 92% 5%, rgba(236, 72, 153, 0.10) 0px, transparent 42%),
+    radial-gradient(circle at 50% 95%, rgba(14, 165, 233, 0.09) 0px, transparent 50%),
     linear-gradient(180deg, #070a12 0%, #0b101e 100%);
   background-attachment: fixed;
   color: #e2e8f0;
@@ -35,53 +36,52 @@ body {
   padding: 0;
 }
 
-/* Specular Glassmorphism Surfaces */
+/* Specular Glassmorphism Surfaces (Reserved for Headers, Docks & Modals) */
 .glass-panel {
   background: var(--bg-surface);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
   border: 1px solid var(--border-glass);
   box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
 }
 
+/* GPU-Optimized Collector Card (No per-card backdrop-filter to prevent scroll frame drops) */
 .glass-card {
-  background: var(--bg-card);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: linear-gradient(165deg, rgba(22, 31, 52, 0.92) 0%, rgba(13, 19, 34, 0.96) 100%);
   border: 1px solid var(--border-glass);
   box-shadow:
-    0 4px 20px -4px rgba(0, 0, 0, 0.45),
+    0 4px 18px -4px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 0 rgba(255, 255, 255, 0.09);
   content-visibility: auto;
   contain-intrinsic-size: 220px 330px;
-  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-              border-color 0.28s ease,
-              box-shadow 0.28s ease,
-              background-color 0.28s ease;
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.24s ease,
+              box-shadow 0.24s ease,
+              background 0.24s ease;
 }
 
 .glass-card:hover {
-  background: var(--bg-card-hover);
+  background: linear-gradient(165deg, rgba(30, 42, 70, 0.96) 0%, rgba(18, 26, 46, 0.98) 100%);
   border-color: var(--border-glow);
-  transform: translateY(-5px);
+  transform: translateY(-4px);
   box-shadow:
-    0 18px 36px -10px rgba(0, 0, 0, 0.65),
-    0 0 24px -4px var(--accent-glow),
+    0 16px 32px -10px rgba(0, 0, 0, 0.7),
+    0 0 22px -4px var(--accent-glow),
     inset 0 1px 0 0 rgba(255, 255, 255, 0.18);
 }
 
 .glass-card.is-running-card {
-  border-color: rgba(16, 185, 129, 0.65);
+  border-color: rgba(16, 185, 129, 0.68);
   box-shadow:
-    0 10px 30px -6px rgba(16, 185, 129, 0.25),
+    0 10px 28px -6px rgba(16, 185, 129, 0.28),
     inset 0 1px 0 0 rgba(52, 211, 153, 0.25);
 }
 
-/* Cleanly fade out top and bottom corner badges on hover so dock and artwork are never obstructed */
+/* Keep top badges subtly visible in minimal mode, or fade in classic mode */
 .glass-card .card-top-badges {
-  transition: opacity 0.22s ease, transform 0.22s ease;
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
-.glass-card:hover .card-top-badges {
+.glass-card.hover-classic:hover .card-top-badges {
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
@@ -143,18 +143,18 @@ body {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Smart Fit Mode: Ambient Blurred Backdrop + Uncropped Foreground */
+/* Smart Fit Mode: GPU-Friendly Ambient Blurred Backdrop + Uncropped Foreground */
 .poster-blur-backdrop {
   position: absolute;
-  inset: -12%;
-  width: 124%;
-  height: 124%;
+  inset: -8%;
+  width: 116%;
+  height: 116%;
   object-fit: cover;
-  filter: blur(22px) saturate(175%) brightness(0.55);
-  transform: scale(1.1);
+  filter: blur(14px) saturate(155%) brightness(0.52);
+  transform: scale(1.06);
   pointer-events: none;
   z-index: 1;
 }
@@ -165,13 +165,13 @@ body {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.55));
-  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.55));
+  transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .glass-card:hover .poster-img,
 .glass-card:hover .poster-img-smart {
-  transform: scale(1.045);
+  transform: scale(1.04);
 }
 
 /* Fallback Poster Pattern */
@@ -185,11 +185,11 @@ body {
 
 /* Floating Hover Dock inside Card */
 .card-hover-dock {
-  background: rgba(11, 15, 25, 0.88);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  background: rgba(11, 15, 25, 0.90);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 12px 28px -5px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 10px 24px -4px rgba(0, 0, 0, 0.82);
 }
 
 /* Pill Filter Toggles */
@@ -264,8 +264,34 @@ body {
 
 /* Super-sampled Ambient Banner in Detail Drawer */
 .drawer-ambient-banner {
-  filter: blur(42px) saturate(190%) brightness(0.55);
-  transform: scale(1.28);
+  filter: blur(28px) saturate(175%) brightness(0.52);
+  transform: scale(1.18);
+}
+
+/* Draggable Split Pane Divider in Walkthrough Workspace */
+.split-resizer {
+  width: 6px;
+  cursor: col-resize;
+  background: rgba(30, 41, 59, 0.85);
+  transition: background-color 0.15s ease, width 0.15s ease;
+  position: relative;
+  z-index: 20;
+  flex-shrink: 0;
+}
+.split-resizer:hover,
+.split-resizer.is-dragging {
+  background: rgba(99, 102, 241, 0.85);
+}
+.split-resizer::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 32px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.5);
 }
 
 /* Drawer & Modal Vue Transitions */
@@ -309,12 +335,22 @@ body {
    Magazine-Grade Notes & Walkthrough Markdown Typography
    ========================================================================== */
 .notes-markdown-body {
-  line-height: 1.72;
+  line-height: 1.74;
   color: #dbe4f0;
 }
 
+.notes-markdown-body.notes-size-sm {
+  font-size: 0.78rem;
+}
+.notes-markdown-body.notes-size-md {
+  font-size: 0.875rem;
+}
+.notes-markdown-body.notes-size-lg {
+  font-size: 1.0rem;
+}
+
 .notes-markdown-body h1 {
-  font-size: 1.35rem;
+  font-size: 1.35em;
   line-height: 1.42;
   font-weight: 800;
   color: #ffffff;
@@ -326,7 +362,7 @@ body {
 }
 
 .notes-markdown-body h2 {
-  font-size: 1.08rem;
+  font-size: 1.12em;
   line-height: 1.45;
   font-weight: 700;
   color: #f8fafc;
@@ -339,7 +375,7 @@ body {
 }
 
 .notes-markdown-body h3 {
-  font-size: 0.95rem;
+  font-size: 1.0em;
   font-weight: 700;
   color: #a5b4fc;
   margin-top: 1rem;
@@ -356,7 +392,7 @@ body {
 }
 
 .notes-markdown-body h4 {
-  font-size: 0.86rem;
+  font-size: 0.92em;
   font-weight: 700;
   color: #f472b6;
   margin-top: 0.8rem;
@@ -368,7 +404,7 @@ body {
   border-collapse: separate;
   border-spacing: 0;
   margin: 0.9rem 0;
-  font-size: 0.78rem;
+  font-size: 0.88em;
   border-radius: 10px;
   overflow: hidden;
   border: 1px solid rgba(51, 65, 85, 0.85);

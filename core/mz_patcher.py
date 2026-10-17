@@ -34,20 +34,25 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
 //=============================================================================
 /*:
  * @target MZ
- * @plugindesc [v2.1.0] Universal Runtime Translation Patch
+ * @plugindesc [v2.2.0] Universal Runtime Translation Patch
  * @author ACG Vault
  * @help Translates all text dynamically on display time.
  */
 
 (() => {
     'use strict';
-    console.log('[NativeTranslator] Initializing universal translation plugin v2.1...');
+    console.log('[NativeTranslator] Initializing universal translation plugin v2.2...');
 
     let transDict = {};
 
     function stripBom(str) {
         if (!str || typeof str !== 'string') return '';
         return str.charCodeAt(0) === 0xFEFF ? str.slice(1) : str;
+    }
+
+    function safeReplaceLiteral(source, target, replacement) {
+        if (!source || !target) return source;
+        return source.split(target).join(replacement);
     }
 
     function loadDict() {
@@ -103,8 +108,8 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
         if (transDict[norm]) return transDict[norm];
 
         const trimmed = str.trim();
-        if (transDict[trimmed]) {
-            return str.replace(trimmed, transDict[trimmed]);
+        if (trimmed && transDict[trimmed]) {
+            return safeReplaceLiteral(str, trimmed, transDict[trimmed]);
         }
 
         if (norm.indexOf('\\n') !== -1) {
@@ -116,9 +121,9 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
                     anyMatched = true;
                     return transDict[line];
                 }
-                if (transDict[tLine]) {
+                if (tLine && transDict[tLine]) {
                     anyMatched = true;
-                    return line.replace(tLine, transDict[tLine]);
+                    return safeReplaceLiteral(line, tLine, transDict[tLine]);
                 }
                 return line;
             });
@@ -167,7 +172,7 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
     }
 
     if (typeof DataManager !== 'undefined') {
-        const skipKeys = ['characterName', 'faceName', 'battlerName', 'bgm', 'bgs', 'me', 'se', 'iconIndex', 'meta', 'animationId'];
+        const skipKeys = ['characterName', 'faceName', 'battlerName', 'bgm', 'bgs', 'me', 'se', 'iconIndex', 'meta', 'animationId', 'pictureName', 'effectName'];
         function deepTranslate(obj) {
             if (!obj) return;
             if (Array.isArray(obj)) {
@@ -182,7 +187,9 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
                 if (obj.code && obj.parameters) {
                     const code = obj.code;
                     const p = obj.parameters;
-                    if (code === 401 && typeof p[0] === 'string') {
+                    if (code === 101 && typeof p[4] === 'string' && p[4]) {
+                        p[4] = translateText(p[4]);
+                    } else if ((code === 401 || code === 405) && typeof p[0] === 'string') {
                         p[0] = translateText(p[0]);
                     } else if (code === 102 && Array.isArray(p[0])) {
                         for (let i = 0; i < p[0].length; i++) {
@@ -192,6 +199,8 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
                         p[1] = translateText(p[1]);
                     } else if ((code === 320 || code === 324 || code === 325) && typeof p[1] === 'string') {
                         p[1] = translateText(p[1]);
+                    } else if (code === 357 && p.length > 3 && typeof p[3] === 'object' && p[3]) {
+                        deepTranslate(p[3]);
                     }
                     return;
                 }
@@ -228,7 +237,7 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
         };
     }
 
-    console.log('[NativeTranslator] Universal translation plugin active!');
+    console.log('[NativeTranslator] Universal translation plugin v2.2 active!');
 })();
 """
 
@@ -273,6 +282,10 @@ class MZPatcher:
                 res = res.replace('\n', '\r\n')
             return res, True
 
+        trimmed = text.strip()
+        if trimmed and trimmed in trans_dict:
+            return text.replace(trimmed, trans_dict[trimmed], 1), True
+
         if '\n' in norm:
             lines = norm.split('\n')
             any_matched = False
@@ -281,8 +294,8 @@ class MZPatcher:
                 if line in trans_dict:
                     new_lines.append(trans_dict[line])
                     any_matched = True
-                elif line.strip() in trans_dict:
-                    new_lines.append(line.replace(line.strip(), trans_dict[line.strip()]))
+                elif line.strip() and line.strip() in trans_dict:
+                    new_lines.append(line.replace(line.strip(), trans_dict[line.strip()], 1))
                     any_matched = True
                 else:
                     new_lines.append(line)
@@ -297,7 +310,12 @@ class MZPatcher:
             if 'code' in obj and 'parameters' in obj:
                 code = obj['code']
                 params = obj['parameters']
-                if code == 401 and len(params) > 0 and isinstance(params[0], str):
+                if code == 101 and len(params) > 4 and isinstance(params[4], str) and params[4]:
+                    new_t, matched = self.translate_string(params[4], trans_dict)
+                    if matched:
+                        params[4] = new_t
+                        stats['count'] += 1
+                elif code in (401, 405) and len(params) > 0 and isinstance(params[0], str):
                     new_t, matched = self.translate_string(params[0], trans_dict)
                     if matched:
                         params[0] = new_t
@@ -319,6 +337,8 @@ class MZPatcher:
                     if matched:
                         params[1] = new_t
                         stats['count'] += 1
+                elif code == 357 and len(params) > 3 and isinstance(params[3], dict):
+                    self.traverse_and_translate(params[3], trans_dict, stats)
                 return
 
             for k, v in list(obj.items()):
@@ -360,7 +380,7 @@ class MZPatcher:
         stats = {'count': 0, 'files': 0}
 
         for fname in os.listdir(backup_dir):
-            if fname.lower().endswith('.json'):
+            if fname.lower().endswith('.json') and not fname.startswith('.'):
                 src_path = os.path.join(backup_dir, fname)
                 dst_path = os.path.join(data_dir, fname)
                 try:
@@ -387,14 +407,21 @@ class MZPatcher:
                 except Exception:
                     shutil.copy2(src_path, dst_path)
 
-        # Ensure dictionary is accessible in both game_root (e.g. www/) and top-level game_folder
+        copied_dicts = []
         for dest_base in {os.path.abspath(game_root), os.path.abspath(game_folder)}:
             target_dict_dest = os.path.join(dest_base, '翻译文件.json')
-            if not os.path.exists(target_dict_dest) or os.path.abspath(dict_path) != os.path.abspath(target_dict_dest):
+            if not os.path.exists(target_dict_dest):
                 try:
                     shutil.copy2(dict_path, target_dict_dest)
+                    copied_dicts.append(target_dict_dest)
                 except Exception:
                     pass
+
+        try:
+            with open(os.path.join(backup_dir, '.acg_vault_baked.json'), 'w', encoding='utf-8') as mf:
+                json.dump({"copied_dicts": copied_dicts, "source_dict": dict_path}, mf, ensure_ascii=False)
+        except Exception:
+            pass
 
         plugins_dir = os.path.join(game_root, 'js', 'plugins')
         os.makedirs(plugins_dir, exist_ok=True)
@@ -423,7 +450,7 @@ class MZPatcher:
             "success": True,
             "replaced_entries": stats['count'],
             "processed_files": stats['files'],
-            "message": f"静态固化汉化成功！已将 {stats['count']} 处文本固化到游戏本体并安装动态补丁。"
+            "message": f"静态固化汉化成功！已将 {stats['count']} 处文本固化到游戏本体并安装 v2.2 动态补丁。"
         }
 
     def unbake(self, game_folder: str) -> Dict[str, Any]:
@@ -437,12 +464,30 @@ class MZPatcher:
             return {"success": False, "message": "未检测到原版数据备份目录 (data_original_backup)，无需还原"}
 
         try:
+            marker_file = os.path.join(backup_dir, '.acg_vault_baked.json')
+            copied_dicts = []
+            if os.path.exists(marker_file):
+                try:
+                    with open(marker_file, 'r', encoding='utf-8') as mf:
+                        copied_dicts = json.load(mf).get("copied_dicts", [])
+                except Exception:
+                    pass
+
             for fname in os.listdir(backup_dir):
+                if fname.startswith('.'):
+                    continue
                 src = os.path.join(backup_dir, fname)
                 dst = os.path.join(data_dir, fname)
                 if os.path.isfile(src):
                     shutil.copy2(src, dst)
             shutil.rmtree(backup_dir, ignore_errors=True)
+
+            for cd in copied_dicts:
+                if cd and os.path.exists(cd):
+                    try:
+                        os.remove(cd)
+                    except Exception:
+                        pass
 
             plugins_file = os.path.join(game_root, 'js', 'plugins.js')
             plugins_bak = plugins_file + '.original_bak'
@@ -529,4 +574,9 @@ def unbake_game_translation(game_id: int) -> Dict[str, Any]:
         return {"success": False, "message": "游戏目录不存在"}
 
     patcher = MZPatcher()
-    return patcher.unbake(folder_path)
+    res = patcher.unbake(folder_path)
+    if res.get("success"):
+        remaining_trs = find_translation_dict_in_folder(folder_path)
+        has_bat = any((Path(folder_path) / b).exists() for b in ("与工具一同启动.bat", "StartWithTool.bat"))
+        manual_update_game_metadata(game_id, {"has_translation": 1 if (remaining_trs or has_bat) else 0})
+    return res

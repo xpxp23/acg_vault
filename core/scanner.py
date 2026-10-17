@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Callable, Set
 from datetime import datetime
 from config import load_config
+from db.database import get_existing_scan_cache
 
 TOOL_KEYWORDS = [
     "agth", "dangotranslator", "团子翻译器", "misakatranslator", "lunatranslator",
@@ -122,7 +123,6 @@ def clean_title_from_folder(folder_name: str) -> str:
     title = re.sub(r"^\s*([RVB]J\d{6,8})[\s_\-]+", "", title, flags=re.I)
 
     # Remove leading bracketed tags like 【PC官中SLG】, [NitroPlus], [RJxxxxxx]
-    # Only strip if there is remaining text after the bracket!
     while True:
         prev = title
         for pat in (
@@ -151,7 +151,6 @@ def clean_title_from_folder(folder_name: str) -> str:
         if cleaned:
             title = cleaned
 
-    # Clean whitespace and trailing symbols
     title = title.strip(" -_+=~()[]{}【】（）")
     return title if title else folder_name
 
@@ -164,9 +163,10 @@ def extract_rj_code(text: str) -> Optional[str]:
     return None
 
 
-def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str], str, int, float, float, bool]:
+def fast_inspect_folder(folder_path: str, max_depth: int = 2, max_entries: int = 8000) -> Tuple[List[str], str, int, float, float, bool]:
     """
     Recursively inspects folder up to max_depth to find executables, engine, size, mtime, creation ctime, and translation presence.
+    Includes entry budget protection so unpacked games with tens of thousands of tiny files never stall disk I/O.
     """
     exes: List[str] = []
     engine = "Unknown"
@@ -174,6 +174,7 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str]
     latest_mtime = 0.0
     created_ctime = 0.0
     has_trs = False
+    scanned_count = 0
 
     try:
         root_stat = os.stat(folder_path)
@@ -183,10 +184,15 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str]
         pass
 
     def scan_level(p: str, depth: int):
-        nonlocal engine, total_size, latest_mtime, has_trs
+        nonlocal engine, total_size, latest_mtime, has_trs, scanned_count
+        if scanned_count >= max_entries:
+            return
         try:
             with os.scandir(p) as it:
                 for entry in it:
+                    scanned_count += 1
+                    if scanned_count > max_entries:
+                        break
                     try:
                         st = entry.stat()
                         total_size += st.st_size
@@ -289,12 +295,15 @@ def scan_directory(
     dir_path_str: str,
     progress_callback: Optional[Callable[[int, int, str], None]] = None
 ) -> List[Dict[str, Any]]:
-    """Scans a root directory (e.g. E:\\ACG) and returns parsed game items."""
+    """Scans a root directory (e.g. E:\\ACG) and returns parsed game items with optional incremental mtime acceleration."""
     results: List[Dict[str, Any]] = []
     root = Path(dir_path_str)
     if not root.exists() or not root.is_dir():
         return results
 
+    cfg = load_config()
+    use_incremental = bool(cfg.get("incremental_scan", True))
+    existing_cache = get_existing_scan_cache() if use_incremental else {}
     excluded_paths = get_excluded_scan_paths()
 
     try:
@@ -319,9 +328,41 @@ def scan_directory(
     for idx, entry in enumerate(entries):
         folder_name = entry.name
         folder_path = entry.path
+        norm_p = os.path.normcase(os.path.normpath(folder_path))
         if progress_callback:
             try:
                 progress_callback(idx + 1, total_entries, folder_name)
+            except Exception:
+                pass
+
+        # Fast incremental check: if top-level mtime matches DB cache and exe still exists, skip deep traversal
+        cached_item = existing_cache.get(norm_p)
+        if cached_item and cached_item.get("folder_size_bytes", 0) > 0:
+            try:
+                st = entry.stat()
+                top_mtime_str = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+                cached_exe = cached_item.get("executable_path") or ""
+                if (
+                    top_mtime_str == cached_item.get("folder_modified_at")
+                    and (not cached_exe or os.path.exists(cached_exe))
+                ):
+                    results.append({
+                        "folder_name": folder_name,
+                        "folder_path": folder_path,
+                        "clean_title": cached_item.get("clean_title") or clean_title_from_folder(folder_name),
+                        "display_title": cached_item.get("display_title") or cached_item.get("clean_title") or folder_name,
+                        "rj_code": cached_item.get("rj_code") or extract_rj_code(folder_name) or "",
+                        "engine_type": cached_item.get("engine_type") or "Unknown",
+                        "executable_path": cached_exe,
+                        "folder_size_bytes": cached_item.get("folder_size_bytes", 0),
+                        "folder_size_str": cached_item.get("folder_size_str") or format_size(cached_item.get("folder_size_bytes", 0)),
+                        "folder_modified_at": cached_item.get("folder_modified_at") or top_mtime_str,
+                        "downloaded_at": cached_item.get("downloaded_at") or "",
+                        "is_tool": int(cached_item.get("is_tool", 0)),
+                        "has_translation": int(cached_item.get("has_translation", 0)),
+                        "play_status": "unplayed",
+                    })
+                    continue
             except Exception:
                 pass
 

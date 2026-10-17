@@ -3,7 +3,7 @@ import os
 import shutil
 import difflib
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Set
 from datetime import datetime
 
 try:
@@ -37,12 +37,16 @@ from db.database import (
 
 def normalize_title_for_comparison(title: str) -> str:
     """Aggressively normalizes titles for fuzzy matching."""
+    if not title:
+        return ""
     s = title.lower()
+    # Remove leading/inline RJ codes
+    s = re.sub(r"[rvb]j\d{6,8}", "", s, flags=re.I)
     # Remove version numbers v1.0, 1.292, ver1.0
     s = re.sub(r"(?:^|(?<=[\s_\-\.\[\(【（\u4e00-\u9fff\u3040-\u30ff]))v(?:er)?\.?\s*\d+(?:\.\d+)*[a-z]?", "", s)
     s = re.sub(r"\b\d+(?:\.\d+)+[a-z]?\b", "", s)
     # Remove common tags
-    s = re.sub(r"(steam|pc|slg|rpg|adv|官中|汉化|步兵|无修|解码|精翻|硬盘版|内层|电脑|製品版|完整版|挂载)", "", s)
+    s = re.sub(r"(steam|pc|slg|rpg|adv|官中|汉化|步兵|无修|解码|精翻|硬盘版|内层|电脑|製品版|完整版|挂载|官方中文)", "", s)
     # Keep alphanumeric, kanji/hanzi, kana, and full-width Roman numerals
     s = re.sub(r"[^\w\u4e00-\u9fff\u3040-\u30ff\u31f0-\u31ff\u2160-\u217f]", "", s)
     return s.strip()
@@ -120,13 +124,29 @@ def has_different_sequel_number(t1: str, t2: str) -> bool:
     return False
 
 
+def _get_game_norm_candidates(g: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Returns list of (raw_title, normalized_title) from clean_title, display_title, and original_title."""
+    candidates: List[Tuple[str, str]] = []
+    seen_norms: Set[str] = set()
+    for field in ("clean_title", "display_title", "original_title", "folder_name"):
+        raw = (g.get(field) or "").strip()
+        if not raw:
+            continue
+        norm = normalize_title_for_comparison(raw)
+        if norm and len(norm) >= 2 and norm not in seen_norms:
+            seen_norms.add(norm)
+            candidates.append((raw, norm))
+    return candidates
+
+
 def compute_duplicates_and_update_db() -> int:
     """
-    Analyzes all active games in database, clusters duplicates, and updates duplicate_group_id.
+    Analyzes all active games in database across clean_title, display_title, original_title, and rj_code,
+    clusters duplicates with fast length-ratio pre-filtering, and updates duplicate_group_id.
     Respects user duplicate_ignores.
     Returns total count of duplicate items found.
     """
-    games = get_all_games(status="all", is_tool=False)
+    games = get_all_games(status="all", is_tool=False, include_full_notes=False)
     if not games:
         return 0
 
@@ -147,52 +167,62 @@ def compute_duplicates_and_update_db() -> int:
         if root_i != root_j:
             parent[root_i] = root_j
 
-    # Pairwise comparison
+    precomputed = []
+    for g in games:
+        rj = (g.get("rj_code") or "").strip().upper()
+        primary_t = g.get("clean_title") or g.get("display_title") or g.get("folder_name") or ""
+        cands = _get_game_norm_candidates(g)
+        precomputed.append((g["id"], rj, primary_t, cands))
+
+    # Pairwise comparison with fast pre-filtering
     for i in range(n):
-        g1 = games[i]
-        id1 = g1["id"]
-        rj1 = g1.get("rj_code", "").strip().upper()
-        t1 = g1.get("clean_title") or g1.get("folder_name")
-        norm1 = normalize_title_for_comparison(t1)
+        id1, rj1, t1, cands1 = precomputed[i]
 
         for j in range(i + 1, n):
-            g2 = games[j]
-            id2 = g2["id"]
+            id2, rj2, t2, cands2 = precomputed[j]
 
             pair = (min(id1, id2), max(id1, id2))
             if pair in ignores:
                 continue
 
-            rj2 = g2.get("rj_code", "").strip().upper()
-            t2 = g2.get("clean_title") or g2.get("folder_name")
-            norm2 = normalize_title_for_comparison(t2)
-
             # Match 1: Exact RJ Code (both non-empty)
             if rj1 and rj2 and rj1 == rj2:
-                if norm1 and norm2 and len(norm1) >= 2 and len(norm2) >= 2:
-                    ratio = fuzz.ratio(norm1, norm2)
-                    token_ratio = fuzz.token_sort_ratio(norm1, norm2)
-                    if max(ratio, token_ratio) < 25:
-                        continue
+                if cands1 and cands2:
+                    n1 = cands1[0][1]
+                    n2 = cands2[0][1]
+                    if len(n1) >= 2 and len(n2) >= 2:
+                        if max(fuzz.ratio(n1, n2), fuzz.token_sort_ratio(n1, n2)) < 20:
+                            continue
                 union(i, j)
                 continue
 
-            # Check sequel difference
+            # Sequel guard on primary titles
             if has_different_sequel_number(t1, t2):
                 continue
 
-            # Match 2: Exact Normalized Title
-            if norm1 and norm2 and len(norm1) >= 2 and norm1 == norm2:
-                union(i, j)
-                continue
+            # Compare candidate normalized titles (clean_title, display_title, original_title)
+            matched = False
+            for raw1, norm1 in cands1:
+                for raw2, norm2 in cands2:
+                    if has_different_sequel_number(raw1, raw2):
+                        continue
+                    # Exact normalized match
+                    if norm1 == norm2:
+                        matched = True
+                        break
+                    # Fast length-ratio pre-filter before fuzzy match
+                    l1, l2 = len(norm1), len(norm2)
+                    if l1 >= 4 and l2 >= 4:
+                        if abs(l1 - l2) / max(l1, l2) > 0.32:
+                            continue
+                        if max(fuzz.ratio(norm1, norm2), fuzz.token_sort_ratio(norm1, norm2)) >= 88:
+                            matched = True
+                            break
+                if matched:
+                    break
 
-            # Match 3: High similarity fuzzy match (e.g. 88+)
-            if norm1 and norm2 and len(norm1) >= 4 and len(norm2) >= 4:
-                ratio = fuzz.ratio(norm1, norm2)
-                token_ratio = fuzz.token_sort_ratio(norm1, norm2)
-                if max(ratio, token_ratio) >= 88:
-                    union(i, j)
-                    continue
+            if matched:
+                union(i, j)
 
     # Group into clusters
     clusters: Dict[int, List[Dict[str, Any]]] = {}

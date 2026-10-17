@@ -1,74 +1,43 @@
-# 🎮 ACG Vault v2.1 (本地 ACG 游戏资产与攻略管理中心)
+# 🎮 ACG Vault v2.2 (本地 ACG 游戏资产、AI 攻略与数据馆藏中心)
 
-一款专为本地 ACG / Galgame / 同人游戏爱好者打造的现代化全功能游戏库管理系统。基于 **FastAPI + SQLite (WAL) + Vue 3 响应式控制台** 架构，提供本地游戏目录深度扫描、DLsite / Bangumi / Steam / VNDB 多源元数据智能刮削、游戏智能启动与多语言环境转区、RPG Maker MV/MZ 补丁固化与一键还原、存档快照备份/恢复以及查重归档功能。
-
----
-
-## ✨ 核心特性 (v2.1 升级亮点)
-
-1. 📂 **智能目录扫描与指纹识别** (`core/scanner.py`)：
-   - 深入遍历预设的游戏目录（默认 `E:\ACG`），自动识别游戏主执行程序（`Game.exe`, `*.exe` 等）与运行引擎。
-   - 精准提取 RJ/VJ/BJ 号与清洗后标题，重扫时自动保护用户手动定制的主程序路径与入库时间。
-2. 🌐 **四源元数据与封面刮削缓存** (`core/scraper.py`, `core/ai_scraper.py`)：
-   - 支持从 **DLsite**、**Bangumi (番组计划)**、**Steam**、**VNDB** 自动拉取社团名称、发售日期、游戏简介、标签分类与高清海报封面。
-   - 内置 SQLite `scrape_cache` 本地缓存、图片文件头魔数校验与日文简介自动汉化翻译。
-3. 🚀 **一键直启、实时运行监控与转区调优** (`core/launcher.py`)：
-   - 支持直接启动、Locale Emulator 转区启动、MTool 翻译挂钩启动。
-   - 实时监控游戏运行状态（防多开保护、卡片呼吸态指示），退出后自动精准累计游玩时长。
-4. 🧩 **RPG Maker MV/MZ 补丁固化与无损还原** (`core/mz_patcher.py`)：
-   - 支持将外挂 JSON 翻译字典静态固化进游戏本体并注入运行时补丁，同时支持一键从备份无损还原原版数据。
-5. 💾 **存档快照备份与一键回档** (`core/launcher.py`)：
-   - 自动探测本地存档目录，支持创建多份时间戳 `.zip` 快照、查看历史备份清单与一键安全回档。
-6. 🗃️ **中日文续作感知查重与安全归档** (`core/dedup.py`)：
-   - 智能区分《黑兽1/2》《状態異常Ⅰ/Ⅱ/Ⅲ》等续作与多版本重复副本，支持一键归档至 `_Archive_Duplicates` 隔离目录。
+一款专为本地 ACG / Galgame / 同人游戏爱好者打造的殿堂级全功能游戏库管理系统。基于 **FastAPI + SQLite (WAL) + Vue 3 + PyWebView 原生桌面封装** 架构，提供本地游戏目录增量极速扫描、DLsite / Bangumi / Steam / VNDB 四源元数据与竖版海报智能刮削、OpenAI 兼容大模型（DeepSeek / Qwen / Ollama）智能语义清洗与工程解包全结局攻略生成、游戏内 `F12` 截图画廊、100% 全 CG 回想存档一键注入、RPG Maker MV/MZ 补丁静态固化以及多维度数据馆藏看板。
 
 ---
 
-## 🛠️ 技术栈与依赖
+## ✨ v2.2 核心特性与升级亮点
 
-- **后端引擎**：Python 3.10+, FastAPI, Uvicorn, Pydantic v2
-- **存储与并发**：SQLite 3 (WAL 高并发模式)
-- **网络与解析**：HTTPX, BeautifulSoup4, RapidFuzz
-- **前端交互**：Vue 3 + Tailwind CSS + Lucide Icons + Marked.js（100% 本地离线静态资源，零外部 CDN 依赖）
+1. 🖥️ **原生桌面化封装与系统托盘守护** (`desktop_app.py`, `start_desktop.bat`)：
+   - 支持 **PyWebView 原生独立桌面窗口**（无环境时自动平滑回退至 Edge/Chrome `--app` 无边框应用窗口或浏览器）。
+   - 内置 **Windows 系统托盘图标**（支持关闭窗口最小化至托盘常驻、托盘右键快速扫描、Windows 注册表开机自启）。
+   - 支持 **全局呼出老板键**（默认 `Alt+Space`），随时一键呼出或隐藏主窗口。
+2. 🤖 **本地/云端 LLM 智能刮削与 RPG Maker 逆向攻略生成引擎** (`core/ai_scraper.py`, `core/guide_generator.py`)：
+   - 支持配置任意 **OpenAI 兼容接口**（DeepSeek / Qwen / SiliconFlow / 本地 Ollama）。
+   - **混乱文件夹名语义提取**：自动分离民间汉化文件夹中的社团名、原作名、RJ号、版本号与汉化组标签。
+   - **长篇日/英简介完整润色翻译**：多段分块无损翻译，告别 1500 字截断。
+   - **一键解包生成全结局攻略**：自动读取 RPG Maker `System.json`、`Actors.json`、`CommonEvents.json` 与 `Map*.json` 中的开关、变量、选项与结局条件，结合本地翻译字典与大模型一键生成带真实变量编号的杂志级全结局攻略。
+3. 📸 **游戏内实时截图画廊与 100% 全 CG 回想存档一键注入** (`core/gallery_cg.py`, `core/launcher.py`)：
+   - **游戏内截图监听**：在运行监控线程中实时监听截图热键（默认 `F12`），自动截取当前游戏窗口并归档至详情页专属画廊（支持灯箱大图预览、备注编辑与剪贴板直接粘贴）。
+   - **全 CG 回想一键解锁**：支持为 RPG Maker MV/MZ 游戏一键注入非破坏性全回想插件（游戏内按 `F8` 一键开启全部回想/画廊开关与 999,999 金币），并支持直接导入外部 `.zip / .rpgsave / .rmmzsave` 全 CG 存档包（导入前自动快照备份原存档）。
+4. 📊 **多维度数据馆藏看板与时间轴回顾** (`db/database.py`, `static/index.html`)：
+   - 新增独立 **“数据馆藏看板”** 视图，可视化呈现游玩时长分布、殿堂级最爱游戏 Top 10、最爱社团 Top 12、出演声优 (CV) Top 12、游戏引擎与汉化率占比、近 12 个月入库与活跃度趋势、硬盘空间占用排行以及最近游玩/修撰时间轴。
+5. ⚡ **全方位性能飞跃与深度个性化定制**：
+   - **轻量级列表查询与 WebP 缩略图缓存**：列表接口按需剥离万字攻略大字段，自动生成 `420px` WebP 封面缩略图，配合 GPU 减负样式与防抖 Markdown 渲染，千款游戏滚动与编辑丝滑流畅。
+   - **高自由度界面定制**：支持在设置中心自定义启动默认视图、网格密度（紧凑/标准/宽松）、卡片悬停样式（极简不挡立绘/经典居中）、攻略工作台默认布局（双栏联动/纯净阅读/专注编辑）、双栏拖拽分隔条与基于源码行号的精准同步滚动。
 
 ---
 
 ## 🚀 启动与使用说明
 
-### 1. 一键启动
+### 1. 一键启动（桌面应用模式 / 无黑框模式）
 
-直接双击运行根目录批处理脚本：
-```bat
-start.bat
-```
-或通过命令行手动运行：
+- **标准桌面启动**：双击运行 `start.bat`（自动启动 `desktop_app.py`）。
+- **无命令行黑框静默启动**：双击运行 `start_desktop.bat`（通过 `pythonw` 启动原生桌面窗口与系统托盘）。
+- **纯服务端模式**：运行 `python main.py` 或 `start.bat --server`，随后访问 `http://127.0.0.1:8000`。
+
 ```bash
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动服务
-python main.py
-```
-
-服务启动后，在浏览器访问控制台：
-👉 **`http://127.0.0.1:8000`**
-
-### 2. 核心配置文件说明 (`data/config.json`)
-
-系统启动后会自动在 `data/config.json` 生成/加载配置：
-
-```json
-{
-  "game_directories": ["E:\\ACG"],
-  "archive_directory": "E:\\ACG\\_Archive_Duplicates",
-  "save_backup_directory": "E:\\ACG\\_Save_Backups",
-  "mtool_directory": "E:\\ACG\\MTool",
-  "leproc_path": "",
-  "proxy": "",
-  "auto_scrape": true,
-  "scrape_source": "auto",
-  "cover_fit_mode": "smart",
-  "theme": "dark",
-  "port": 8000
-}
+# 启动原生桌面端
+python desktop_app.py
 ```

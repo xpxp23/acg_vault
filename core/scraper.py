@@ -1,13 +1,20 @@
 import re
 import os
+import io
 import json
 import urllib.parse
 import httpx
 from bs4 import BeautifulSoup
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from config import COVERS_DIR
+from config import COVERS_DIR, THUMBS_DIR
 from db.database import get_scrape_cache, set_scrape_cache
+
+try:
+    from PIL import Image
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -31,6 +38,28 @@ def is_valid_image_bytes(data: bytes) -> bool:
     return any(data.startswith(prefix) for prefix in IMAGE_MAGIC_PREFIXES)
 
 
+def generate_cover_thumbnail(source_path: Path, max_width: int = 420) -> Optional[Path]:
+    """Generates a lightweight WebP/JPEG thumbnail in THUMBS_DIR for smooth 60fps grid scrolling."""
+    if not HAS_PIL or not source_path.exists():
+        return None
+    try:
+        thumb_path = THUMBS_DIR / f"{source_path.name}.webp"
+        if thumb_path.exists() and thumb_path.stat().st_mtime >= source_path.stat().st_mtime:
+            return thumb_path
+        with Image.open(source_path) as im:
+            if im.mode not in ("RGB", "RGBA"):
+                im = im.convert("RGB")
+            if im.width > max_width:
+                ratio = max_width / float(im.width)
+                new_h = max(1, int(im.height * ratio))
+                resample = getattr(Image, "Resampling", Image).LANCZOS
+                im = im.resize((max_width, new_h), resample)
+            im.save(thumb_path, format="WEBP", quality=82, method=4)
+        return thumb_path
+    except Exception:
+        return None
+
+
 def get_http_client(proxy: Optional[str] = None, timeout: float = 4.5) -> httpx.Client:
     proxies = proxy.strip() if proxy and proxy.strip() else None
     return httpx.Client(
@@ -43,7 +72,7 @@ def get_http_client(proxy: Optional[str] = None, timeout: float = 4.5) -> httpx.
 
 
 def download_and_cache_cover(img_url: str, filename_stem: str, proxy: Optional[str] = None, force: bool = False) -> str:
-    """Downloads remote image, validates magic bytes, and saves locally to prevent broken hotlinks."""
+    """Downloads remote image, validates magic bytes, saves locally, and generates a grid thumbnail."""
     if not img_url:
         return ""
     if img_url.startswith("/api/covers/"):
@@ -63,6 +92,7 @@ def download_and_cache_cover(img_url: str, filename_stem: str, proxy: Optional[s
         target_path = COVERS_DIR / target_name
 
         if not force and target_path.exists() and target_path.stat().st_size > 1024:
+            generate_cover_thumbnail(target_path)
             return f"/api/covers/{target_name}"
 
         with get_http_client(proxy, timeout=6.5) as client:
@@ -70,6 +100,7 @@ def download_and_cache_cover(img_url: str, filename_stem: str, proxy: Optional[s
             if resp.status_code == 200 and is_valid_image_bytes(resp.content):
                 with open(target_path, "wb") as f:
                     f.write(resp.content)
+                generate_cover_thumbnail(target_path)
                 return f"/api/covers/{target_name}"
     except Exception as e:
         print(f"Failed to cache cover {img_url}: {e}")
@@ -187,7 +218,10 @@ def scrape_dlsite(rj_code: str, proxy: Optional[str] = None, force: bool = False
 
 
 def scrape_steam(keyword_or_appid: str, proxy: Optional[str] = None, force: bool = False) -> Optional[Dict[str, Any]]:
-    """Scrapes Steam Store metadata for PC games by title search or Steam AppID."""
+    """
+    Scrapes Steam Store metadata for PC games by title search or Steam AppID.
+    Separates vertical 2:3 Library Capsule (cover_url) from horizontal Header Image (banner_url).
+    """
     if not keyword_or_appid or len(keyword_or_appid.strip()) < 1:
         return None
 
@@ -235,7 +269,20 @@ def scrape_steam(keyword_or_appid: str, proxy: Optional[str] = None, force: bool
             release_date = data.get("release_date", {}).get("date", "")
 
             header_img = data.get("header_image") or ""
-            cached_cover = download_and_cache_cover(header_img, f"steam_{appid}", proxy, force=force)
+            cached_banner = download_and_cache_cover(header_img, f"steam_{appid}_banner", proxy, force=force)
+
+            # Try fetching high-res vertical library capsule (600x900) for poster wall
+            vertical_urls = [
+                f"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900_2x.jpg",
+                f"https://cdn.akamai.steamstatic.com/steam/apps/{appid}/library_600x900.jpg"
+            ]
+            cached_cover = ""
+            for v_url in vertical_urls:
+                cached_cover = download_and_cache_cover(v_url, f"steam_{appid}_cover", proxy, force=force)
+                if cached_cover:
+                    break
+            if not cached_cover:
+                cached_cover = cached_banner
 
             synopsis_raw = data.get("short_description") or data.get("detailed_description") or data.get("about_the_game") or ""
             synopsis_clean = re.sub(r"<[^>]+>", "", synopsis_raw).strip()
@@ -254,7 +301,7 @@ def scrape_steam(keyword_or_appid: str, proxy: Optional[str] = None, force: bool
                 "circle_name": circle,
                 "release_date": release_date,
                 "cover_url": cached_cover,
-                "banner_url": cached_cover,
+                "banner_url": cached_banner or cached_cover,
                 "synopsis": synopsis_clean,
                 "voice_actors": [],
                 "tags": list(dict.fromkeys(tags)),
@@ -471,6 +518,7 @@ def search_scraper_candidates(
                     "circle": cir,
                     "release_date": dl_res.get("release_date", ""),
                     "cover_url": cov,
+                    "banner_url": dl_res.get("banner_url", cov),
                     "cover_image": cov,
                     "synopsis": dl_res.get("synopsis", ""),
                     "tags": dl_res.get("tags", []),
@@ -511,6 +559,7 @@ def search_scraper_candidates(
                             "circle": "",
                             "release_date": item.get("air_date") or item.get("date") or "",
                             "cover_url": final_cov,
+                            "banner_url": final_cov,
                             "cover_image": final_cov,
                             "synopsis": summary,
                             "tags": tags,
@@ -545,6 +594,7 @@ def search_scraper_candidates(
                                 "circle": cir,
                                 "release_date": steam_detail.get("release_date", ""),
                                 "cover_url": cov,
+                                "banner_url": steam_detail.get("banner_url", cov),
                                 "cover_image": cov,
                                 "synopsis": steam_detail.get("synopsis", ""),
                                 "tags": steam_detail.get("tags", []),
@@ -583,6 +633,7 @@ def search_scraper_candidates(
                             "circle": cir,
                             "release_date": item.get("released") or "",
                             "cover_url": final_cov,
+                            "banner_url": final_cov,
                             "cover_image": final_cov,
                             "synopsis": desc,
                             "tags": [],
