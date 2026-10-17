@@ -1,10 +1,31 @@
 import re
 import os
 import shutil
+import difflib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
-from rapidfuzz import fuzz
 from datetime import datetime
+
+try:
+    from rapidfuzz import fuzz
+except ImportError:
+    class _FallbackFuzz:
+        @staticmethod
+        def ratio(s1: str, s2: str) -> float:
+            if not s1 and not s2:
+                return 100.0
+            if not s1 or not s2:
+                return 0.0
+            return difflib.SequenceMatcher(None, s1, s2).ratio() * 100.0
+
+        @staticmethod
+        def token_sort_ratio(s1: str, s2: str) -> float:
+            t1 = " ".join(sorted(s1.split()))
+            t2 = " ".join(sorted(s2.split()))
+            return _FallbackFuzz.ratio(t1, t2)
+
+    fuzz = _FallbackFuzz()
+
 from db.database import (
     get_all_games,
     batch_update_duplicates,
@@ -13,33 +34,81 @@ from db.database import (
     get_all_duplicate_ignores
 )
 
+
 def normalize_title_for_comparison(title: str) -> str:
     """Aggressively normalizes titles for fuzzy matching."""
     s = title.lower()
     # Remove version numbers v1.0, 1.292, ver1.0
-    s = re.sub(r"v(er)?\.?\s*\d+(\.\d+)*[a-z]?", "", s)
-    s = re.sub(r"\b\d+(\.\d+)+[a-z]?\b", "", s)
+    s = re.sub(r"(?:^|(?<=[\s_\-\.\[\(【（\u4e00-\u9fff\u3040-\u30ff]))v(?:er)?\.?\s*\d+(?:\.\d+)*[a-z]?", "", s)
+    s = re.sub(r"\b\d+(?:\.\d+)+[a-z]?\b", "", s)
     # Remove common tags
-    s = re.sub(r"(steam|pc|slg|rpg|adv|官中|汉化|步兵|无修|解码|精翻|硬盘版|内层|电脑|製品版)", "", s)
-    # Keep alphanumeric, kanji/hanzi, kana
-    s = re.sub(r"[^\w\u4e00-\u9fff\u3040-\u30ff\u31f0-\u31ff]", "", s)
+    s = re.sub(r"(steam|pc|slg|rpg|adv|官中|汉化|步兵|无修|解码|精翻|硬盘版|内层|电脑|製品版|完整版|挂载)", "", s)
+    # Keep alphanumeric, kanji/hanzi, kana, and full-width Roman numerals
+    s = re.sub(r"[^\w\u4e00-\u9fff\u3040-\u30ff\u31f0-\u31ff\u2160-\u217f]", "", s)
     return s.strip()
 
+
 ROMAN_SEQUEL_MAP = {
-    'i': '1', 'ii': '2', 'iii': '3', 'iv': '4', 'v': '5', 'vi': '6', 'vii': '7', 'viii': '8',
-    'ⅰ': '1', 'ⅱ': '2', 'ⅲ': '3', 'ⅳ': '4', 'ⅴ': '5', 'ⅵ': '6', 'ⅶ': '7', 'ⅷ': '8',
-    '１': '1', '２': '2', '３': '3', '４': '4', '５': '5', '６': '6', '７': '7', '８': '8',
+    'i': '1', 'ii': '2', 'iii': '3', 'iv': '4', 'v': '5', 'vi': '6', 'vii': '7', 'viii': '8', 'ix': '9', 'x': '10',
+    'ⅰ': '1', 'ⅱ': '2', 'ⅲ': '3', 'ⅳ': '4', 'ⅴ': '5', 'ⅵ': '6', 'ⅶ': '7', 'ⅷ': '8', 'ⅸ': '9', 'ⅹ': '10',
+    'Ⅰ': '1', 'Ⅱ': '2', 'Ⅲ': '3', 'Ⅳ': '4', 'Ⅴ': '5', 'Ⅵ': '6', 'Ⅶ': '7', 'Ⅷ': '8', 'Ⅸ': '9', 'Ⅹ': '10',
+    '１': '1', '２': '2', '３': '3', '４': '4', '５': '5', '６': '6', '７': '7', '８': '8', '９': '9',
+    '一': '1', '二': '2', '三': '3', '四': '4', '五': '5', '六': '6', '七': '7', '八': '8', '九': '9', '十': '10',
 }
 
+
 def extract_sequel_marker(s: str) -> Optional[str]:
-    matches = re.findall(r"(?:^|\s|[^\w])(?:part\s*|season\s*|vol\s*)?([ivxIVX]+|ⅰ|ⅱ|ⅲ|ⅳ|ⅴ|ⅵ|ⅶ|ⅷ|ⅸ|ⅹ|１|２|３|4|5|6|7|8|9|\d+)(?:$|\s|[^\w])", s)
-    if matches:
-        raw = matches[-1].lower()
+    """
+    Extracts sequel numbers accurately across English, Japanese, and Chinese titles
+    (e.g., '状態異常Ⅲ', '黑兽2', 'Kuroinu II', 'Part 2') without false positives on normal English words.
+    """
+    if not s:
+        return None
+    # Strip out version strings first so 'Ver 2.0' or 'v1.02' is never mistaken for a sequel number
+    cleaned = re.sub(r"(?:ver\.?|v)\s*\d+(?:\.\d+)*[a-z]?", " ", s, flags=re.I)
+    cleaned = re.sub(r"\b\d+(?:\.\d+)+[a-z]?\b", " ", cleaned)
+    cleaned = re.sub(r"[RVB]J\d{6,8}", " ", cleaned, flags=re.I)
+
+    # 1. Check Unicode Roman numerals (Ⅰ..Ⅹ, ⅰ..ⅹ) anywhere in title
+    m_uni_roman = re.findall(r"([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅴⅵⅶⅷⅸⅹ])", cleaned)
+    if m_uni_roman:
+        raw = m_uni_roman[-1]
+        return ROMAN_SEQUEL_MAP.get(raw, raw.lower())
+
+    # 2. Check explicit '第X部/章/作/季' or 'Part/Season/Vol/Ep X'
+    m_explicit = re.findall(
+        r"(?:(?:part|season|vol|episode|ep|stage)\.?\s*([ivxIVX]+|\d+)|第([一二三四五六七八九十\d]+)[部章作季篇弹])",
+        cleaned,
+        flags=re.I
+    )
+    if m_explicit:
+        token = (m_explicit[-1][0] or m_explicit[-1][1]).lower()
+        return ROMAN_SEQUEL_MAP.get(token, token)
+
+    # 3. Check multi-char ASCII Roman numerals (II, III, IV, VI, VII, VIII, IX) at word or CJK boundary
+    m_ascii_roman = re.findall(
+        r"(?:^|(?<=[\s_\-:\u4e00-\u9fff\u3040-\u30ff]))(viii|vii|iii|iv|vi|ix|ii)(?=$|[\s_\-:\(\[\【\（\u4e00-\u9fff\u3040-\u30ff])",
+        cleaned,
+        flags=re.I
+    )
+    if m_ascii_roman:
+        raw = m_ascii_roman[-1].lower()
         return ROMAN_SEQUEL_MAP.get(raw, raw)
+
+    # 4. Check standalone Arabic or full-width digits (1-20) attached to CJK or word boundaries
+    m_digits = re.findall(
+        r"(?:^|(?<=[\s_\-:\u4e00-\u9fff\u3040-\u30ffa-zA-Z]))([１２３４５６７８９]|\d{1,2})(?=$|[\s_\-:\(\[\【\（\u4e00-\u9fff\u3040-\u30ff])",
+        cleaned
+    )
+    if m_digits:
+        raw = m_digits[-1]
+        return ROMAN_SEQUEL_MAP.get(raw, raw)
+
     return None
 
+
 def has_different_sequel_number(t1: str, t2: str) -> bool:
-    """Prevents grouping sequels like Game 1 and Game 2 / Base Game vs Game 2 / Game II."""
+    """Prevents grouping sequels like Game 1 and Game 2 / Base Game vs Game 2 / Game II / 状態異常Ⅲ."""
     m1 = extract_sequel_marker(t1)
     m2 = extract_sequel_marker(t2)
     if m1 is not None and m2 is not None and m1 != m2:
@@ -49,6 +118,7 @@ def has_different_sequel_number(t1: str, t2: str) -> bool:
     if (m2 is not None and m2 not in ('1', '0')) and m1 is None:
         return True
     return False
+
 
 def compute_duplicates_and_update_db() -> int:
     """
@@ -99,7 +169,6 @@ def compute_duplicates_and_update_db() -> int:
 
             # Match 1: Exact RJ Code (both non-empty)
             if rj1 and rj2 and rj1 == rj2:
-                # Anti-pollution check: prevent bad scraped RJ code from merging unrelated games
                 if norm1 and norm2 and len(norm1) >= 2 and len(norm2) >= 2:
                     ratio = fuzz.ratio(norm1, norm2)
                     token_ratio = fuzz.token_sort_ratio(norm1, norm2)
@@ -117,7 +186,7 @@ def compute_duplicates_and_update_db() -> int:
                 union(i, j)
                 continue
 
-            # Match 3: High similarity fuzzy match (e.g. 90+)
+            # Match 3: High similarity fuzzy match (e.g. 88+)
             if norm1 and norm2 and len(norm1) >= 4 and len(norm2) >= 4:
                 ratio = fuzz.ratio(norm1, norm2)
                 token_ratio = fuzz.token_sort_ratio(norm1, norm2)
@@ -135,10 +204,11 @@ def compute_duplicates_and_update_db() -> int:
 
     total_duplicates = 0
     dup_updates: List[Tuple[Optional[str], int, int]] = []
-    
+
     for root, group in clusters.items():
         if len(group) > 1:
-            group_id = f"dup_{group[0]['id']}"
+            min_id = min(g["id"] for g in group)
+            group_id = f"dup_{min_id}"
             dup_count = len(group) - 1
             total_duplicates += len(group)
             for g in group:
@@ -148,6 +218,7 @@ def compute_duplicates_and_update_db() -> int:
 
     batch_update_duplicates(dup_updates)
     return total_duplicates
+
 
 def archive_game_directory(game_id: int, archive_root: str) -> Tuple[bool, str]:
     """
@@ -161,6 +232,7 @@ def archive_game_directory(game_id: int, archive_root: str) -> Tuple[bool, str]:
     src_path = Path(game["folder_path"])
     if not src_path.exists():
         mark_archived(game_id)
+        compute_duplicates_and_update_db()
         return True, "源目录已不存在，已从游戏库标记归档"
 
     dest_root = Path(archive_root)
@@ -178,6 +250,7 @@ def archive_game_directory(game_id: int, archive_root: str) -> Tuple[bool, str]:
         return True, f"成功归档至 {dest_dir}"
     except Exception as e:
         return False, f"归档失败: {str(e)}"
+
 
 def dismiss_duplicate(game_id: int, target_id: Optional[int] = None) -> Tuple[bool, str]:
     """

@@ -53,6 +53,7 @@ NON_TRS_JSON_NAMES = {
     "deps.json", "runtimeconfig.json", "global.json", "project.json"
 }
 
+
 def is_valid_translation_json(file_path: str) -> bool:
     """
     Validates whether a .json file is actually an external translation dictionary
@@ -94,6 +95,7 @@ def is_valid_translation_json(file_path: str) -> bool:
     except Exception:
         return False
 
+
 def format_size(size_bytes: int) -> str:
     if size_bytes >= 1024 * 1024 * 1024:
         return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
@@ -103,6 +105,7 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / 1024:.0f} KB"
     return f"{size_bytes} B"
 
+
 def is_tool_folder(folder_name: str) -> bool:
     low = folder_name.lower()
     for kw in TOOL_KEYWORDS:
@@ -110,51 +113,48 @@ def is_tool_folder(folder_name: str) -> bool:
             return True
     return False
 
+
 def clean_title_from_folder(folder_name: str) -> str:
     """Cleans messy folder prefixes, tags, versions, suffixes to find raw game title."""
-    title = folder_name
+    title = folder_name.strip()
 
-    # Remove leading tags like 【PC官中SLG】, [NitroPlus], [RJxxxxxx]
+    # Remove leading RJ/VJ/BJ code prefixes like "RJ123456_" or "[RJ123456]"
+    title = re.sub(r"^\s*([RVB]J\d{6,8})[\s_\-]+", "", title, flags=re.I)
+
+    # Remove leading bracketed tags like 【PC官中SLG】, [NitroPlus], [RJxxxxxx]
+    # Only strip if there is remaining text after the bracket!
     while True:
         prev = title
-        title = re.sub(r"^\s*\[[^\]]+\]\s*", "", title)
-        title = re.sub(r"^\s*【[^】]+】\s*", "", title)
-        title = re.sub(r"^\s*\([^\)]+\)\s*", "", title)
+        for pat in (
+            r"^\s*\[[^\]]+\]\s*(?=.+)",
+            r"^\s*【[^】]+】\s*(?=.+)",
+            r"^\s*\([^\)]+\)\s*(?=.+)",
+            r"^\s*（[^）]+）\s*(?=.+)"
+        ):
+            title = re.sub(pat, "", title)
         if title == prev:
             break
 
     # Remove inner layer tag (内层)
-    title = re.sub(r"\(内层\)", "", title, flags=re.I)
-    title = re.sub(r"\(ڲ\)", "", title)
+    title = re.sub(r"[\(\（\[【]?内层[\)\）\]】]?", "", title, flags=re.I)
 
-    # Remove trailing common words
+    # Remove trailing version markers only when preceded by non-letter boundary or explicit 'ver'
     trailing_patterns = [
-        r"电脑$",
-        r"製品版.*$",
-        r"製品版$",
-        r"汉化(硬盘)?版.*$",
-        r"精翻汉化版.*$",
-        r"官中无修版.*$",
-        r"官方中文.*$",
-        r"中文动态.*$",
-        r"步兵版.*$",
-        r"繁中版.*$",
-        r"Steam.*$",
-        r"Ver\.?\s*\d+(\.\d+)*.*$",
-        r"v\d+(\.\d+)*.*$",
-        r"V\d+(\.\d+)*.*$",
+        r"(?:^|(?<=[\s_\-\.\[\(【（\u4e00-\u9fff\u3040-\u30ff]))(?:ver\.?\s*|v\s*)\d+(?:\.\d+)*[a-zA-Z]?(?:[\s_\-\.\]\)]|$).*$",
+        r"[\s_\-]*[\(\[【（]?(?:电脑|製品版|体验版|体験版|汉化(?:硬盘)?版|精翻汉化版|官中(?:无修)?版|官方中文(?:版)?|中文(?:动态)?版?|步兵版|繁中版|无修版|完整版|整合版)[\)\]】）]?.*$",
+        r"[\s_\-]+(?:Steam|DLsite|挂载汉化|MTool汉化|内嵌汉化).*$",
         r"_\d{6,}$",
-        r"zh-CN$",
-        r"zh-TW$",
-        r"CHS$",
-        r"Chs$"
+        r"[\s_\-]+(?:zh-CN|zh-TW|CHS|CHT|CN|JP)$"
     ]
     for pat in trailing_patterns:
-        title = re.sub(pat, "", title, flags=re.I).strip()
+        cleaned = re.sub(pat, "", title, flags=re.I).strip()
+        if cleaned:
+            title = cleaned
 
     # Clean whitespace and trailing symbols
-    title = title.strip(" -_+=~()[]{}【】")
+    title = title.strip(" -_+=~()[]{}【】（）")
     return title if title else folder_name
+
 
 def extract_rj_code(text: str) -> Optional[str]:
     """Extracts RJ/VJ/BJ code from folder name or file names."""
@@ -162,6 +162,7 @@ def extract_rj_code(text: str) -> Optional[str]:
     if m:
         return m.group(1).upper()
     return None
+
 
 def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str], str, int, float, float, bool]:
     """
@@ -194,7 +195,7 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str]
 
                         if entry.is_file():
                             name_low = entry.name.lower()
-                            if name_low in ("翻译文件.json", "translation.json", "与工具一同启动.bat", "lastloadedtrsfile", "startwithtool.bat"):
+                            if name_low in ("翻译文件.json", "translation.json", "trs.json", "与工具一同启动.bat", "lastloadedtrsfile", "startwithtool.bat"):
                                 has_trs = True
                             elif depth <= 1 and name_low.endswith(".json") and not has_trs:
                                 if is_valid_translation_json(entry.path):
@@ -250,6 +251,7 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2) -> Tuple[List[str]
 
     return exes, engine, total_size, latest_mtime, created_ctime, has_trs
 
+
 def choose_best_executable(root_path: str, exes: List[str]) -> Optional[str]:
     if not exes:
         return None
@@ -271,6 +273,7 @@ def choose_best_executable(root_path: str, exes: List[str]) -> Optional[str]:
     exes_sorted = sorted(exes, key=lambda x: (len(Path(x).relative_to(root_path).parts), -os.path.getsize(x) if os.path.exists(x) else 0))
     return exes_sorted[0]
 
+
 def get_excluded_scan_paths() -> Set[str]:
     """Returns normalized lowercase paths that must never be scanned as game folders."""
     cfg = load_config()
@@ -280,6 +283,7 @@ def get_excluded_scan_paths() -> Set[str]:
         if val and isinstance(val, str) and val.strip():
             excluded.add(os.path.normcase(os.path.normpath(val.strip())))
     return excluded
+
 
 def scan_directory(
     dir_path_str: str,
@@ -299,7 +303,6 @@ def scan_directory(
             for e in it:
                 if not e.is_dir():
                     continue
-                # Skip hidden or system/archive directories starting with '.' or '_'
                 if e.name.startswith(".") or e.name.startswith("_"):
                     continue
                 norm_p = os.path.normcase(os.path.normpath(e.path))

@@ -2,8 +2,10 @@ import os
 import json
 from pathlib import Path
 
+APP_VERSION = "2.1.0"
+
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(os.environ.get("ACG_VAULT_DATA_DIR", str(BASE_DIR / "data")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 COVERS_DIR = DATA_DIR / "covers"
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
@@ -25,22 +27,32 @@ DEFAULT_CONFIG = {
     "port": 8000
 }
 
+
 def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
                 merged = DEFAULT_CONFIG.copy()
-                merged.update(cfg)
+                if isinstance(cfg, dict):
+                    merged.update(cfg)
+                if isinstance(merged.get("game_directories"), list):
+                    cleaned_dirs = [str(d).strip() for d in merged["game_directories"] if str(d).strip()]
+                    merged["game_directories"] = cleaned_dirs or DEFAULT_CONFIG["game_directories"].copy()
                 return merged
         except Exception:
             pass
     save_config(DEFAULT_CONFIG)
     return DEFAULT_CONFIG.copy()
 
+
 def save_config(cfg: dict) -> dict:
     merged = DEFAULT_CONFIG.copy()
-    merged.update(cfg)
+    if isinstance(cfg, dict):
+        merged.update(cfg)
+    if isinstance(merged.get("game_directories"), list):
+        cleaned_dirs = [str(d).strip() for d in merged["game_directories"] if str(d).strip()]
+        merged["game_directories"] = cleaned_dirs or DEFAULT_CONFIG["game_directories"].copy()
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, indent=2)
     return merged

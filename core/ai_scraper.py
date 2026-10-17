@@ -13,11 +13,13 @@ from db.database import get_all_games, upsert_game
 from core.scraper import (
     scrape_dlsite,
     scrape_bangumi,
+    scrape_steam,
     scrape_vndb,
     download_and_cache_cover,
     get_http_client
 )
 from core.scanner import clean_title_from_folder, extract_rj_code
+
 
 def translate_japanese_to_chinese(text: str, proxy: Optional[str] = None) -> str:
     """Fast single-pass Japanese to Simplified Chinese translation."""
@@ -66,10 +68,11 @@ def translate_japanese_to_chinese(text: str, proxy: Optional[str] = None) -> str
 
     return cleaned_text
 
+
 def find_internal_clues(folder_path: str) -> Dict[str, Optional[str]]:
     """Inspects inner directory files for RJ codes, Steam AppIDs, or original titles."""
-    clues = {"rj_code": None, "original_title": None}
-    if not os.path.exists(folder_path):
+    clues = {"rj_code": None, "steam_appid": None, "original_title": None}
+    if not folder_path or not os.path.exists(folder_path):
         return clues
 
     try:
@@ -87,7 +90,16 @@ def find_internal_clues(folder_path: str) -> Dict[str, Optional[str]]:
                 f_low = f.lower()
                 fp = os.path.join(root, f)
 
-                if f_low.endswith(".url"):
+                if f_low == "steam_appid.txt" and not clues["steam_appid"]:
+                    try:
+                        with open(fp, "r", encoding="utf-8", errors="ignore") as fl:
+                            appid_str = fl.read().strip()
+                            if appid_str.isdigit():
+                                clues["steam_appid"] = appid_str
+                    except Exception:
+                        pass
+
+                elif f_low.endswith(".url"):
                     try:
                         with open(fp, "r", encoding="utf-8", errors="ignore") as fl:
                             content = fl.read()
@@ -111,6 +123,7 @@ def find_internal_clues(folder_path: str) -> Dict[str, Optional[str]]:
 
     return clues
 
+
 def search_dlsite_by_keyword(keyword: str, proxy: Optional[str] = None) -> Optional[str]:
     """Searches DLsite search engine for a game keyword and returns best matching RJ code."""
     if not keyword or len(keyword.strip()) < 2:
@@ -122,7 +135,7 @@ def search_dlsite_by_keyword(keyword: str, proxy: Optional[str] = None) -> Optio
         f"https://www.dlsite.com/home/fsr/=/language/jp/sex_category%5B0%5D/male/keyword/{kw_enc}"
     ]
 
-    with get_http_client(proxy, timeout=3.0) as client:
+    with get_http_client(proxy, timeout=3.5) as client:
         for url in search_urls:
             try:
                 r = client.get(url)
@@ -134,10 +147,20 @@ def search_dlsite_by_keyword(keyword: str, proxy: Optional[str] = None) -> Optio
                 continue
     return None
 
-def process_single_game_ai_scrape(game: Dict[str, Any], proxy: Optional[str] = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
+
+def process_single_game_ai_scrape(
+    game: Dict[str, Any],
+    proxy: Optional[str] = None,
+    preferred_source: Optional[str] = None,
+    force: bool = False
+) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
-    Complete AI scraping & translation pipeline for a single game.
+    Complete AI scraping & translation pipeline for a single game,
+    supporting DLsite, Bangumi, Steam, and VNDB while respecting preferred_source.
     """
+    cfg = load_config()
+    pref = (preferred_source or cfg.get("scrape_source") or "auto").lower()
+
     fpath = game.get("folder_path")
     fname = game.get("folder_name", "")
     clean_t = game.get("clean_title") or clean_title_from_folder(fname)
@@ -147,49 +170,85 @@ def process_single_game_ai_scrape(game: Dict[str, Any], proxy: Optional[str] = N
     clues = find_internal_clues(fpath) if fpath else {}
     if not rj_code and clues.get("rj_code"):
         rj_code = clues["rj_code"]
-    
+
     candidate_titles = []
     if clues.get("original_title"):
         candidate_titles.append(clues["original_title"])
     if clean_t:
         candidate_titles.append(clean_t)
-    candidate_titles.append(fname)
+    if fname and fname not in candidate_titles:
+        candidate_titles.append(fname)
 
     meta = None
     target_rj = rj_code
 
-    # 2. If no RJ code, search DLsite with candidate titles
-    if not target_rj:
+    # If user explicitly prefers Steam, Bangumi, or VNDB first (when no exact RJ code is forced)
+    if pref == "steam":
+        if clues.get("steam_appid"):
+            meta = scrape_steam(clues["steam_appid"], proxy=proxy, force=force)
+        if not meta:
+            for t in candidate_titles:
+                search_str = re.sub(r"[~_+\-=\[\]【】()（）]", " ", t).strip()
+                if len(search_str) >= 2:
+                    meta = scrape_steam(search_str, proxy=proxy, force=force)
+                    if meta:
+                        break
+    elif pref == "bangumi":
         for t in candidate_titles:
             search_str = re.sub(r"[~_+\-=\[\]【】()（）]", " ", t).strip()
             if len(search_str) >= 2:
-                found_rj = search_dlsite_by_keyword(search_str, proxy=proxy)
-                if found_rj:
-                    target_rj = found_rj
+                meta = scrape_bangumi(search_str, proxy=proxy, force=force)
+                if meta:
+                    break
+    elif pref == "vndb":
+        for t in candidate_titles:
+            search_str = re.sub(r"[~_+\-=\[\]【】()（）]", " ", t).strip()
+            if len(search_str) >= 2:
+                meta = scrape_vndb(search_str, proxy=proxy, force=force)
+                if meta:
+                    if meta.get("synopsis"):
+                        meta["synopsis"] = translate_japanese_to_chinese(meta["synopsis"], proxy=proxy)
                     break
 
-    # 3. DLsite Scraping (Priority 1)
-    if target_rj:
-        meta = scrape_dlsite(target_rj, proxy=proxy)
-        if meta:
-            jp_synopsis = meta.get("synopsis", "")
-            if jp_synopsis:
-                zh_synopsis = translate_japanese_to_chinese(jp_synopsis, proxy=proxy)
-                meta["synopsis"] = zh_synopsis
-            
-            if clean_t and clean_t != meta["title"] and not re.search(r"[\u3040-\u30ff]", clean_t):
-                meta["display_title"] = clean_t
+    # 2. DLsite lookup by RJ code or keyword search
+    if not meta:
+        if not target_rj and pref in ("auto", "dlsite"):
+            for t in candidate_titles:
+                search_str = re.sub(r"[~_+\-=\[\]【】()（）]", " ", t).strip()
+                if len(search_str) >= 2:
+                    found_rj = search_dlsite_by_keyword(search_str, proxy=proxy)
+                    if found_rj:
+                        target_rj = found_rj
+                        break
 
-    # 4. Bangumi / VNDB Scraping (Fallback if not on DLsite)
+        if target_rj:
+            meta = scrape_dlsite(target_rj, proxy=proxy, force=force)
+            if meta:
+                jp_synopsis = meta.get("synopsis", "")
+                if jp_synopsis:
+                    zh_synopsis = translate_japanese_to_chinese(jp_synopsis, proxy=proxy)
+                    meta["synopsis"] = zh_synopsis
+                if clean_t and clean_t != meta["title"] and not re.search(r"[\u3040-\u30ff]", clean_t):
+                    meta["display_title"] = clean_t
+
+    # 3. Fallback across Bangumi -> Steam -> VNDB
+    if not meta:
+        if clues.get("steam_appid"):
+            meta = scrape_steam(clues["steam_appid"], proxy=proxy, force=force)
+
     if not meta:
         for t in candidate_titles:
             search_str = re.sub(r"[~_+\-=\[\]【】()（）]", " ", t).strip()
             if len(search_str) >= 2:
-                bgm_res = scrape_bangumi(search_str, proxy=proxy)
+                bgm_res = scrape_bangumi(search_str, proxy=proxy, force=force)
                 if bgm_res:
                     meta = bgm_res
                     break
-                vndb_res = scrape_vndb(search_str, proxy=proxy)
+                steam_res = scrape_steam(search_str, proxy=proxy, force=force)
+                if steam_res:
+                    meta = steam_res
+                    break
+                vndb_res = scrape_vndb(search_str, proxy=proxy, force=force)
                 if vndb_res:
                     meta = vndb_res
                     if meta.get("synopsis"):
@@ -199,12 +258,12 @@ def process_single_game_ai_scrape(game: Dict[str, Any], proxy: Optional[str] = N
     if not meta:
         return False, None
 
-    # 5. Persist to DB
+    # 4. Persist to DB
     update_dict = {
         "folder_name": game["folder_name"],
         "folder_path": game["folder_path"],
-        "rj_code": target_rj or game.get("rj_code", ""),
-        "display_title": meta.get("title") or clean_t or game["folder_name"],
+        "rj_code": target_rj or meta.get("rj_code") or game.get("rj_code", ""),
+        "display_title": meta.get("display_title") or meta.get("title") or clean_t or game["folder_name"],
         "original_title": meta.get("original_title") or "",
         "cover_url": meta.get("cover_url") or game.get("cover_url", ""),
         "banner_url": meta.get("banner_url") or game.get("banner_url", ""),

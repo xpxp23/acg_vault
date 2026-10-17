@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 RPG Maker MV/MZ Static and Runtime Translation Patcher for ACG Vault.
-Bakes external translation dictionary directly into game data and runtime plugins.
+Bakes external translation dictionary directly into game data and runtime plugins,
+and supports one-click restoration (unbake) from original backup.
 """
 
 import os
@@ -12,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Dict, Any, Tuple, Optional, Callable
 
-from db.database import get_game_by_id, update_game_user_state
+from db.database import get_game_by_id, manual_update_game_metadata
 from core.scanner import is_valid_translation_json
 
 BLACKLIST_KEYS = {
@@ -33,16 +34,21 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
 //=============================================================================
 /*:
  * @target MZ
- * @plugindesc [v1.0.0] Universal Runtime Translation Patch
- * @author Antigravity
+ * @plugindesc [v2.1.0] Universal Runtime Translation Patch
+ * @author ACG Vault
  * @help Translates all text dynamically on display time.
  */
 
 (() => {
     'use strict';
-    console.log('[NativeTranslator] Initializing universal translation plugin...');
+    console.log('[NativeTranslator] Initializing universal translation plugin v2.1...');
 
     let transDict = {};
+
+    function stripBom(str) {
+        if (!str || typeof str !== 'string') return '';
+        return str.charCodeAt(0) === 0xFEFF ? str.slice(1) : str;
+    }
 
     function loadDict() {
         try {
@@ -53,26 +59,35 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
                 const candidates = [
                     path.join(process.cwd(), '翻译文件.json'),
                     path.join(baseDir, '翻译文件.json'),
+                    path.join(process.cwd(), 'www', '翻译文件.json'),
+                    path.join(baseDir, 'www', '翻译文件.json'),
                     path.join(process.cwd(), 'translation.json'),
-                    path.join(baseDir, 'translation.json')
+                    path.join(baseDir, 'translation.json'),
+                    path.join(process.cwd(), 'www', 'translation.json')
                 ];
                 for (const p of candidates) {
                     if (fs.existsSync(p)) {
                         const raw = fs.readFileSync(p, 'utf8');
-                        transDict = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
+                        transDict = JSON.parse(stripBom(raw));
                         console.log('[NativeTranslator] Loaded ' + Object.keys(transDict).length + ' dictionary entries from ' + p);
                         return;
                     }
                 }
             }
 
-            // XHR Fallback
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', '翻译文件.json', false);
-            xhr.send();
-            if (xhr.status === 200 || xhr.status === 0) {
-                transDict = JSON.parse(xhr.responseText);
-                console.log('[NativeTranslator] Loaded ' + Object.keys(transDict).length + ' dictionary entries via XHR.');
+            // XHR Fallback (with UTF-8 BOM stripping and multi-path fallback)
+            const xhrUrls = ['翻译文件.json', 'translation.json'];
+            for (const url of xhrUrls) {
+                try {
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('GET', url, false);
+                    xhr.send();
+                    if ((xhr.status === 200 || xhr.status === 0) && xhr.responseText) {
+                        transDict = JSON.parse(stripBom(xhr.responseText));
+                        console.log('[NativeTranslator] Loaded ' + Object.keys(transDict).length + ' dictionary entries via XHR (' + url + ').');
+                        return;
+                    }
+                } catch (innerErr) {}
             }
         } catch (e) {
             console.error('[NativeTranslator] Error loading dictionary:', e);
@@ -217,6 +232,7 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
 })();
 """
 
+
 class MZPatcher:
     @staticmethod
     def find_game_root(folder_path: str) -> Optional[str]:
@@ -344,16 +360,16 @@ class MZPatcher:
         stats = {'count': 0, 'files': 0}
 
         for fname in os.listdir(backup_dir):
-            if fname.endswith('.json'):
+            if fname.lower().endswith('.json'):
                 src_path = os.path.join(backup_dir, fname)
                 dst_path = os.path.join(data_dir, fname)
                 try:
-                    with open(src_path, 'r', encoding='utf-8') as f:
+                    with open(src_path, 'r', encoding='utf-8-sig') as f:
                         data = json.load(f)
                     file_stats = {'count': 0}
                     self.traverse_and_translate(data, trans_dict, file_stats)
 
-                    if fname == 'System.json':
+                    if fname.lower() == 'system.json' and isinstance(data, dict):
                         if 'advanced' in data and isinstance(data['advanced'], dict):
                             orig = data['advanced'].get('fallbackFonts', '')
                             if 'Microsoft YaHei' not in orig:
@@ -371,12 +387,14 @@ class MZPatcher:
                 except Exception:
                     shutil.copy2(src_path, dst_path)
 
-        target_dict_dest = os.path.join(game_root, '翻译文件.json')
-        if not os.path.exists(target_dict_dest) or os.path.abspath(dict_path) != os.path.abspath(target_dict_dest):
-            try:
-                shutil.copy2(dict_path, target_dict_dest)
-            except Exception:
-                pass
+        # Ensure dictionary is accessible in both game_root (e.g. www/) and top-level game_folder
+        for dest_base in {os.path.abspath(game_root), os.path.abspath(game_folder)}:
+            target_dict_dest = os.path.join(dest_base, '翻译文件.json')
+            if not os.path.exists(target_dict_dest) or os.path.abspath(dict_path) != os.path.abspath(target_dict_dest):
+                try:
+                    shutil.copy2(dict_path, target_dict_dest)
+                except Exception:
+                    pass
 
         plugins_dir = os.path.join(game_root, 'js', 'plugins')
         os.makedirs(plugins_dir, exist_ok=True)
@@ -389,12 +407,14 @@ class MZPatcher:
             plugins_bak = plugins_file + '.original_bak'
             if not os.path.exists(plugins_bak):
                 shutil.copy2(plugins_file, plugins_bak)
-            with open(plugins_file, 'r', encoding='utf-8') as f:
+            with open(plugins_file, 'r', encoding='utf-8-sig') as f:
                 code = f.read()
             if '"name":"translation_patch"' not in code:
                 idx = code.rfind('];')
                 if idx != -1:
-                    entry = ',\n{"name":"translation_patch","status":true,"description":"Universal Runtime Translation Patch","parameters":{}}\n];'
+                    prefix_check = code[:idx].rstrip()
+                    comma = '' if prefix_check.endswith('[') else ','
+                    entry = f'{comma}\n{{"name":"translation_patch","status":true,"description":"Universal Runtime Translation Patch","parameters":{{}}}}\n];'
                     new_code = code[:idx] + entry
                     with open(plugins_file, 'w', encoding='utf-8') as f:
                         f.write(new_code)
@@ -406,6 +426,78 @@ class MZPatcher:
             "message": f"静态固化汉化成功！已将 {stats['count']} 处文本固化到游戏本体并安装动态补丁。"
         }
 
+    def unbake(self, game_folder: str) -> Dict[str, Any]:
+        game_root = self.find_game_root(game_folder)
+        if not game_root:
+            return {"success": False, "message": "未找到 RPG Maker MV/MZ 的游戏根目录"}
+
+        data_dir = os.path.join(game_root, 'data')
+        backup_dir = os.path.join(game_root, 'data_original_backup')
+        if not os.path.exists(backup_dir):
+            return {"success": False, "message": "未检测到原版数据备份目录 (data_original_backup)，无需还原"}
+
+        try:
+            for fname in os.listdir(backup_dir):
+                src = os.path.join(backup_dir, fname)
+                dst = os.path.join(data_dir, fname)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+            plugins_file = os.path.join(game_root, 'js', 'plugins.js')
+            plugins_bak = plugins_file + '.original_bak'
+            if os.path.exists(plugins_bak):
+                shutil.copy2(plugins_bak, plugins_file)
+                try:
+                    os.remove(plugins_bak)
+                except Exception:
+                    pass
+
+            patch_js = os.path.join(game_root, 'js', 'plugins', 'translation_patch.js')
+            if os.path.exists(patch_js):
+                try:
+                    os.remove(patch_js)
+                except Exception:
+                    pass
+
+            return {
+                "success": True,
+                "message": "已成功从备份还原游戏原版数据并移除注入补丁！"
+            }
+        except Exception as e:
+            return {"success": False, "message": f"还原原版数据失败: {str(e)}"}
+
+
+def find_translation_dict_in_folder(folder_path: str) -> Optional[str]:
+    p = Path(folder_path)
+    search_dirs = [p]
+    if (p / "www").is_dir():
+        search_dirs.append(p / "www")
+
+    for d in search_dirs:
+        for cand in ["翻译文件.json", "translation.json", "trs.json"]:
+            if (d / cand).exists():
+                return str(d / cand)
+
+    if (p / "lastLoadedTrsFile").exists():
+        try:
+            with open(p / "lastLoadedTrsFile", "r", encoding="utf-8-sig") as f:
+                ref = f.read().strip()
+                if ref and (p / ref).exists() and is_valid_translation_json(str(p / ref)):
+                    return str(p / ref)
+        except Exception:
+            pass
+
+    for d in search_dirs:
+        try:
+            for f in os.listdir(d):
+                full_p = d / f
+                if full_p.is_file() and f.lower().endswith(".json") and is_valid_translation_json(str(full_p)):
+                    return str(full_p)
+        except Exception:
+            pass
+    return None
+
 
 def bake_game_translation(game_id: int) -> Dict[str, Any]:
     game = get_game_by_id(game_id)
@@ -416,33 +508,25 @@ def bake_game_translation(game_id: int) -> Dict[str, Any]:
     if not folder_path or not os.path.exists(folder_path):
         return {"success": False, "message": "游戏目录不存在"}
 
-    trs_file = None
-    p = Path(folder_path)
-    for cand in ["翻译文件.json", "translation.json", "trs.json"]:
-        if (p / cand).exists():
-            trs_file = str(p / cand)
-            break
-    if not trs_file and (p / "lastLoadedTrsFile").exists():
-        try:
-            with open(p / "lastLoadedTrsFile", "r", encoding="utf-8-sig") as f:
-                ref = f.read().strip()
-                if ref and (p / ref).exists() and is_valid_translation_json(str(p / ref)):
-                    trs_file = str(p / ref)
-        except Exception:
-            pass
-    if not trs_file:
-        try:
-            for f in os.listdir(p):
-                full_p = p / f
-                if full_p.is_file() and f.lower().endswith(".json") and is_valid_translation_json(str(full_p)):
-                    trs_file = str(full_p)
-                    break
-        except Exception:
-            pass
-
+    trs_file = find_translation_dict_in_folder(folder_path)
     if not trs_file or not os.path.exists(trs_file):
         return {"success": False, "message": "未在游戏目录中检测到有效的外挂翻译 JSON 字典文件"}
 
     patcher = MZPatcher()
     res = patcher.bake(folder_path, trs_file)
+    if res.get("success"):
+        manual_update_game_metadata(game_id, {"has_translation": 1})
     return res
+
+
+def unbake_game_translation(game_id: int) -> Dict[str, Any]:
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"success": False, "message": "游戏不存在"}
+
+    folder_path = game.get("folder_path")
+    if not folder_path or not os.path.exists(folder_path):
+        return {"success": False, "message": "游戏目录不存在"}
+
+    patcher = MZPatcher()
+    return patcher.unbake(folder_path)

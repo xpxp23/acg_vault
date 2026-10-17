@@ -1,17 +1,20 @@
 import os
+import sys
 import re
 import time
+import shutil
 import zipfile
 import subprocess
 import threading
 import ctypes
-from ctypes import wintypes
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from db.database import get_game_by_id, record_game_launch
-from core.scanner import fast_inspect_folder, choose_best_executable, is_valid_translation_json
+from core.scanner import fast_inspect_folder, choose_best_executable, is_valid_translation_json, IGNORE_EXE_PATTERNS
 from config import load_config
+
+IS_WINDOWS = sys.platform == "win32"
 
 # ---------------------------------------------------------
 # Win32 Constants & ShellExecuteEx API
@@ -23,82 +26,130 @@ SW_SHOWMAXIMIZED = 3
 SW_SHOW = 5
 SW_MINIMIZE = 6
 SW_SHOWMINNOACTIVE = 7
-
-class SHELLEXECUTEINFOW(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", wintypes.DWORD),
-        ("fMask", wintypes.ULONG),
-        ("hwnd", wintypes.HWND),
-        ("lpVerb", wintypes.LPCWSTR),
-        ("lpFile", wintypes.LPCWSTR),
-        ("lpParameters", wintypes.LPCWSTR),
-        ("lpDirectory", wintypes.LPCWSTR),
-        ("nShow", ctypes.c_int),
-        ("hInstApp", wintypes.HINSTANCE),
-        ("lpIDList", wintypes.LPVOID),
-        ("lpClass", wintypes.LPCWSTR),
-        ("hkeyClass", wintypes.HKEY),
-        ("dwHotKey", wintypes.DWORD),
-        ("hIconOrMonitor", wintypes.HANDLE),
-        ("hProcess", wintypes.HANDLE),
-    ]
-
-# ---------------------------------------------------------
-# Win32 Toolhelp32 Process Scanning
-# ---------------------------------------------------------
 TH32CS_SNAPPROCESS = 0x00000002
 
-class PROCESSENTRY32W(ctypes.Structure):
-    _fields_ = [
-        ("dwSize", wintypes.DWORD),
-        ("cntUsage", wintypes.DWORD),
-        ("th32ProcessID", wintypes.DWORD),
-        ("th32DefaultHeapID", ctypes.c_size_t),
-        ("th32ModuleID", wintypes.DWORD),
-        ("cntThreads", wintypes.DWORD),
-        ("th32ParentProcessID", wintypes.DWORD),
-        ("pcPriClassBase", wintypes.LONG),
-        ("dwFlags", wintypes.DWORD),
-        ("szExeFile", wintypes.WCHAR * 260)
-    ]
+if IS_WINDOWS:
+    from ctypes import wintypes
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", wintypes.ULONG),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", wintypes.LPVOID),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIconOrMonitor", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260)
+        ]
+
+
+def close_win32_handle(h: Any):
+    if IS_WINDOWS and h:
+        try:
+            ctypes.windll.kernel32.CloseHandle(h)
+        except Exception:
+            pass
+
+
+def is_pid_alive(pid: Optional[int]) -> bool:
+    if not pid or pid <= 0:
+        return False
+    if not IS_WINDOWS:
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except Exception:
+            return False
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+    h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not h:
+        return False
+    try:
+        exit_code = wintypes.DWORD()
+        if ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code)):
+            return exit_code.value == STILL_ACTIVE
+        return True
+    finally:
+        close_win32_handle(h)
+
 
 def get_process_image_path(pid: int) -> str:
+    if not IS_WINDOWS:
+        return ""
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
         return ""
-    buf = ctypes.create_unicode_buffer(1024)
-    size = wintypes.DWORD(len(buf))
-    res = ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
-    ctypes.windll.kernel32.CloseHandle(h)
-    return buf.value if res else ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(len(buf))
+        res = ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
+        return buf.value if res else ""
+    finally:
+        close_win32_handle(h)
+
 
 def find_game_pid_in_folder(folder_path: str, exe_filename: Optional[str] = None) -> Optional[int]:
     """Finds the PID of a running game process inside a specific folder."""
-    norm_folder = os.path.normpath(folder_path).lower()
+    if not IS_WINDOWS or not folder_path:
+        return None
+    norm_folder = os.path.normcase(os.path.normpath(folder_path))
     hSnap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if hSnap == -1:
         return None
-    pe = PROCESSENTRY32W()
-    pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
-    candidates = []
-    if ctypes.windll.kernel32.Process32FirstW(hSnap, ctypes.byref(pe)):
-        while True:
-            pid = pe.th32ProcessID
-            sz_name = pe.szExeFile
-            if exe_filename is None or sz_name.lower() == exe_filename.lower():
+    try:
+        pe = PROCESSENTRY32W()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        exact_candidates = []
+        folder_candidates = []
+        if ctypes.windll.kernel32.Process32FirstW(hSnap, ctypes.byref(pe)):
+            while True:
+                pid = pe.th32ProcessID
+                sz_name = pe.szExeFile
                 path = get_process_image_path(pid)
-                if path and os.path.normpath(path).lower().startswith(norm_folder):
-                    candidates.append((pid, sz_name))
-            if not ctypes.windll.kernel32.Process32NextW(hSnap, ctypes.byref(pe)):
-                break
-    ctypes.windll.kernel32.CloseHandle(hSnap)
-    if candidates:
-        return candidates[0][0]
-    return None
+                if path and os.path.normcase(os.path.normpath(path)).startswith(norm_folder):
+                    if exe_filename and sz_name.lower() == exe_filename.lower():
+                        exact_candidates.append(pid)
+                    elif not any(pat.search(sz_name) for pat in IGNORE_EXE_PATTERNS):
+                        folder_candidates.append(pid)
+                if not ctypes.windll.kernel32.Process32NextW(hSnap, ctypes.byref(pe)):
+                    break
+        if exact_candidates:
+            return exact_candidates[0]
+        if folder_candidates:
+            return folder_candidates[0]
+        return None
+    finally:
+        close_win32_handle(hSnap)
+
 
 def shell_launch(exe_path: str, parameters: Optional[str] = None, working_dir: Optional[str] = None, show_cmd: int = SW_SHOWNORMAL):
     """Launches an executable via Windows Shell to guarantee interactive desktop presentation and visible window."""
+    if not IS_WINDOWS:
+        return False, None, None
     sei = SHELLEXECUTEINFOW()
     sei.cbSize = ctypes.sizeof(SHELLEXECUTEINFOW)
     sei.fMask = SEE_MASK_NOCLOSEPROCESS
@@ -117,44 +168,112 @@ def shell_launch(exe_path: str, parameters: Optional[str] = None, working_dir: O
         pid = ctypes.windll.kernel32.GetProcessId(hProcess)
     return bool(success), pid, hProcess
 
-# Map of running game processes: game_id -> {pid, start_time, exe, mode}
-RUNNING_GAMES: Dict[int, Dict[str, Any]] = {}
 
-def monitor_game_pid(game_id: int, target_pid: Optional[int], hProcess: Optional[Any], start_time: float, working_dir: Optional[str] = None, exe_name: Optional[str] = None):
-    """Monitors the real game process until it closes and records play session duration."""
+# Map of running game processes: game_id -> {pid, start_time, exe, mode, folder_path}
+RUNNING_GAMES: Dict[int, Dict[str, Any]] = {}
+RUNNING_LOCK = threading.Lock()
+
+
+def get_running_games_info() -> Dict[int, Dict[str, Any]]:
+    """Returns currently active running games with live elapsed seconds."""
+    now = time.time()
+    active: Dict[int, Dict[str, Any]] = {}
+    with RUNNING_LOCK:
+        stale_ids = []
+        for gid, info in RUNNING_GAMES.items():
+            pid = info.get("pid")
+            folder_path = info.get("folder_path")
+            elapsed = int(now - info.get("start_time", now))
+            if elapsed > 8 and pid and not is_pid_alive(pid):
+                new_pid = find_game_pid_in_folder(folder_path, info.get("exe")) if folder_path else None
+                if new_pid:
+                    info["pid"] = new_pid
+                else:
+                    stale_ids.append(gid)
+                    continue
+            active[gid] = {
+                "game_id": gid,
+                "pid": info.get("pid"),
+                "exe": info.get("exe", ""),
+                "mode": info.get("mode", "native"),
+                "elapsed_seconds": max(0, elapsed)
+            }
+        for sid in stale_ids:
+            RUNNING_GAMES.pop(sid, None)
+    return active
+
+
+def monitor_game_pid(
+    game_id: int,
+    target_pid: Optional[int],
+    hProcess: Optional[Any],
+    start_time: float,
+    working_dir: Optional[str] = None,
+    exe_name: Optional[str] = None,
+    game_folder: Optional[str] = None
+):
+    """Monitors the real game process until it closes and records play session duration without double-counting play_count."""
+    search_root = game_folder or working_dir
     try:
         SYNCHRONIZE = 0x00100000
         INFINITE = 0xFFFFFFFF
 
-        if hProcess:
+        if hProcess and IS_WINDOWS:
             ctypes.windll.kernel32.WaitForSingleObject(hProcess, INFINITE)
-            ctypes.windll.kernel32.CloseHandle(hProcess)
-        elif target_pid:
-            h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, target_pid)
-            if h:
-                ctypes.windll.kernel32.WaitForSingleObject(h, INFINITE)
-                ctypes.windll.kernel32.CloseHandle(h)
+            close_win32_handle(hProcess)
+            hProcess = None
+            time.sleep(1.5)
+            child_pid = find_game_pid_in_folder(search_root, exe_name)
+            if child_pid:
+                with RUNNING_LOCK:
+                    if game_id in RUNNING_GAMES:
+                        RUNNING_GAMES[game_id]["pid"] = child_pid
+                while True:
+                    time.sleep(2.0)
+                    if not find_game_pid_in_folder(search_root, exe_name):
+                        break
+        else:
+            if hProcess:
+                close_win32_handle(hProcess)
+                hProcess = None
+
+            active_pid = target_pid
+            if not active_pid:
+                for _ in range(6):
+                    time.sleep(1.2)
+                    active_pid = find_game_pid_in_folder(search_root, exe_name)
+                    if active_pid:
+                        with RUNNING_LOCK:
+                            if game_id in RUNNING_GAMES:
+                                RUNNING_GAMES[game_id]["pid"] = active_pid
+                        break
+
+            if active_pid and IS_WINDOWS:
+                h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, active_pid)
+                if h:
+                    ctypes.windll.kernel32.WaitForSingleObject(h, INFINITE)
+                    close_win32_handle(h)
+                else:
+                    while True:
+                        time.sleep(2.0)
+                        if not find_game_pid_in_folder(search_root, exe_name):
+                            break
             else:
                 while True:
                     time.sleep(2.0)
-                    active_pid = find_game_pid_in_folder(working_dir, exe_name)
-                    if not active_pid:
+                    if not find_game_pid_in_folder(search_root, exe_name):
                         break
-        else:
-            time.sleep(2.0)
-            while True:
-                active_pid = find_game_pid_in_folder(working_dir, exe_name)
-                if not active_pid:
-                    break
-                time.sleep(2.0)
     except Exception as e:
         print(f"[MONITOR ERROR] {e}")
     finally:
+        if hProcess:
+            close_win32_handle(hProcess)
         duration = int(time.time() - start_time)
-        if duration > 10:
-            record_game_launch(game_id, duration_seconds=duration)
-        if game_id in RUNNING_GAMES:
-            del RUNNING_GAMES[game_id]
+        if duration >= 3:
+            record_game_launch(game_id, duration_seconds=duration, increment_count=False)
+        with RUNNING_LOCK:
+            RUNNING_GAMES.pop(game_id, None)
+
 
 def resolve_leproc_path() -> Optional[str]:
     """Resolves Locale Emulator (LEProc.exe) path from config or common installation locations."""
@@ -180,8 +299,18 @@ def resolve_leproc_path() -> Optional[str]:
             return c
     return None
 
+
 def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
     """Launches the primary executable for a game with normal interactive window and tracks play session."""
+    running = get_running_games_info()
+    if game_id in running:
+        return {
+            "success": False,
+            "already_running": True,
+            "pid": running[game_id].get("pid"),
+            "message": "该游戏已在运行中，无需重复启动"
+        }
+
     if mode == "mtool":
         return launch_game_with_mtool(game_id)
     elif mode == "le":
@@ -208,7 +337,7 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
 
     if not exe_path or not os.path.exists(exe_path):
         if folder_path and os.path.exists(folder_path):
-            os.startfile(folder_path)
+            open_game_folder(folder_path)
             return {"success": True, "message": "未找到主程序，已为您打开游戏目录"}
         return {"success": False, "message": "游戏主程序与目录均不存在"}
 
@@ -218,24 +347,27 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
     try:
         success, pid, hProcess = shell_launch(exe_path, working_dir=working_dir, show_cmd=SW_SHOWNORMAL)
         if not success:
-            os.startfile(exe_path)
+            if IS_WINDOWS:
+                os.startfile(exe_path)
             time.sleep(1.0)
-            pid = find_game_pid_in_folder(working_dir, exe_name)
+            pid = find_game_pid_in_folder(folder_path or working_dir, exe_name)
             hProcess = None
 
         start_time = time.time()
-        record_game_launch(game_id, duration_seconds=0)
+        record_game_launch(game_id, duration_seconds=0, increment_count=True)
 
-        RUNNING_GAMES[game_id] = {
-            "pid": pid,
-            "start_time": start_time,
-            "exe": exe_name,
-            "mode": "native"
-        }
+        with RUNNING_LOCK:
+            RUNNING_GAMES[game_id] = {
+                "pid": pid,
+                "start_time": start_time,
+                "exe": exe_name,
+                "mode": "native",
+                "folder_path": folder_path or working_dir
+            }
 
         t = threading.Thread(
             target=monitor_game_pid,
-            args=(game_id, pid, hProcess, start_time, working_dir, exe_name),
+            args=(game_id, pid, hProcess, start_time, working_dir, exe_name, folder_path),
             daemon=True
         )
         t.start()
@@ -243,13 +375,24 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
         return {
             "success": True,
             "pid": pid,
+            "mode": "native",
             "message": f"成功启动: {exe_name}"
         }
     except Exception as e:
         return {"success": False, "message": f"启动失败: {str(e)}"}
 
+
 def launch_game_with_le(game_id: int) -> Dict[str, Any]:
     """Launches game via Locale Emulator (LEProc.exe) for Japanese Shift-JIS locale emulation."""
+    running = get_running_games_info()
+    if game_id in running:
+        return {
+            "success": False,
+            "already_running": True,
+            "pid": running[game_id].get("pid"),
+            "message": "该游戏已在运行中，无需重复启动"
+        }
+
     game = get_game_by_id(game_id)
     if not game:
         return {"success": False, "message": "游戏记录不存在"}
@@ -275,30 +418,33 @@ def launch_game_with_le(game_id: int) -> Dict[str, Any]:
     exe_name = Path(exe_path).name
 
     try:
-        success, _, _ = shell_launch(
+        success, _, hLeProc = shell_launch(
             exe_path=le_exe,
             parameters=f'-run "{exe_path}"',
             working_dir=working_dir,
             show_cmd=SW_SHOWNORMAL
         )
+        close_win32_handle(hLeProc)
         if not success:
             subprocess.Popen([le_exe, "-run", exe_path], cwd=working_dir)
 
         time.sleep(1.0)
-        real_pid = find_game_pid_in_folder(working_dir, exe_name)
+        real_pid = find_game_pid_in_folder(folder_path or working_dir, exe_name)
         start_time = time.time()
-        record_game_launch(game_id, duration_seconds=0)
+        record_game_launch(game_id, duration_seconds=0, increment_count=True)
 
-        RUNNING_GAMES[game_id] = {
-            "pid": real_pid,
-            "start_time": start_time,
-            "exe": exe_name,
-            "mode": "le"
-        }
+        with RUNNING_LOCK:
+            RUNNING_GAMES[game_id] = {
+                "pid": real_pid,
+                "start_time": start_time,
+                "exe": exe_name,
+                "mode": "le",
+                "folder_path": folder_path or working_dir
+            }
 
         t = threading.Thread(
             target=monitor_game_pid,
-            args=(game_id, real_pid, None, start_time, working_dir, exe_name),
+            args=(game_id, real_pid, None, start_time, working_dir, exe_name, folder_path),
             daemon=True
         )
         t.start()
@@ -306,29 +452,39 @@ def launch_game_with_le(game_id: int) -> Dict[str, Any]:
         return {
             "success": True,
             "pid": real_pid,
+            "mode": "le",
             "message": f"已通过 Locale Emulator 转区启动: {exe_name}"
         }
     except Exception as e:
         return {"success": False, "message": f"LE 转区启动失败: {str(e)}"}
 
+
 def open_game_folder(folder_path: str) -> bool:
-    if os.path.exists(folder_path):
+    if folder_path and os.path.exists(folder_path):
         try:
-            os.startfile(folder_path)
+            if IS_WINDOWS:
+                os.startfile(folder_path)
+            else:
+                subprocess.Popen(["xdg-open", folder_path])
             return True
         except Exception:
-            subprocess.Popen(["explorer.exe", folder_path])
-            return True
+            if IS_WINDOWS:
+                subprocess.Popen(["explorer.exe", folder_path])
+                return True
     return False
 
+
 def reveal_in_explorer(file_or_dir_path: str) -> bool:
-    if os.path.exists(file_or_dir_path):
+    if file_or_dir_path and os.path.exists(file_or_dir_path):
         try:
-            subprocess.Popen(["explorer.exe", f'/select,"{file_or_dir_path}"'])
-            return True
+            if IS_WINDOWS:
+                subprocess.Popen(["explorer.exe", f'/select,"{file_or_dir_path}"'])
+                return True
+            return open_game_folder(os.path.dirname(file_or_dir_path))
         except Exception:
             return open_game_folder(file_or_dir_path)
     return False
+
 
 def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
     """Inspects game folder to determine if MTool translation or Locale Emulator is available/supported."""
@@ -348,7 +504,6 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
 
     folder = Path(folder_path)
 
-    # Check for MTool bat files
     has_bat = False
     bat_file = None
     for cand in ["与工具一同启动.bat", "StartWithTool.bat"]:
@@ -357,13 +512,19 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
             bat_file = str(folder / cand)
             break
 
-    # Check for validated translation JSON
     has_trs = False
     trs_file = None
-    for cand in ["翻译文件.json", "translation.json", "trs.json"]:
-        if (folder / cand).exists():
-            has_trs = True
-            trs_file = str(folder / cand)
+    search_dirs = [folder]
+    if (folder / "www").is_dir():
+        search_dirs.append(folder / "www")
+
+    for d in search_dirs:
+        for cand in ["翻译文件.json", "translation.json", "trs.json"]:
+            if (d / cand).exists():
+                has_trs = True
+                trs_file = str(d / cand)
+                break
+        if has_trs:
             break
 
     if not has_trs and (folder / "lastLoadedTrsFile").exists():
@@ -377,15 +538,18 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
             pass
 
     if not has_trs:
-        try:
-            for f in os.listdir(folder):
-                full_p = folder / f
-                if full_p.is_file() and f.lower().endswith(".json") and is_valid_translation_json(str(full_p)):
-                    has_trs = True
-                    trs_file = str(full_p)
-                    break
-        except Exception:
-            pass
+        for d in search_dirs:
+            try:
+                for f in os.listdir(d):
+                    full_p = d / f
+                    if full_p.is_file() and f.lower().endswith(".json") and is_valid_translation_json(str(full_p)):
+                        has_trs = True
+                        trs_file = str(full_p)
+                        break
+            except Exception:
+                pass
+            if has_trs:
+                break
 
     engine_type = game.get("engine_type", "") or ""
     is_mtool_engine = False
@@ -400,7 +564,6 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
         is_mtool_engine = True
         hook_dll_name = "mzHook.dll"
 
-    # Check if translation has already been baked into the game files
     is_baked = False
     if (
         (folder / "data_original_backup").exists()
@@ -440,8 +603,18 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
         "hook_dll": hook_dll_name
     }
 
+
 def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
     """Launches game with MTool injection attached and normal visible window."""
+    running = get_running_games_info()
+    if game_id in running:
+        return {
+            "success": False,
+            "already_running": True,
+            "pid": running[game_id].get("pid"),
+            "message": "该游戏已在运行中，无需重复启动"
+        }
+
     game = get_game_by_id(game_id)
     if not game:
         return {"success": False, "message": "游戏记录不存在"}
@@ -482,12 +655,13 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
 
     try:
         if inject_exe.exists() and hook_dll.exists():
-            success, _, _ = shell_launch(
+            success, _, hInject = shell_launch(
                 exe_path=str(inject_exe),
                 parameters=f'"{exe_path}" "{hook_dll}"',
                 working_dir=working_dir,
                 show_cmd=SW_SHOWNORMAL
             )
+            close_win32_handle(hInject)
             if not success:
                 subprocess.run(
                     f'cmd.exe /c start "" "{inject_exe}" "{exe_path}" "{hook_dll}"',
@@ -495,37 +669,41 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
                     shell=True
                 )
         elif status.get("has_bat") and status.get("bat_file"):
-            os.startfile(status["bat_file"])
+            if IS_WINDOWS:
+                os.startfile(status["bat_file"])
         else:
             return {"success": False, "message": "缺少 MTool inject.exe 或 hook DLL，无法注入"}
 
         if nw_exe.exists():
             try:
-                shell_launch(
+                _, _, hNw = shell_launch(
                     exe_path=str(nw_exe),
                     parameters=f'"{tool_dir}"',
                     working_dir=str(tool_dir),
                     show_cmd=SW_SHOWMINNOACTIVE
                 )
+                close_win32_handle(hNw)
             except Exception:
                 pass
 
         time.sleep(1.0)
-        real_game_pid = find_game_pid_in_folder(working_dir, exe_name)
+        real_game_pid = find_game_pid_in_folder(folder_path or working_dir, exe_name)
 
         start_time = time.time()
-        record_game_launch(game_id, duration_seconds=0)
+        record_game_launch(game_id, duration_seconds=0, increment_count=True)
 
-        RUNNING_GAMES[game_id] = {
-            "pid": real_game_pid,
-            "start_time": start_time,
-            "exe": exe_name,
-            "mode": "mtool"
-        }
+        with RUNNING_LOCK:
+            RUNNING_GAMES[game_id] = {
+                "pid": real_game_pid,
+                "start_time": start_time,
+                "exe": exe_name,
+                "mode": "mtool",
+                "folder_path": folder_path or working_dir
+            }
 
         t = threading.Thread(
             target=monitor_game_pid,
-            args=(game_id, real_game_pid, None, start_time, working_dir, exe_name),
+            args=(game_id, real_game_pid, None, start_time, working_dir, exe_name, folder_path),
             daemon=True
         )
         t.start()
@@ -534,13 +712,15 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
         return {
             "success": True,
             "pid": real_game_pid,
+            "mode": "mtool",
             "message": f"成功以 MTool {mode_name}模式启动: {exe_name}"
         }
     except Exception as e:
         return {"success": False, "message": f"MTool 启动失败: {str(e)}"}
 
+
 # ---------------------------------------------------------
-# Save Data Detection & Snapshot Backup Manager
+# Save Data Detection, Snapshot Backup & One-Click Restore
 # ---------------------------------------------------------
 SAVE_DIR_CANDIDATES = [
     "save",
@@ -562,6 +742,7 @@ SAVE_FILE_EXTENSIONS = (
     ".sav", ".save", ".lsd", ".ksd", ".dat"
 )
 
+
 def find_game_save_dir(folder_path: str) -> Optional[str]:
     if not folder_path or not os.path.exists(folder_path):
         return None
@@ -570,7 +751,6 @@ def find_game_save_dir(folder_path: str) -> Optional[str]:
         cand = root / rel
         if cand.exists() and cand.is_dir():
             return str(cand)
-    # Check loose save files in root
     try:
         for f in os.listdir(root):
             low = f.lower()
@@ -579,6 +759,7 @@ def find_game_save_dir(folder_path: str) -> Optional[str]:
     except Exception:
         pass
     return None
+
 
 def get_game_save_status(game_id: int) -> Dict[str, Any]:
     """Inspects local game save folder and existing backup snapshots."""
@@ -595,7 +776,6 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
         latest_ts = 0.0
         try:
             for root, _, files in os.walk(save_dir):
-                # If save_dir is the game root itself, only check top-level save files
                 if os.path.normpath(root) != os.path.normpath(save_dir) and os.path.normpath(save_dir) == os.path.normpath(folder_path):
                     continue
                 for fn in files:
@@ -611,7 +791,6 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
         if latest_ts > 0:
             latest_save_time = datetime.fromtimestamp(latest_ts).strftime("%Y-%m-%d %H:%M")
 
-    # Find backups in save_backup_directory
     cfg = load_config()
     backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
     backups = []
@@ -631,8 +810,10 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
         "save_dir": save_dir or "",
         "save_count": len(save_files),
         "latest_save_at": latest_save_time,
-        "backups": backups[:10]
+        "backup_root": str(backup_root),
+        "backups": backups[:20]
     }
+
 
 def open_game_save_folder(game_id: int) -> Dict[str, Any]:
     status = get_game_save_status(game_id)
@@ -645,7 +826,16 @@ def open_game_save_folder(game_id: int) -> Dict[str, Any]:
         return {"success": True, "message": "未检测到独立 save 文件夹，已为您打开游戏根目录"}
     return {"success": False, "message": "游戏目录不存在"}
 
-def backup_game_saves(game_id: int) -> Dict[str, Any]:
+
+def open_save_backup_folder(game_id: int) -> Dict[str, Any]:
+    cfg = load_config()
+    backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    open_game_folder(str(backup_root))
+    return {"success": True, "message": "已打开存档快照备份目录"}
+
+
+def backup_game_saves(game_id: int, label: str = "") -> Dict[str, Any]:
     game = get_game_by_id(game_id)
     if not game:
         return {"success": False, "message": "游戏不存在"}
@@ -659,18 +849,24 @@ def backup_game_saves(game_id: int) -> Dict[str, Any]:
     backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
     backup_root.mkdir(parents=True, exist_ok=True)
 
-    safe_title = re.sub(r'[\\/*?:"<>|\s]+', "_", (game.get("clean_title") or game.get("folder_name") or "game"))[:30]
+    safe_title = re.sub(r'[\\/*?:"<>|\s]+', "_", (game.get("clean_title") or game.get("folder_name") or "game"))[:26]
+    safe_label = "_" + re.sub(r'[\\/*?:"<>|\s]+', "_", label.strip())[:14] if label and label.strip() else ""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_name = f"game_{game_id}_{safe_title}_{ts}.zip"
+    zip_name = f"game_{game_id}_{safe_title}{safe_label}_{ts}.zip"
     zip_path = backup_root / zip_name
 
     try:
         file_count = 0
+        is_root_save = os.path.normpath(str(save_dir)) == os.path.normpath(game["folder_path"])
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for root, _, files in os.walk(save_dir):
-                if os.path.normpath(root) != os.path.normpath(save_dir) and os.path.normpath(save_dir) == os.path.normpath(game["folder_path"]):
+                if is_root_save and os.path.normpath(root) != os.path.normpath(str(save_dir)):
                     continue
                 for fn in files:
+                    if is_root_save:
+                        low = fn.lower()
+                        if not (low.startswith("save") and low.endswith(SAVE_FILE_EXTENSIONS)):
+                            continue
                     fp = Path(root) / fn
                     rel_p = fp.relative_to(save_dir)
                     zf.write(fp, arcname=str(rel_p))
@@ -688,3 +884,78 @@ def backup_game_saves(game_id: int) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"success": False, "message": f"存档备份失败: {str(e)}"}
+
+
+def restore_game_saves(game_id: int, filename: str) -> Dict[str, Any]:
+    """Restores a save backup zip into the game's save directory with ZipSlip protection."""
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"success": False, "message": "游戏不存在"}
+
+    safe_name = Path(filename).name
+    if not safe_name.startswith(f"game_{game_id}_") or not safe_name.endswith(".zip"):
+        return {"success": False, "message": "非法的存档备份文件名"}
+
+    cfg = load_config()
+    backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
+    zip_path = backup_root / safe_name
+    if not zip_path.exists() or not zip_path.is_file():
+        return {"success": False, "message": "指定的存档备份文件不存在"}
+
+    folder_path = game.get("folder_path", "")
+    if not folder_path or not os.path.exists(folder_path):
+        return {"success": False, "message": "游戏本地目录不存在，无法还原存档"}
+
+    save_dir_str = find_game_save_dir(folder_path)
+    if not save_dir_str:
+        if (Path(folder_path) / "www").is_dir():
+            save_dir = Path(folder_path) / "www" / "save"
+        else:
+            save_dir = Path(folder_path) / "save"
+        save_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        save_dir = Path(save_dir_str)
+
+    try:
+        target_root = save_dir.resolve()
+        restored_count = 0
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for member in zf.infolist():
+                if member.is_dir():
+                    continue
+                dest_path = (target_root / member.filename).resolve()
+                if not str(dest_path).startswith(str(target_root)):
+                    continue
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member, "r") as src, open(dest_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                restored_count += 1
+
+        return {
+            "success": True,
+            "restored_count": restored_count,
+            "message": f"已成功从快照【{safe_name}】还原 {restored_count} 个存档文件！",
+            "save_status": get_game_save_status(game_id)
+        }
+    except Exception as e:
+        return {"success": False, "message": f"还原存档失败: {str(e)}"}
+
+
+def delete_game_save_backup(game_id: int, filename: str) -> Dict[str, Any]:
+    safe_name = Path(filename).name
+    if not safe_name.startswith(f"game_{game_id}_") or not safe_name.endswith(".zip"):
+        return {"success": False, "message": "非法的存档备份文件名"}
+
+    cfg = load_config()
+    backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
+    zip_path = backup_root / safe_name
+    if zip_path.exists() and zip_path.is_file():
+        try:
+            zip_path.unlink()
+        except Exception as e:
+            return {"success": False, "message": f"删除快照失败: {str(e)}"}
+    return {
+        "success": True,
+        "message": f"已删除存档备份: {safe_name}",
+        "save_status": get_game_save_status(game_id)
+    }
