@@ -1,6 +1,6 @@
 /* ==========================================================================
-   ACG Vault 2.3 - Collector's Edition Glassmorphic & Ambient Dark UI
-   GPU-Optimized Compositing, Unobstructed Artwork Hover, Dual Notes & Flowcharts
+   ACG Vault 2.4 - Collector's Edition Glassmorphic & Ambient Dark UI
+   GPU-Optimized Compositing, Unobstructed Artwork Hover, Smart Footer & Save Editor
    ========================================================================== */
 
 :root {
@@ -77,13 +77,105 @@ body {
     inset 0 1px 0 0 rgba(52, 211, 153, 0.25);
 }
 
-/* Unified Top-Left Status Pill on Cards */
+/* Unified Top-Left Glassmorphic Capsule Pill on Cards (Collector's UI v2.4) */
 .card-unified-badge {
-  background: rgba(7, 10, 18, 0.82);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  padding: 0.2rem 0.58rem;
+  border-radius: 9999px;
+  font-size: 0.64rem;
+  line-height: 1.1;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  background: linear-gradient(135deg, rgba(8, 12, 22, 0.78) 0%, rgba(15, 23, 42, 0.68) 100%);
+  backdrop-filter: blur(10px) saturate(165%);
+  -webkit-backdrop-filter: blur(10px) saturate(165%);
   border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  box-shadow:
+    0 4px 14px -2px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.14);
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.glass-card:hover .card-unified-badge {
+  background: linear-gradient(135deg, rgba(10, 15, 28, 0.88) 0%, rgba(22, 32, 56, 0.8) 100%);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.badge-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.55);
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.badge-micro-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.68rem;
+  line-height: 1;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.badge-micro-icon:hover {
+  transform: scale(1.2);
+  filter: brightness(1.2);
+}
+
+/* Smart Card Footer Info Slot Micro-Capsules (v2.4) */
+.card-smart-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.42rem;
+  border-radius: 6px;
+  font-size: 0.64rem;
+  font-weight: 600;
+  line-height: 1.25;
+  background: rgba(99, 102, 241, 0.13);
+  border: 1px solid rgba(129, 140, 248, 0.26);
+  color: #c7d2fe;
+  max-width: 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.16s ease;
+}
+
+.card-smart-tag:hover {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: rgba(129, 140, 248, 0.55);
+  color: #ffffff;
+}
+
+.card-smart-tag.is-user-tag {
+  background: rgba(16, 185, 129, 0.14);
+  border-color: rgba(52, 211, 153, 0.3);
+  color: #a7f3d0;
+}
+
+.card-smart-tag.is-user-tag:hover {
+  background: rgba(16, 185, 129, 0.28);
+  border-color: rgba(52, 211, 153, 0.6);
+  color: #ffffff;
+}
+
+.card-smart-playtime {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.1rem 0.42rem;
+  border-radius: 6px;
+  font-size: 0.64rem;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: rgba(245, 158, 11, 0.13);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  color: #fde68a;
+  white-space: nowrap;
 }
 
 /* Keep top badges subtly visible in minimal mode, or fade in classic mode */
@@ -155,15 +247,15 @@ body {
   transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Smart Fit Mode: Hardware-Promoted Ambient Blurred Backdrop (8px fast kernel) + Uncropped Foreground */
+/* Smart Fit Mode: Smooth 18px Ambient Blurred Backdrop + Uncropped Foreground */
 .poster-blur-backdrop {
   position: absolute;
-  inset: -6%;
-  width: 112%;
-  height: 112%;
+  inset: -8%;
+  width: 116%;
+  height: 116%;
   object-fit: cover;
-  filter: blur(8px) saturate(145%) brightness(0.50);
-  transform: translateZ(0) scale(1.05);
+  filter: blur(18px) saturate(160%) brightness(0.48);
+  transform: translateZ(0) scale(1.1);
   will-change: transform;
   pointer-events: none;
   z-index: 1;
@@ -272,7 +364,7 @@ body {
   background: rgba(30, 41, 59, 0.58);
 }
 
-/* Lightweight Personal Clearance Sticky Memo Card (v2.3) */
+/* Lightweight Personal Clearance Sticky Memo Card (v2.3 / v2.4) */
 .sticky-memo-card {
   background: linear-gradient(145deg, rgba(6, 78, 59, 0.22) 0%, rgba(15, 23, 42, 0.75) 100%);
   border: 1px solid rgba(16, 185, 129, 0.32);
@@ -353,7 +445,7 @@ body {
 }
 
 /* ==========================================================================
-   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v2.3)
+   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v2.4)
    ========================================================================== */
 .notes-markdown-body {
   line-height: 1.74;
@@ -553,7 +645,7 @@ body {
   color: #e2e8f0;
 }
 
-/* Native Offline Mermaid Flowchart Diagram Card (v2.3) */
+/* Native Offline Mermaid Flowchart Diagram Card (v2.3 / v2.4) */
 .mermaid-flow-container {
   background: linear-gradient(145deg, rgba(15, 23, 42, 0.9) 0%, rgba(9, 13, 24, 0.95) 100%);
   border: 1px solid rgba(99, 102, 241, 0.32);

@@ -3,7 +3,7 @@ import sys
 import json
 from pathlib import Path
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("ACG_VAULT_DATA_DIR", str(BASE_DIR / "data")))
@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
     "cover_fit_mode": "smart",  # "smart" (blur backdrop + contain), "portrait" (3:4), "landscape" (4:3)
     "grid_density": "standard",  # "compact", "standard", "comfortable"
     "card_hover_style": "minimal",  # "minimal" (corner play, unobstructed art) or "classic" (center play)
+    "card_footer_slot": "auto",  # "auto" (rating if >0 else tags/playtime), "tags", "rating"
     "notes_default_layout": "split",  # "split", "reader", "editor"
     "notes_default_toc": True,
     "notes_sync_scroll": True,
@@ -48,14 +49,16 @@ DEFAULT_CONFIG = {
     "auto_start_windows": False,
     "global_boss_hotkey": "Alt+Space",
     "global_overlay_hotkey": "Alt+G",
+    "overlay_click_through": False,
     "enable_ingame_screenshot": True,
     "screenshot_hotkey": "F12",
-    # Auto Incremental Save Snapshot & WebDAV Cloud Backup (v2.3)
+    # Auto Incremental Save Snapshot & WebDAV Cloud Backup (v2.4)
     "enable_auto_save_backup": True,
     "auto_backup_min_minutes": 5,
     "auto_backup_max_keep": 5,
     "webdav_enabled": False,
     "webdav_url": "",
+    "webdav_root_path": "/ACG_Vault_Saves",
     "webdav_username": "",
     "webdav_password": "",
     "webdav_auto_sync": True,

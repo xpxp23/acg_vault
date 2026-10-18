@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, Callable, Set
 from datetime import datetime
 from config import load_config
-from db.database import get_existing_scan_cache
+from db.database import get_existing_scan_cache, get_ignored_paths_norm_set
 
 TOOL_KEYWORDS = [
     "agth", "dangotranslator", "团子翻译器", "misakatranslator", "lunatranslator",
@@ -54,11 +54,16 @@ NON_TRS_JSON_NAMES = {
     "deps.json", "runtimeconfig.json", "global.json", "project.json"
 }
 
+_TRS_PAIR_RE = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+_CJK_OR_KANA_RE = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
 
 def is_valid_translation_json(file_path: str) -> bool:
     """
     Validates whether a .json file is actually an external translation dictionary
     (key-value string mapping) rather than a game engine/plugin config file.
+    Uses a fast 64KB header slice inspection so multi-megabyte JSON files never block disk I/O.
     """
     p = Path(file_path)
     name_low = p.name.lower()
@@ -77,22 +82,38 @@ def is_valid_translation_json(file_path: str) -> bool:
             return False
         with open(p, "r", encoding="utf-8-sig", errors="ignore") as f:
             head = f.read(65536).strip()
-            if not head.startswith("{"):
-                return False
-            f.seek(0)
-            data = json.load(f)
-        if not isinstance(data, dict) or len(data) < 3:
+        if not head.startswith("{"):
             return False
+
+        # Fast regex pair inspection on the first 64KB slice (avoids full json.load on up to 35MB files)
         sample_pairs = 0
         cjk_hits = 0
-        for idx, (k, v) in enumerate(data.items()):
-            if idx >= 15:
+        for m in _TRS_PAIR_RE.finditer(head):
+            k, v = m.group(1), m.group(2)
+            sample_pairs += 1
+            if _CJK_OR_KANA_RE.search(k) or _CJK_RE.search(v):
+                cjk_hits += 1
+            if sample_pairs >= 15:
                 break
-            if isinstance(k, str) and isinstance(v, str):
-                sample_pairs += 1
-                if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", k) or re.search(r"[\u4e00-\u9fff]", v):
-                    cjk_hits += 1
-        return sample_pairs >= 3 and cjk_hits >= 1
+        if sample_pairs >= 3 and cjk_hits >= 1:
+            return True
+
+        # Fallback to json.loads only if the entire file fits within 64KB
+        if st.st_size <= 65536:
+            data = json.loads(head)
+            if not isinstance(data, dict) or len(data) < 3:
+                return False
+            sample_pairs = 0
+            cjk_hits = 0
+            for idx, (k, v) in enumerate(data.items()):
+                if idx >= 15:
+                    break
+                if isinstance(k, str) and isinstance(v, str):
+                    sample_pairs += 1
+                    if _CJK_OR_KANA_RE.search(k) or _CJK_RE.search(v):
+                        cjk_hits += 1
+            return sample_pairs >= 3 and cjk_hits >= 1
+        return False
     except Exception:
         return False
 
@@ -281,13 +302,17 @@ def choose_best_executable(root_path: str, exes: List[str]) -> Optional[str]:
 
 
 def get_excluded_scan_paths() -> Set[str]:
-    """Returns normalized lowercase paths that must never be scanned as game folders."""
+    """Returns normalized lowercase paths that must never be scanned as game folders (including user-removed ignored paths)."""
     cfg = load_config()
     excluded: Set[str] = set()
     for key in ("archive_directory", "save_backup_directory", "mtool_directory"):
         val = cfg.get(key)
         if val and isinstance(val, str) and val.strip():
             excluded.add(os.path.normcase(os.path.normpath(val.strip())))
+    try:
+        excluded.update(get_ignored_paths_norm_set())
+    except Exception:
+        pass
     return excluded
 
 

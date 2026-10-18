@@ -272,6 +272,23 @@ createApp({
     const isBackingUpSave = ref(false);
     const isRestoringSave = ref(false);
     const isSyncingWebDAV = ref(false);
+
+    // RPG Maker Visual Save Editor states (v2.4)
+    const showSaveEditorPanel = ref(false);
+    const saveEditorData = ref({ supported: false, slots: [] });
+    const selectedSaveSlotFile = ref('');
+    const saveSlotDetail = ref(null);
+    const isLoadingSaveSlot = ref(false);
+    const isSavingSaveSlot = ref(false);
+    const saveEditorSearchQuery = ref('');
+    const saveEditorKeyOnly = ref(false);
+    const saveEditorUnlockAllSwitches = ref(false);
+    const modifiedSaveVars = ref({});
+    const modifiedSaveSwitches = ref({});
+
+    // Ignored Scan Paths & Archived Duplicates states (v2.4)
+    const ignoredPathsList = ref([]);
+    const archivedGamesList = ref([]);
     const showRescrapePanel = ref(false);
     const showDangerMenu = ref(false);
     const isScrapingSingle = ref(false);
@@ -313,6 +330,7 @@ createApp({
       cover_url: '',
       executable_path: '',
       synopsis: '',
+      user_notes: '',
       rj_code: '',
       has_translation: 0
     });
@@ -377,6 +395,7 @@ createApp({
       auto_backup_max_keep: 5,
       webdav_enabled: false,
       webdav_url: '',
+      webdav_root_path: '/ACG_Vault_Saves',
       webdav_username: '',
       webdav_password: '',
       webdav_auto_sync: true,
@@ -469,6 +488,49 @@ createApp({
       if (eng.includes('Unreal')) return 'UE';
       if (eng.includes('Godot')) return 'GODOT';
       return eng.slice(0, 7).toUpperCase();
+    };
+
+    const getEngineBadgeColor = (eng) => {
+      if (!eng) return 'text-slate-200';
+      if (eng.includes('RPG Maker MZ')) return 'text-indigo-300';
+      if (eng.includes('RPG Maker MV')) return 'text-sky-300';
+      if (eng.includes('RPG Maker')) return 'text-purple-300';
+      if (eng.includes('Unity')) return 'text-cyan-300';
+      if (eng.includes('Kirikiri')) return 'text-pink-300';
+      if (eng.includes('Wolf')) return 'text-amber-300';
+      if (eng.includes("Ren'Py")) return 'text-rose-300';
+      return 'text-slate-200';
+    };
+
+    const getCardSmartSlotItems = (game) => {
+      if (!game) return { type: 'none', items: [] };
+      const playedSec = Number(game.played_seconds || 0);
+      const preferPlaytime = sortBy.value === 'play_time' || sortBy.value === 'last_played' || configData.value.card_footer_slot === 'playtime';
+      if (preferPlaytime && playedSec >= 60) {
+        const label = playedSec >= 3600 ? `${(playedSec / 3600).toFixed(1)}h` : `${Math.floor(playedSec / 60)}m`;
+        return { type: 'playtime', label };
+      }
+      const uTags = Array.isArray(game.user_tags) ? game.user_tags : [];
+      const oTags = Array.isArray(game.tags) ? game.tags : [];
+      const combined = [];
+      for (const ut of uTags) {
+        if (ut && combined.length < 2) {
+          combined.push({ raw: ut, text: `★ ${ut}`, isUser: true });
+        }
+      }
+      for (const ot of oTags) {
+        if (ot && combined.length < 2 && !uTags.includes(ot)) {
+          combined.push({ raw: ot, text: `#${ot}`, isUser: false });
+        }
+      }
+      if (combined.length > 0) {
+        return { type: 'tags', items: combined };
+      }
+      if (playedSec >= 60) {
+        const label = playedSec >= 3600 ? `${(playedSec / 3600).toFixed(1)}h` : `${Math.floor(playedSec / 60)}m`;
+        return { type: 'playtime', label };
+      }
+      return { type: 'none', items: [] };
     };
 
     const formatPlayedTime = (seconds) => {
@@ -890,7 +952,7 @@ createApp({
         drawRoundRect(48, 42, width - 96, 110, 22, 'rgba(19, 27, 46, 0.92)', 'rgba(99, 102, 241, 0.4)');
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
-        ctx.fillText('🎮 ACG Vault v2.3 · 个人游戏馆藏与通关总结长图', 80, 92);
+        ctx.fillText('🎮 ACG Vault v2.4 · 个人游戏馆藏与通关总结长图', 80, 92);
         ctx.fillStyle = '#94a3b8';
         ctx.font = '15px "Microsoft YaHei", sans-serif';
         const nowStr = new Date().toISOString().slice(0, 10);
@@ -1090,12 +1152,20 @@ createApp({
 
     const openCompanionOverlayAction = async (game = null) => {
       const gid = game?.id || selectedGame.value?.id || '';
+      let nativeOpened = false;
       try {
         const q = gid ? `?game_id=${gid}` : '';
-        await fetch(`/api/overlay/summon${q}`, { method: 'POST' });
+        const res = await fetch(`/api/overlay/summon${q}`, { method: 'POST' });
+        const d = await res.json();
+        if (d && d.success && configData.value.desktop_mode === 'native') {
+          nativeOpened = true;
+          showToast(d.message || '已呼出游戏内攻略伴侣悬浮窗 (Alt+G)', 'info', 2000);
+        }
       } catch (e) {}
-      const popupUrl = `/overlay${gid ? '?game_id=' + gid : ''}`;
-      window.open(popupUrl, 'ACGVaultCompanionOverlay', 'width=460,height=740,menubar=no,toolbar=no,location=no,status=no');
+      if (!nativeOpened) {
+        const popupUrl = `/overlay${gid ? '?game_id=' + gid : ''}`;
+        window.open(popupUrl, 'ACGVaultCompanionOverlay', 'width=460,height=740,menubar=no,toolbar=no,location=no,status=no');
+      }
     };
 
     const fetchConfig = async () => {
@@ -1210,6 +1280,7 @@ createApp({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             webdav_url: configData.value.webdav_url,
+            webdav_root_path: configData.value.webdav_root_path,
             webdav_username: configData.value.webdav_username,
             webdav_password: configData.value.webdav_password
           })
@@ -1391,6 +1462,7 @@ createApp({
       editForm.cover_url = game.cover_url || '';
       editForm.executable_path = game.executable_path || '';
       editForm.synopsis = game.synopsis || '';
+      editForm.user_notes = game.user_notes || '';
       editForm.rj_code = game.rj_code || '';
       editForm.has_translation = game.has_translation ? 1 : 0;
       editTagsList.value = [...(game.tags || [])];
@@ -1407,6 +1479,7 @@ createApp({
         cover_url: editForm.cover_url,
         executable_path: editForm.executable_path,
         synopsis: editForm.synopsis,
+        user_notes: editForm.user_notes,
         rj_code: editForm.rj_code,
         has_translation: editForm.has_translation,
         tags: editTagsList.value,
@@ -1425,6 +1498,7 @@ createApp({
         cover_url: editForm.cover_url,
         executable_path: editForm.executable_path,
         synopsis: editForm.synopsis,
+        user_notes: editForm.user_notes,
         rj_code: editForm.rj_code,
         has_translation: editForm.has_translation,
         tags: editTagsList.value,
@@ -1548,6 +1622,9 @@ createApp({
         selectedGameSave.value = null;
         selectedGameScreenshots.value = [];
         showSaveBackupsList.value = false;
+        showSaveEditorPanel.value = false;
+        saveEditorData.value = { supported: false, slots: [] };
+        saveSlotDetail.value = null;
         isEditMode.value = false;
         showDangerMenu.value = false;
         showAddUserTag.value = false;
@@ -1575,6 +1652,7 @@ createApp({
           }
           syncNotesPreviewNow(data.data.walkthrough_md || '');
           updateGameInList(data.data);
+          fetchSaveEditorSlots(game.id);
         }
       } catch (err) {
         console.error('Failed to get game detail:', err);
@@ -1689,7 +1767,8 @@ createApp({
         url: imgUrl,
         caption: `官方商店预览图 #${index + 1}`,
         created_at: 'Official Sample CG',
-        isSample: true
+        isSample: true,
+        is_sample: true
       };
     };
 
@@ -1944,6 +2023,7 @@ createApp({
       editForm.release_date = '';
       editForm.cover_url = '';
       editForm.synopsis = '';
+      editForm.user_notes = '';
       editForm.rj_code = '';
       editTagsList.value = [];
       editUserTagsList.value = [];
@@ -1969,6 +2049,7 @@ createApp({
         cover_url: editForm.cover_url,
         executable_path: editForm.executable_path,
         synopsis: editForm.synopsis,
+        user_notes: editForm.user_notes,
         rj_code: editForm.rj_code,
         has_translation: editForm.has_translation ? 1 : 0,
         tags: editTagsList.value,
@@ -2981,6 +3062,199 @@ createApp({
       }
     };
 
+    // ---------------------------------------------------------
+    // RPG Maker Visual Save Editor Actions (v2.4)
+    // ---------------------------------------------------------
+    const fetchSaveEditorSlots = async (gameId) => {
+      if (!gameId) return;
+      try {
+        const res = await fetch(`/api/games/${gameId}/save_editor/slots`);
+        const data = await res.json();
+        if (selectedGame.value && selectedGame.value.id === gameId) {
+          saveEditorData.value = data || { supported: false, slots: [] };
+          if (data.slots && data.slots.length > 0) {
+            selectedSaveSlotFile.value = data.slots[0].filename;
+          } else {
+            selectedSaveSlotFile.value = '';
+          }
+        }
+      } catch (e) {
+        saveEditorData.value = { supported: false, slots: [] };
+      }
+    };
+
+    const inspectSaveSlotAction = async (filename) => {
+      if (!selectedGame.value || !filename) return;
+      isLoadingSaveSlot.value = true;
+      modifiedSaveVars.value = {};
+      modifiedSaveSwitches.value = {};
+      saveEditorUnlockAllSwitches.value = false;
+      try {
+        const res = await fetch(`/api/games/${selectedGame.value.id}/save_editor/slot?filename=${encodeURIComponent(filename)}`);
+        const data = await res.json();
+        if (data.success) {
+          saveSlotDetail.value = data;
+        } else {
+          saveSlotDetail.value = null;
+          showToast(data.message || '解析存档失败', 'warning');
+        }
+      } catch (err) {
+        saveSlotDetail.value = null;
+        showToast('读取存档槽位失败: ' + err, 'error');
+      } finally {
+        isLoadingSaveSlot.value = false;
+        refreshIcons();
+      }
+    };
+
+    const toggleSaveEditorPanel = () => {
+      showSaveEditorPanel.value = !showSaveEditorPanel.value;
+      if (showSaveEditorPanel.value && selectedSaveSlotFile.value && !saveSlotDetail.value) {
+        inspectSaveSlotAction(selectedSaveSlotFile.value);
+      }
+      refreshIcons();
+    };
+
+    const markSaveVarModified = (v) => {
+      if (!v) return;
+      modifiedSaveVars.value[String(v.id)] = Number(v.value || 0);
+    };
+
+    const markSaveSwitchModified = (s) => {
+      if (!s) return;
+      modifiedSaveSwitches.value[String(s.id)] = Boolean(s.value);
+    };
+
+    const maxAllActorsInSlot = () => {
+      if (!saveSlotDetail.value || !Array.isArray(saveSlotDetail.value.actors)) return;
+      saveSlotDetail.value.actors.forEach(act => {
+        act.level = Math.max(act.level || 1, 99);
+        act.hp = Math.max(act.hp || 1, 9999);
+        act.mp = Math.max(act.mp || 1, 9999);
+      });
+      showToast('已将全员设为 Lv99 / 9999 HP，点击右下角保存即可写入存档', 'info', 2200);
+    };
+
+    const filteredSaveVariables = computed(() => {
+      const list = saveSlotDetail.value?.variables || [];
+      const q = saveEditorSearchQuery.value.trim().toLowerCase();
+      return list.filter(v => {
+        if (saveEditorKeyOnly.value && !v.is_key) return false;
+        if (!q) return true;
+        return (v.name || '').toLowerCase().includes(q) || String(v.id).includes(q);
+      });
+    });
+
+    const filteredSaveSwitches = computed(() => {
+      const list = saveSlotDetail.value?.switches || [];
+      const q = saveEditorSearchQuery.value.trim().toLowerCase();
+      return list.filter(s => {
+        if (saveEditorKeyOnly.value && !s.is_cg) return false;
+        if (!q) return true;
+        return (s.name || '').toLowerCase().includes(q) || String(s.id).includes(q);
+      });
+    });
+
+    const saveModifiedSlotAction = async () => {
+      if (!selectedGame.value || !saveSlotDetail.value || !selectedSaveSlotFile.value) return;
+      isSavingSaveSlot.value = true;
+      try {
+        const payload = {
+          filename: selectedSaveSlotFile.value,
+          gold: Number(saveSlotDetail.value.gold ?? 0),
+          variables: modifiedSaveVars.value,
+          switches: modifiedSaveSwitches.value,
+          actors: saveSlotDetail.value.actors || [],
+          unlock_all_switches: Boolean(saveEditorUnlockAllSwitches.value)
+        };
+        const res = await fetch(`/api/games/${selectedGame.value.id}/save_editor/slot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.message || '存档修改已成功写入！', 'success', 3500);
+          const sRes = await fetch(`/api/games/${selectedGame.value.id}/save_status`);
+          selectedGameSave.value = await sRes.json();
+          await inspectSaveSlotAction(selectedSaveSlotFile.value);
+        } else {
+          showToast(data.message || '写入存档失败', 'error');
+        }
+      } catch (err) {
+        showToast('写入存档异常: ' + err, 'error');
+      } finally {
+        isSavingSaveSlot.value = false;
+      }
+    };
+
+    // ---------------------------------------------------------
+    // Ignored Scan Paths & Archived Duplicates Recovery (v2.4)
+    // ---------------------------------------------------------
+    const fetchExcludedLibraryData = async () => {
+      try {
+        const res = await fetch('/api/library/excluded');
+        const data = await res.json();
+        ignoredPathsList.value = data.ignored_paths || [];
+        archivedGamesList.value = data.archived_games || [];
+      } catch (e) {}
+    };
+
+    const restoreIgnoredPathAction = async (folderPath) => {
+      if (!folderPath) return;
+      try {
+        const res = await fetch('/api/library/ignored/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder_path: folderPath })
+        });
+        const data = await res.json();
+        if (data.success) {
+          ignoredPathsList.value = data.ignored_paths || [];
+          showToast(data.message || '已恢复扫描权限', 'success');
+        }
+      } catch (e) {
+        showToast('恢复失败: ' + e, 'error');
+      }
+    };
+
+    const clearIgnoredPathsAction = async () => {
+      try {
+        const res = await fetch('/api/library/ignored/clear', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          ignoredPathsList.value = [];
+          showToast(data.message || '已清空扫描忽略名单', 'success');
+        }
+      } catch (e) {
+        showToast('清空失败: ' + e, 'error');
+      }
+    };
+
+    const unarchiveGameAction = async (ag) => {
+      if (!ag) return;
+      try {
+        const res = await fetch('/api/duplicates/unarchive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ game_id: ag.id })
+        });
+        const data = await res.json();
+        if (data.success) {
+          archivedGamesList.value = data.archived_games || [];
+          showToast(data.message || '已成功恢复至主库', 'success');
+          fetchGames();
+          fetchStats();
+          fetchCollections();
+          if (showDuplicateModal.value) openDuplicateModal(focusedDuplicateGroupId.value);
+        } else {
+          showToast(data.message || '恢复归档失败', 'warning');
+        }
+      } catch (e) {
+        showToast('恢复归档异常: ' + e, 'error');
+      }
+    };
+
     const openFolderAction = async (game) => {
       try {
         await fetch(`/api/games/${game.id}/open_folder`, { method: 'POST' });
@@ -3306,6 +3580,7 @@ createApp({
 
     const openDuplicateModal = async (focusGroupId = '') => {
       focusedDuplicateGroupId.value = focusGroupId || '';
+      fetchExcludedLibraryData();
       try {
         const res = await fetch('/api/duplicates');
         const data = await res.json();
@@ -3390,6 +3665,10 @@ createApp({
         showToast('取消重复失败: ' + err, 'error');
       }
     };
+
+    watch(showSettingsModal, (val) => {
+      if (val) fetchExcludedLibraryData();
+    });
 
     watch(
       [
@@ -3760,7 +4039,31 @@ createApp({
       archiveSingleVariant,
       dismissDuplicateAction,
       saveConfigAction,
-      testProxyAction
+      testProxyAction,
+      getEngineBadgeColor,
+      getCardSmartSlotItems,
+      showSaveEditorPanel,
+      saveEditorData,
+      selectedSaveSlotFile,
+      saveSlotDetail,
+      isLoadingSaveSlot,
+      isSavingSaveSlot,
+      saveEditorSearchQuery,
+      saveEditorKeyOnly,
+      saveEditorUnlockAllSwitches,
+      filteredSaveVariables,
+      filteredSaveSwitches,
+      toggleSaveEditorPanel,
+      inspectSaveSlotAction,
+      markSaveVarModified,
+      markSaveSwitchModified,
+      maxAllActorsInSlot,
+      saveModifiedSlotAction,
+      ignoredPathsList,
+      archivedGamesList,
+      restoreIgnoredPathAction,
+      clearIgnoredPathsAction,
+      unarchiveGameAction
     };
   }
 }).mount('#app');

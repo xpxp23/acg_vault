@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-ACG Vault v2.3 Native Desktop Wrapper, In-Game Companion Overlay & System Tray Daemon.
+ACG Vault v2.4 Native Desktop Wrapper, In-Game Companion Overlay & System Tray Daemon.
 Provides:
 1. Standalone Native Desktop Window via PyWebView (with automatic Edge/Chrome --app mode fallback)
-2. Always-on-Top In-Game Companion Overlay Window (default Alt+G) for full-screen walkthroughs, checklists, F9 cheats & memos
-3. Windows System Tray Icon & Context Menu (Minimize to tray, companion overlay, quick scan, restore window, clean exit)
-4. Global Boss/Summon Hotkey (Alt+Space) & Global Overlay Hotkey (Alt+G) via Win32 RegisterHotKey
+2. Always-on-Top In-Game Companion Overlay Window (default Alt+G) with Win32 Click-Through HUD mode (Alt+T)
+3. Windows System Tray Icon & Context Menu (Minimize to tray, companion overlay, click-through toggle, quick scan, clean exit)
+4. Global Boss/Summon Hotkey (Alt+Space), Global Overlay Hotkey (Alt+G) & Click-Through Toggle (Alt+T) via Win32 RegisterHotKey
 """
 
 import os
@@ -17,7 +17,7 @@ import threading
 import webbrowser
 import ctypes
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from config import APP_VERSION, BASE_DIR, load_config
 
@@ -26,6 +26,10 @@ IS_WINDOWS = sys.platform == "win32"
 _webview_window = None
 _overlay_window = None
 _server_should_exit = False
+_overlay_click_through = False
+_hotkey_thread_id: Optional[int] = None
+
+OVERLAY_WINDOW_TITLE = "ACG Vault 游戏内攻略伴侣 (Alt+G)"
 
 
 def parse_hotkey_modifiers(hotkey_str: str):
@@ -62,6 +66,87 @@ def parse_hotkey_modifiers(hotkey_str: str):
             vk = ord(p)
 
     return mods, vk
+
+
+def _find_overlay_hwnd() -> int:
+    """Locates the Win32 HWND for the In-Game Companion Overlay window."""
+    if not IS_WINDOWS:
+        return 0
+    try:
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, OVERLAY_WINDOW_TITLE)
+        if hwnd:
+            return int(hwnd)
+
+        found_hwnd = [0]
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def _enum_cb(h, lparam):
+            if user32.IsWindowVisible(h):
+                length = user32.GetWindowTextLengthW(h)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(h, buf, length + 1)
+                    title = buf.value
+                    if "ACG Vault 游戏内攻略伴侣" in title or "ACG Vault 伴侣悬浮窗" in title:
+                        found_hwnd[0] = int(h)
+                        return False
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
+        return found_hwnd[0]
+    except Exception:
+        return 0
+
+
+def get_overlay_click_through_state() -> bool:
+    """Returns whether the Companion Overlay window is currently in Click-Through HUD mode."""
+    return bool(_overlay_click_through)
+
+
+def set_overlay_click_through(enable: Optional[bool] = None) -> Dict[str, Any]:
+    """
+    Toggles or sets Win32 WS_EX_LAYERED | WS_EX_TRANSPARENT on the Companion Overlay window.
+    When enabled, mouse clicks pass directly through the overlay into the underlying full-screen game.
+    """
+    global _overlay_click_through
+    target_state = (not _overlay_click_through) if enable is None else bool(enable)
+    _overlay_click_through = target_state
+
+    hwnd = _find_overlay_hwnd()
+    applied_win32 = False
+    if IS_WINDOWS and hwnd:
+        try:
+            user32 = ctypes.windll.user32
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            LWA_ALPHA = 0x00000002
+
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if target_state:
+                new_style = style | WS_EX_LAYERED | WS_EX_TRANSPARENT
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+                user32.SetLayeredWindowAttributes(hwnd, 0, 232, LWA_ALPHA)
+            else:
+                new_style = (style | WS_EX_LAYERED) & ~WS_EX_TRANSPARENT
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+                user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
+            applied_win32 = True
+        except Exception as e:
+            print(f"[Desktop] Failed to apply Win32 click-through style: {e}")
+
+    return {
+        "success": True,
+        "click_through": _overlay_click_through,
+        "applied_win32": applied_win32,
+        "message": (
+            "已开启 HUD 鼠标穿透锁定！鼠标点击将直接穿透至下层游戏（按 Alt+G 或 Alt+T 可随时解除锁定）"
+            if _overlay_click_through
+            else "已解除鼠标穿透锁定，伴侣窗恢复自由交互"
+        )
+    }
 
 
 def wait_for_server_ready(port: int, timeout: float = 12.0) -> bool:
@@ -122,8 +207,12 @@ def show_or_toggle_desktop_window(port: int, toggle: bool = False):
         webbrowser.open(url)
 
 
-def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optional[int] = None):
-    """Restores or toggles the Always-on-Top In-Game Companion Overlay window (default Alt+G)."""
+def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optional[int] = None) -> bool:
+    """
+    Restores or toggles the Always-on-Top In-Game Companion Overlay window (default Alt+G).
+    If Click-Through HUD mode is currently locked and the user presses Alt+G, it unlocks
+    Click-Through first so the user can interact with the overlay immediately.
+    """
     global _overlay_window
     suffix = f"?game_id={game_id}" if game_id else ""
     url = f"http://127.0.0.1:{port}/overlay{suffix}"
@@ -132,64 +221,94 @@ def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optio
         try:
             if game_id:
                 _overlay_window.load_url(url)
-            if toggle and getattr(_overlay_window, "_is_visible", False):
-                _overlay_window.hide()
-                _overlay_window._is_visible = False
-            else:
-                _overlay_window.show()
-                _overlay_window.restore()
-                _overlay_window._is_visible = True
-            return
+            if getattr(_overlay_window, "_is_visible", False):
+                if _overlay_click_through and toggle:
+                    set_overlay_click_through(False)
+                    return True
+                if toggle:
+                    set_overlay_click_through(False)
+                    _overlay_window.hide()
+                    _overlay_window._is_visible = False
+                    return True
+            _overlay_window.show()
+            _overlay_window.restore()
+            _overlay_window._is_visible = True
+            return True
         except Exception:
             pass
 
-    if not launch_chromium_app_window(url, 460, 740):
-        webbrowser.open(url)
+    if launch_chromium_app_window(url, 460, 740):
+        return True
+    webbrowser.open(url)
+    return True
+
+
+def reload_global_hotkeys():
+    """Signals the Win32 hotkey listener thread to re-read config and re-register hotkeys without restart."""
+    if not IS_WINDOWS or not _hotkey_thread_id:
+        return
+    try:
+        WM_RELOAD_HOTKEYS = 0x0401
+        ctypes.windll.user32.PostThreadMessageW(_hotkey_thread_id, WM_RELOAD_HOTKEYS, 0, 0)
+    except Exception:
+        pass
 
 
 def start_global_hotkey_listener(port: int):
-    """Registers both the global boss hotkey (Alt+Space) and companion overlay hotkey (Alt+G) on Windows."""
+    """Registers global boss hotkey (Alt+Space), companion overlay hotkey (Alt+G), and click-through hotkey (Alt+T) on Windows."""
     if not IS_WINDOWS:
         return
 
     def _hotkey_loop():
+        global _hotkey_thread_id
         try:
             from ctypes import wintypes
             user32 = ctypes.windll.user32
-            cfg = load_config()
-            boss_hk = (cfg.get("global_boss_hotkey") or "Alt+Space").strip()
-            overlay_hk = (cfg.get("global_overlay_hotkey") or "Alt+G").strip()
+            kernel32 = ctypes.windll.kernel32
+            _hotkey_thread_id = int(kernel32.GetCurrentThreadId())
 
             BOSS_ID = 1001
             OVERLAY_ID = 1002
-            registered_any = False
+            CLICK_THROUGH_ID = 1003
+            WM_RELOAD_HOTKEYS = 0x0401
 
-            if boss_hk and boss_hk.lower() != "none":
-                mods, vk = parse_hotkey_modifiers(boss_hk)
-                if user32.RegisterHotKey(None, BOSS_ID, mods, vk):
-                    registered_any = True
+            def _register_from_config():
+                user32.UnregisterHotKey(None, BOSS_ID)
+                user32.UnregisterHotKey(None, OVERLAY_ID)
+                user32.UnregisterHotKey(None, CLICK_THROUGH_ID)
+                cfg = load_config()
+                boss_hk = (cfg.get("global_boss_hotkey") or "Alt+Space").strip()
+                overlay_hk = (cfg.get("global_overlay_hotkey") or "Alt+G").strip()
+                if boss_hk and boss_hk.lower() != "none":
+                    mods, vk = parse_hotkey_modifiers(boss_hk)
+                    user32.RegisterHotKey(None, BOSS_ID, mods, vk)
+                if overlay_hk and overlay_hk.lower() != "none":
+                    mods2, vk2 = parse_hotkey_modifiers(overlay_hk)
+                    user32.RegisterHotKey(None, OVERLAY_ID, mods2, vk2)
+                # Register Alt+T for instant Click-Through HUD lock/unlock in-game
+                mods_ct, vk_ct = parse_hotkey_modifiers("Alt+T")
+                user32.RegisterHotKey(None, CLICK_THROUGH_ID, mods_ct, vk_ct)
 
-            if overlay_hk and overlay_hk.lower() != "none":
-                mods2, vk2 = parse_hotkey_modifiers(overlay_hk)
-                if user32.RegisterHotKey(None, OVERLAY_ID, mods2, vk2):
-                    registered_any = True
-
-            if not registered_any:
-                return
+            _register_from_config()
 
             msg = wintypes.MSG()
             while not _server_should_exit:
                 res = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
                 if res <= 0:
                     break
-                if msg.message == 0x0312:
+                if msg.message == WM_RELOAD_HOTKEYS:
+                    _register_from_config()
+                elif msg.message == 0x0312:
                     if msg.wParam == BOSS_ID:
                         show_or_toggle_desktop_window(port, toggle=True)
                     elif msg.wParam == OVERLAY_ID:
                         show_or_toggle_overlay_window(port, toggle=True)
+                    elif msg.wParam == CLICK_THROUGH_ID:
+                        set_overlay_click_through(None)
 
             user32.UnregisterHotKey(None, BOSS_ID)
             user32.UnregisterHotKey(None, OVERLAY_ID)
+            user32.UnregisterHotKey(None, CLICK_THROUGH_ID)
         except Exception as e:
             print(f"[Desktop] Hotkey listener exited: {e}")
 
@@ -216,6 +335,9 @@ def start_system_tray(port: int, on_exit_callback):
         def _on_overlay(icon, item):
             show_or_toggle_overlay_window(port, toggle=False)
 
+        def _on_toggle_click_through(icon, item):
+            set_overlay_click_through(None)
+
         def _on_browser(icon, item):
             webbrowser.open(f"http://127.0.0.1:{port}")
 
@@ -233,6 +355,7 @@ def start_system_tray(port: int, on_exit_callback):
         menu = pystray.Menu(
             pystray.MenuItem("打开 ACG Vault 主界面", _on_show, default=True),
             pystray.MenuItem("呼出游戏内攻略伴侣窗 (Alt+G)", _on_overlay),
+            pystray.MenuItem("切换伴侣窗鼠标穿透锁定 (Alt+T)", _on_toggle_click_through),
             pystray.MenuItem("立即扫描本地游戏库", _on_scan),
             pystray.MenuItem("在浏览器中打开", _on_browser),
             pystray.Menu.SEPARATOR,
@@ -283,7 +406,7 @@ def run_desktop_app():
     print(f"  ACG Game Vault v{APP_VERSION} Desktop Service Ready")
     print(f"  Local URL      : {url}")
     print(f"  Boss Hotkey    : {cfg.get('global_boss_hotkey', 'Alt+Space')}")
-    print(f"  Overlay Hotkey : {cfg.get('global_overlay_hotkey', 'Alt+G')}")
+    print(f"  Overlay Hotkey : {cfg.get('global_overlay_hotkey', 'Alt+G')} (Alt+T 鼠标穿透锁定)")
     print("====================================================")
 
     if desktop_mode == "native":
@@ -305,7 +428,7 @@ def run_desktop_app():
 
             # Create hidden Always-on-Top In-Game Companion Overlay window ready for instant Alt+G summon
             overlay_win = webview.create_window(
-                title=f"ACG Vault 游戏内攻略伴侣 (Alt+G)",
+                title=OVERLAY_WINDOW_TITLE,
                 url=overlay_url,
                 width=460,
                 height=740,
@@ -320,6 +443,7 @@ def run_desktop_app():
 
             def on_overlay_closing():
                 if not _server_should_exit:
+                    set_overlay_click_through(False)
                     overlay_win.hide()
                     overlay_win._is_visible = False
                     return False

@@ -56,6 +56,10 @@ _TAG_L10N_CACHE = {
     "mapping": {}
 }
 
+# Memoization cache for (raw_tags_str, localize_bool) -> tuple of normalized tags
+# Eliminates repeated O(N) regex splitting during high-frequency get_all_games() calls
+_PARSED_TAG_STR_CACHE: Dict[Tuple[str, bool], Tuple[str, ...]] = {}
+
 
 def _get_tag_l10n_rules() -> Tuple[set, Dict[str, str]]:
     """Loads and caches data/l10n_tags_zh.json with mtime invalidation."""
@@ -74,6 +78,7 @@ def _get_tag_l10n_rules() -> Tuple[set, Dict[str, str]]:
                     if str(k).strip() and str(v).strip()
                 }
                 _TAG_L10N_CACHE["mtime"] = mtime
+                _PARSED_TAG_STR_CACHE.clear()
     except Exception as e:
         print(f"[TagL10N] Failed to load l10n_tags_zh.json: {e}")
     return _TAG_L10N_CACHE["ignore_set"], _TAG_L10N_CACHE["mapping"]
@@ -83,6 +88,7 @@ def normalize_and_localize_tags(raw_tags: Any, localize: Optional[bool] = None) 
     """
     Normalizes tags from JSON string, comma-separated string, or list,
     and localizes JP/EN tags into canonical Simplified Chinese tags via l10n_tags_zh.json.
+    Includes O(1) string-level memoization for database reads.
     """
     if not raw_tags:
         return []
@@ -93,23 +99,33 @@ def normalize_and_localize_tags(raw_tags: Any, localize: Optional[bool] = None) 
         except Exception:
             localize = True
 
-    items: List[str] = []
+    ignore_set, mapping = _get_tag_l10n_rules()
+
     if isinstance(raw_tags, str):
         s = raw_tags.strip()
         if not s or s == "[]":
             return []
+        cache_key = (s, bool(localize))
+        cached_tuple = _PARSED_TAG_STR_CACHE.get(cache_key)
+        if cached_tuple is not None:
+            return list(cached_tuple)
+
         try:
             parsed = json.loads(s)
             if isinstance(parsed, list):
                 items = [str(x) for x in parsed if x is not None]
             elif isinstance(parsed, str):
                 items = [parsed]
+            else:
+                items = []
         except Exception:
             items = [x.strip() for x in re.split(r"[,，]", s) if x.strip()]
     elif isinstance(raw_tags, (list, tuple, set)):
         items = [str(x) for x in raw_tags if x is not None]
+        cache_key = None
+    else:
+        return []
 
-    ignore_set, mapping = _get_tag_l10n_rules()
     result: List[str] = []
     seen_lower: set = set()
 
@@ -141,6 +157,11 @@ def normalize_and_localize_tags(raw_tags: Any, localize: Optional[bool] = None) 
             if f_low and f_low not in seen_lower:
                 seen_lower.add(f_low)
                 result.append(final_tag)
+
+    if cache_key is not None:
+        if len(_PARSED_TAG_STR_CACHE) > 4096:
+            _PARSED_TAG_STR_CACHE.clear()
+        _PARSED_TAG_STR_CACHE[cache_key] = tuple(result)
 
     return result
 
@@ -314,6 +335,18 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_dup_ignores ON duplicate_ignores(game_id_1, game_id_2);")
 
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ignored_paths (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            folder_path TEXT NOT NULL UNIQUE,
+            folder_name TEXT DEFAULT '',
+            clean_title TEXT DEFAULT '',
+            reason TEXT DEFAULT 'user_removed',
+            created_at TEXT NOT NULL
+        );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ignored_paths ON ignored_paths(folder_path);")
+
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS game_screenshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             game_id INTEGER NOT NULL,
@@ -344,7 +377,6 @@ def init_db():
         """)
 
         # One-time v2.3 migration: move all existing user_notes into walkthrough_md (全结局攻略)
-        # and leave user_notes clean for lightweight personal notes (个人通关笔记).
         cursor.execute("SELECT query_key FROM scrape_cache WHERE query_key = '__migration_v2_3_split_notes_walkthrough'")
         if not cursor.fetchone():
             cursor.execute("""
@@ -467,8 +499,8 @@ def row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     d["user_tags"] = normalize_and_localize_tags(d.get("user_tags"), localize=False)
 
     # Remove from official tags any tag already present in user_tags to avoid visual duplication
-    user_tag_lows = {ut.lower() for ut in d["user_tags"]}
-    if user_tag_lows:
+    if d["user_tags"]:
+        user_tag_lows = {ut.lower() for ut in d["user_tags"]}
         d["tags"] = [t for t in d["tags"] if t.lower() not in user_tag_lows]
 
     if d.get("voice_actors") and isinstance(d["voice_actors"], str):
@@ -490,16 +522,16 @@ def row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
     else:
         d["sample_images"] = []
 
-    combined_text = " ".join([
-        str(d.get("folder_name") or ""),
-        str(d.get("display_title") or ""),
-        " ".join(str(t) for t in d["tags"]),
-        " ".join(str(t) for t in d["user_tags"])
-    ]).lower()
-    d["is_translated"] = 1 if (
-        int(d.get("has_translation") or 0) == 1
-        or any(kw in combined_text for kw in TRANSLATION_KEYWORDS)
-    ) else 0
+    if int(d.get("has_translation") or 0) == 1:
+        d["is_translated"] = 1
+    else:
+        combined_text = " ".join([
+            str(d.get("folder_name") or ""),
+            str(d.get("display_title") or ""),
+            " ".join(d["tags"]),
+            " ".join(d["user_tags"])
+        ]).lower()
+        d["is_translated"] = 1 if any(kw in combined_text for kw in TRANSLATION_KEYWORDS) else 0
 
     if "has_walkthrough_flag" in d:
         d["has_walkthrough"] = int(d.pop("has_walkthrough_flag") or 0)
@@ -742,7 +774,7 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
             update_fields = [
                 "folder_name = ?", "clean_title = ?", "engine_type = ?", "executable_path = ?",
                 "folder_size_bytes = ?", "folder_size_str = ?", "folder_modified_at = ?",
-                "updated_at = ?", "is_tool = ?"
+                "updated_at = ?", "is_tool = ?", "is_missing = 0"
             ]
             values = [
                 game_data["folder_name"],
@@ -770,11 +802,11 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
                     update_fields.append(f"{field} = ?")
                     values.append(game_data[field])
 
-            if "sample_images" in game_data and game_data["sample_images"]:
+            if "sample_images" in game_data and game_data["sample_images"] is not None:
                 update_fields.append("sample_images = ?")
                 values.append(samples_str)
 
-            if "tags" in game_data and norm_tags:
+            if "tags" in game_data and game_data["tags"] is not None:
                 update_fields.append("tags = ?")
                 values.append(tags_str)
 
@@ -782,7 +814,7 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
                 update_fields.append("user_tags = ?")
                 values.append(user_tags_str)
 
-            if "voice_actors" in game_data and game_data["voice_actors"]:
+            if "voice_actors" in game_data and game_data["voice_actors"] is not None:
                 update_fields.append("voice_actors = ?")
                 values.append(va_str)
 
@@ -1064,6 +1096,10 @@ def get_stats() -> Dict[str, Any]:
         row = cursor.fetchone()
         cursor.execute("SELECT COUNT(*) as tools_count FROM games WHERE is_archived = 0 AND is_tool = 1")
         tools_row = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*) as archived_count FROM games WHERE is_archived = 1")
+        archived_row = cursor.fetchone()
+        cursor.execute("SELECT COUNT(*) as ignored_count FROM ignored_paths")
+        ignored_row = cursor.fetchone()
 
     total_bytes = (row["total_size_bytes"] or 0) if row else 0
     return {
@@ -1082,6 +1118,8 @@ def get_stats() -> Dict[str, Any]:
         "translated": (row["translated"] or 0) if row else 0,
         "unscraped": (row["unscraped"] or 0) if row else 0,
         "tools_count": (tools_row["tools_count"] or 0) if tools_row else 0,
+        "archived_count": (archived_row["archived_count"] or 0) if archived_row else 0,
+        "ignored_count": (ignored_row["ignored_count"] or 0) if ignored_row else 0,
         "total_size_bytes": total_bytes,
         "total_size_str": format_bytes_short(total_bytes),
         "total_played_hours": round(((row["total_seconds"] or 0) if row else 0) / 3600, 1),
@@ -1119,8 +1157,9 @@ def get_analytics_data() -> Dict[str, Any]:
     for b in buckets:
         b["percentage"] = round((b["count"] / total_games) * 100, 1)
 
+    # Only include games with actual played duration (> 0 seconds) in the Hall of Fame
     played_sorted = sorted(
-        [g for g in games if (g.get("played_seconds") or 0) > 0 or (g.get("play_count") or 0) > 0],
+        [g for g in games if (g.get("played_seconds") or 0) > 0],
         key=lambda x: (x.get("played_seconds") or 0, x.get("play_count") or 0),
         reverse=True
     )[:10]
@@ -1211,11 +1250,13 @@ def get_analytics_data() -> Dict[str, Any]:
         e["size_str"] = format_bytes_short(e["size_bytes"])
         e["translated_pct"] = round((e["translated_count"] / max(1, e["count"])) * 100, 0)
 
+    # Exact calendar month arithmetic for the past 12 months (avoids 28-day drift skipping months)
     month_counts: Dict[str, Dict[str, int]] = {}
     now_dt = datetime.now()
+    base_ym = now_dt.year * 12 + (now_dt.month - 1)
     for i in range(11, -1, -1):
-        dt = (now_dt.replace(day=1) - timedelta(days=i * 28)).replace(day=1)
-        m_key = dt.strftime("%Y-%m")
+        y, m0 = divmod(base_ym - i, 12)
+        m_key = f"{y:04d}-{m0 + 1:02d}"
         month_counts[m_key] = {"month": m_key, "added_count": 0, "played_count": 0}
 
     for g in games:
@@ -1323,7 +1364,7 @@ def get_analytics_data() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------
-# Smart & Custom Collections Engine (v2.3)
+# Smart & Custom Collections Engine (v2.4)
 # ---------------------------------------------------------
 def _match_smart_collection_rules(game: Dict[str, Any], rules: Dict[str, Any]) -> bool:
     if not rules:
@@ -1346,7 +1387,6 @@ def _match_smart_collection_rules(game: Dict[str, Any], rules: Dict[str, Any]) -
 
     min_rating = int(rules.get("min_rating") or 0)
     if min_rating > 0:
-        # For 5-star hall of fame, also include favorites if rating >= 4 or rating >= min_rating
         rating_val = int(game.get("user_rating") or 0)
         if rating_val < min_rating and not (min_rating == 5 and int(game.get("is_favorite") or 0) == 1 and rating_val >= 4):
             return False
@@ -1451,7 +1491,7 @@ def save_collection(
     rules: Optional[Dict[str, Any]] = None,
     game_ids: Optional[List[int]] = None,
     collection_id: Optional[int] = None
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     now = datetime.now().isoformat()
     rules_str = json.dumps(rules or {}, ensure_ascii=False)
     ids_clean = list(dict.fromkeys([int(x) for x in (game_ids or []) if str(x).isdigit()]))
@@ -1476,8 +1516,8 @@ def save_collection(
     all_cols = get_all_collections()
     for c in all_cols:
         if c["id"] == cid:
-            return c
-    return {"id": cid, "name": name}
+            return c, all_cols
+    return {"id": cid, "name": name}, all_cols
 
 
 def delete_collection_by_id(collection_id: int) -> bool:
@@ -1486,13 +1526,13 @@ def delete_collection_by_id(collection_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-def update_collection_games(collection_id: int, game_ids: List[int], action: str = "add") -> Optional[Dict[str, Any]]:
+def update_collection_games(collection_id: int, game_ids: List[int], action: str = "add") -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     now = datetime.now().isoformat()
     with db_session(commit=True) as (_, cursor):
         cursor.execute("SELECT * FROM collections WHERE id = ?", (collection_id,))
         row = cursor.fetchone()
         if not row:
-            return None
+            return None, []
         try:
             curr = json.loads(row["game_ids_json"] or "[]")
             if not isinstance(curr, list):
@@ -1515,8 +1555,8 @@ def update_collection_games(collection_id: int, game_ids: List[int], action: str
     all_cols = get_all_collections()
     for c in all_cols:
         if c["id"] == collection_id:
-            return c
-    return None
+            return c, all_cols
+    return None, all_cols
 
 
 # ---------------------------------------------------------
@@ -1708,9 +1748,85 @@ def dismiss_game_from_duplicates(game_id: int, target_id: Optional[int] = None) 
     return True
 
 
-def mark_archived(game_id: int):
+def mark_archived(game_id: int, new_folder_path: Optional[str] = None):
+    now = datetime.now().isoformat()
     with db_session(commit=True) as (_, cursor):
-        cursor.execute("UPDATE games SET is_archived = 1, updated_at = ? WHERE id = ?", (datetime.now().isoformat(), game_id))
+        if new_folder_path:
+            cursor.execute(
+                "UPDATE games SET is_archived = 1, folder_path = ?, duplicate_group_id = NULL, duplicate_count = 0, updated_at = ? WHERE id = ?",
+                (new_folder_path, now, game_id)
+            )
+        else:
+            cursor.execute(
+                "UPDATE games SET is_archived = 1, duplicate_group_id = NULL, duplicate_count = 0, updated_at = ? WHERE id = ?",
+                (now, game_id)
+            )
+
+
+def get_archived_games() -> List[Dict[str, Any]]:
+    """Returns all archived duplicate games so the user can inspect or restore them."""
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute(f"SELECT {LIGHTWEIGHT_GAME_COLUMNS} FROM games WHERE is_archived = 1 ORDER BY updated_at DESC")
+        return [row_to_dict(r) for r in cursor.fetchall()]
+
+
+def unarchive_game_by_id(game_id: int, restored_path: Optional[str] = None) -> bool:
+    now = datetime.now().isoformat()
+    with db_session(commit=True) as (_, cursor):
+        if restored_path:
+            cursor.execute(
+                "UPDATE games SET is_archived = 0, is_missing = 0, folder_path = ?, updated_at = ? WHERE id = ?",
+                (restored_path, now, game_id)
+            )
+        else:
+            cursor.execute(
+                "UPDATE games SET is_archived = 0, is_missing = 0, updated_at = ? WHERE id = ?",
+                (now, game_id)
+            )
+        return cursor.rowcount > 0
+
+
+# ---------------------------------------------------------
+# Ignored Paths Registry (Prevents removed local games from being rescanned)
+# ---------------------------------------------------------
+def add_ignored_path(folder_path: str, folder_name: str = "", clean_title: str = "", reason: str = "user_removed"):
+    if not folder_path:
+        return
+    norm_p = os.path.normpath(folder_path.strip())
+    fname = folder_name or os.path.basename(norm_p)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with db_session(commit=True) as (_, cursor):
+        cursor.execute("""
+            INSERT OR REPLACE INTO ignored_paths (folder_path, folder_name, clean_title, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (norm_p, fname, clean_title or fname, reason, now))
+
+
+def remove_ignored_path(path_or_id: Any) -> bool:
+    with db_session(commit=True) as (_, cursor):
+        if isinstance(path_or_id, int) or (isinstance(path_or_id, str) and path_or_id.isdigit()):
+            cursor.execute("DELETE FROM ignored_paths WHERE id = ?", (int(path_or_id),))
+        else:
+            cursor.execute("DELETE FROM ignored_paths WHERE folder_path = ?", (str(path_or_id),))
+        return cursor.rowcount > 0
+
+
+def clear_all_ignored_paths() -> int:
+    with db_session(commit=True) as (_, cursor):
+        cursor.execute("DELETE FROM ignored_paths")
+        return cursor.rowcount
+
+
+def get_all_ignored_paths() -> List[Dict[str, Any]]:
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute("SELECT * FROM ignored_paths ORDER BY id DESC")
+        return [dict(r) for r in cursor.fetchall()]
+
+
+def get_ignored_paths_norm_set() -> set:
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute("SELECT folder_path FROM ignored_paths")
+        return {os.path.normcase(os.path.normpath(r["folder_path"])) for r in cursor.fetchall() if r["folder_path"]}
 
 
 def delete_game_by_id(game_id: int) -> bool:

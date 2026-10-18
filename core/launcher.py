@@ -11,10 +11,10 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import httpx
 
-from db.database import get_game_by_id, record_game_launch
+from db.database import get_game_by_id, record_game_launch, update_game_user_state
 from core.scanner import fast_inspect_folder, choose_best_executable, is_valid_translation_json, IGNORE_EXE_PATTERNS
 from config import load_config
 
@@ -248,22 +248,16 @@ def get_last_active_game_id() -> Optional[int]:
 
 
 def get_running_games_info() -> Dict[int, Dict[str, Any]]:
-    """Returns currently active running games with live elapsed seconds."""
+    """
+    Returns currently active running games with live elapsed seconds in O(1) memory time.
+    Never performs expensive Win32 process tree snapshots while holding RUNNING_LOCK;
+    process liveness and child PID handoffs are maintained asynchronously by monitor_game_pid.
+    """
     now = time.time()
     active: Dict[int, Dict[str, Any]] = {}
     with RUNNING_LOCK:
-        stale_ids = []
         for gid, info in RUNNING_GAMES.items():
-            pid = info.get("pid")
-            folder_path = info.get("folder_path")
             elapsed = int(now - info.get("start_time", now))
-            if pid and not is_pid_alive(pid):
-                new_pid = find_game_pid_in_folder(folder_path, info.get("exe")) if folder_path else None
-                if new_pid:
-                    info["pid"] = new_pid
-                elif elapsed > 8:
-                    stale_ids.append(gid)
-                    continue
             active[gid] = {
                 "game_id": gid,
                 "pid": info.get("pid"),
@@ -271,8 +265,6 @@ def get_running_games_info() -> Dict[int, Dict[str, Any]]:
                 "mode": info.get("mode", "native"),
                 "elapsed_seconds": max(0, elapsed)
             }
-        for sid in stale_ids:
-            RUNNING_GAMES.pop(sid, None)
     return active
 
 
@@ -321,7 +313,8 @@ def monitor_game_pid(
 ):
     """
     Monitors the real game process until it closes, listens for screenshot hotkeys,
-    records play duration, and triggers automatic incremental save backup + WebDAV sync on exit.
+    records play duration & play_count only when session >= 3s (preventing 0s crash pollution),
+    and triggers automatic incremental save backup + WebDAV sync on exit.
     """
     search_root = game_folder or working_dir
     last_shot = 0.0
@@ -350,6 +343,9 @@ def monitor_game_pid(
                     child_pid = find_game_pid_in_folder(search_root, exe_name)
                     if not child_pid:
                         break
+                    with RUNNING_LOCK:
+                        if game_id in RUNNING_GAMES:
+                            RUNNING_GAMES[game_id]["pid"] = child_pid
         else:
             if hProcess:
                 close_win32_handle(hProcess)
@@ -391,9 +387,9 @@ def monitor_game_pid(
             close_win32_handle(hProcess)
         duration = int(time.time() - start_time)
         if duration >= 3:
-            record_game_launch(game_id, duration_seconds=duration, increment_count=False)
+            record_game_launch(game_id, duration_seconds=duration, increment_count=True)
 
-        # v2.3: Automatic incremental save snapshot + optional WebDAV cloud backup when session >= threshold
+        # v2.4: Automatic incremental save snapshot + optional WebDAV cloud backup when session >= threshold
         try:
             cfg = load_config()
             if cfg.get("enable_auto_save_backup", True):
@@ -493,8 +489,6 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
             hProcess = None
 
         start_time = time.time()
-        record_game_launch(game_id, duration_seconds=0, increment_count=True)
-
         with RUNNING_LOCK:
             RUNNING_GAMES[game_id] = {
                 "pid": pid,
@@ -571,7 +565,6 @@ def launch_game_with_le(game_id: int) -> Dict[str, Any]:
         time.sleep(1.0)
         real_pid = find_game_pid_in_folder(folder_path or working_dir, exe_name)
         start_time = time.time()
-        record_game_launch(game_id, duration_seconds=0, increment_count=True)
 
         with RUNNING_LOCK:
             RUNNING_GAMES[game_id] = {
@@ -830,8 +823,6 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
         real_game_pid = find_game_pid_in_folder(folder_path or working_dir, exe_name)
 
         start_time = time.time()
-        record_game_launch(game_id, duration_seconds=0, increment_count=True)
-
         with RUNNING_LOCK:
             RUNNING_GAMES[game_id] = {
                 "pid": real_game_pid,
@@ -860,7 +851,7 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------
-# Save Data Detection, Auto-Snapshot, Restore & WebDAV Cloud Sync (v2.3)
+# Multi-Engine Save Data Detection (Local + Unity LocalLow + Ren'Py + Kirikiri) (v2.4)
 # ---------------------------------------------------------
 SAVE_DIR_CANDIDATES = [
     "save",
@@ -870,6 +861,8 @@ SAVE_DIR_CANDIDATES = [
     "savedata",
     "Saves",
     "saves",
+    "krkrsave",
+    os.path.join("data", "save"),
     os.path.join("game", "saves"),
     os.path.join("UserData", "save"),
     os.path.join("Data", "Save"),
@@ -879,54 +872,210 @@ SAVE_DIR_CANDIDATES = [
 
 SAVE_FILE_EXTENSIONS = (
     ".rpgsave", ".rmmzsave", ".rvdata2", ".rvdata", ".rxdata",
-    ".sav", ".save", ".lsd", ".ksd", ".dat"
+    ".sav", ".save", ".lsd", ".ksd", ".dat", ".sol", ".json"
 )
 
 
-def find_game_save_dir(folder_path: str) -> Optional[str]:
-    if not folder_path or not os.path.exists(folder_path):
+def _discover_unity_appdata_save_dir(folder_path: str, game: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    Discovers Unity's AppData/LocalLow/<CompanyName>/<ProductName> save directory:
+    1. Reads <ExeName>_Data/app.info (line 1 = CompanyName, line 2 = ProductName) inside the game folder.
+    2. Falls back to matching circle_name / clean_title / original_title in %USERPROFILE%/AppData/LocalLow.
+    """
+    user_profile = os.environ.get("USERPROFILE") or str(Path.home())
+    locallow = Path(user_profile) / "AppData" / "LocalLow"
+    if not locallow.exists() or not locallow.is_dir():
         return None
-    root = Path(folder_path)
-    for rel in SAVE_DIR_CANDIDATES:
-        cand = root / rel
-        if cand.exists() and cand.is_dir():
-            return str(cand)
+
+    # 1. Exact resolution via Unity's <Game>_Data/app.info
+    if folder_path and os.path.exists(folder_path):
+        root = Path(folder_path)
+        app_infos = list(root.glob("*_Data/app.info")) + list(root.glob("*/*_Data/app.info"))
+        for info_file in app_infos:
+            try:
+                lines = [l.strip() for l in info_file.read_text(encoding="utf-8", errors="ignore").splitlines() if l.strip()]
+                if len(lines) >= 2:
+                    company, product = lines[0], lines[1]
+                    cand = locallow / company / product
+                    if cand.exists() and cand.is_dir():
+                        return str(cand)
+                elif len(lines) == 1:
+                    for sub in locallow.iterdir():
+                        if sub.is_dir() and (sub / lines[0]).is_dir():
+                            return str(sub / lines[0])
+            except Exception:
+                pass
+
+    # 2. Fuzzy match Company / Product folder names against game metadata
+    if game:
+        tokens = set()
+        for k in ("clean_title", "original_title", "display_title", "folder_name"):
+            v = (game.get(k) or "").strip()
+            if v and len(v) >= 2:
+                tokens.add(v.lower())
+        if folder_path and os.path.exists(folder_path):
+            for d in Path(folder_path).glob("*_Data"):
+                stem = d.name[:-5].strip()
+                if len(stem) >= 2:
+                    tokens.add(stem.lower())
+        if tokens:
+            try:
+                for comp_dir in locallow.iterdir():
+                    if not comp_dir.is_dir():
+                        continue
+                    for prod_dir in comp_dir.iterdir():
+                        if not prod_dir.is_dir():
+                            continue
+                        pname = prod_dir.name.lower()
+                        if any(pname == t or (len(t) >= 4 and t in pname) for t in tokens):
+                            return str(prod_dir)
+            except Exception:
+                pass
+    return None
+
+
+def _discover_renpy_appdata_save_dir(folder_path: str, game: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """
+    Discovers Ren'Py's %APPDATA%/RenPy/<save_directory> folder by inspecting game/options.rpy
+    or matching the game's folder/exe stem.
+    """
+    appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+    renpy_root = Path(appdata) / "RenPy"
+    if not renpy_root.exists() or not renpy_root.is_dir():
+        return None
+
+    if folder_path and os.path.exists(folder_path):
+        root = Path(folder_path)
+        for opt_rpy in [root / "game" / "options.rpy", root / "options.rpy"]:
+            if opt_rpy.exists():
+                try:
+                    txt = opt_rpy.read_text(encoding="utf-8", errors="ignore")
+                    m = re.search(r'config\.save_directory\s*=\s*["\']([^"\']+)["\']', txt)
+                    if m:
+                        cand = renpy_root / m.group(1).strip()
+                        if cand.exists() and cand.is_dir():
+                            return str(cand)
+                except Exception:
+                    pass
+
+    stems = set()
+    if folder_path:
+        stems.add(Path(folder_path).name.lower())
+    if game:
+        for k in ("clean_title", "original_title", "executable_path"):
+            v = (game.get(k) or "").strip()
+            if v:
+                stems.add(Path(v).stem.lower())
     try:
-        for f in os.listdir(root):
-            low = f.lower()
-            if low.startswith("save") and low.endswith(SAVE_FILE_EXTENSIONS):
-                return str(root)
+        for sub in renpy_root.iterdir():
+            if sub.is_dir():
+                s_low = sub.name.lower()
+                if any(st and len(st) >= 3 and (s_low.startswith(st) or st in s_low) for st in stems):
+                    return str(sub)
     except Exception:
         pass
     return None
 
 
+def find_game_save_info(folder_path: str, game: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """
+    Resolves the save directory across Local Game Folder, Unity AppData/LocalLow,
+    Ren'Py AppData/Roaming/RenPy, and Kirikiri/System directories.
+    Returns {"save_dir": str, "save_source_type": str, "save_source_label": str}.
+    """
+    # 1. Check inside the local game directory first
+    if folder_path and os.path.exists(folder_path):
+        root = Path(folder_path)
+        for rel in SAVE_DIR_CANDIDATES:
+            cand = root / rel
+            if cand.exists() and cand.is_dir():
+                return {
+                    "save_dir": str(cand),
+                    "save_source_type": "local",
+                    "save_source_label": f"游戏内目录 ({rel})"
+                }
+        try:
+            for f in os.listdir(root):
+                low = f.lower()
+                if low.startswith("save") and low.endswith(SAVE_FILE_EXTENSIONS):
+                    return {
+                        "save_dir": str(root),
+                        "save_source_type": "local",
+                        "save_source_label": "游戏根目录"
+                    }
+        except Exception:
+            pass
+
+    engine_type = (game.get("engine_type") if game else "") or ""
+
+    # 2. Check Unity AppData/LocalLow
+    if "Unity" in engine_type or (folder_path and os.path.exists(folder_path) and list(Path(folder_path).glob("*_Data"))):
+        unity_dir = _discover_unity_appdata_save_dir(folder_path, game=game)
+        if unity_dir:
+            rel_tail = "/".join(Path(unity_dir).parts[-2:])
+            return {
+                "save_dir": unity_dir,
+                "save_source_type": "appdata_unity",
+                "save_source_label": f"Unity 系统目录 (LocalLow/{rel_tail})"
+            }
+
+    # 3. Check Ren'Py %APPDATA%/RenPy
+    if "Ren'Py" in engine_type or (folder_path and os.path.exists(folder_path) and (Path(folder_path) / "renpy").is_dir()):
+        renpy_dir = _discover_renpy_appdata_save_dir(folder_path, game=game)
+        if renpy_dir:
+            return {
+                "save_dir": renpy_dir,
+                "save_source_type": "appdata_renpy",
+                "save_source_label": f"Ren'Py 系统目录 (AppData/RenPy/{Path(renpy_dir).name})"
+            }
+
+    return {"save_dir": "", "save_source_type": "none", "save_source_label": ""}
+
+
+def find_game_save_dir(folder_path: str, game: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    info = find_game_save_info(folder_path, game=game)
+    return info["save_dir"] if info.get("save_dir") else None
+
+
 def get_game_save_status(game_id: int) -> Dict[str, Any]:
-    """Inspects local game save folder and existing backup snapshots."""
+    """Inspects local/AppData game save folder, editable RPG Maker slots, and existing backup snapshots."""
     game = get_game_by_id(game_id)
     if not game:
-        return {"has_save_dir": False, "save_count": 0, "backups": [], "can_unlock_cg": False}
+        return {"has_save_dir": False, "save_count": 0, "backups": [], "can_unlock_cg": False, "can_edit_save": False}
 
     folder_path = game.get("folder_path", "")
-    save_dir = find_game_save_dir(folder_path)
+    save_info = find_game_save_info(folder_path, game=game)
+    save_dir = save_info.get("save_dir") or ""
     save_files: List[str] = []
+    editable_rpg_saves = 0
     latest_save_time = ""
 
     if save_dir and os.path.exists(save_dir):
         latest_ts = 0.0
-        is_root_save = os.path.normcase(os.path.normpath(save_dir)) == os.path.normcase(os.path.normpath(folder_path))
+        is_root_save = bool(folder_path and os.path.normcase(os.path.normpath(save_dir)) == os.path.normcase(os.path.normpath(folder_path)))
+        skip_unity_logs = {"player.log", "player-prev.log", "output_log.txt"}
         try:
             for root, dirs, files in os.walk(save_dir):
                 if is_root_save:
                     dirs.clear()
+                else:
+                    dirs[:] = [d for d in dirs if d.lower() not in ("unity", "crashes", "logs", "il2cpp")]
                 for fn in files:
                     low = fn.lower()
+                    if low in skip_unity_logs or low.endswith(".log"):
+                        continue
                     if is_root_save:
                         if not (low.startswith("save") and low.endswith(SAVE_FILE_EXTENSIONS)):
                             continue
-                    if low.endswith(SAVE_FILE_EXTENSIONS) or "save" in low or "file" in low or "global" in low:
+                    if (
+                        save_info.get("save_source_type") in ("appdata_unity", "appdata_renpy")
+                        or low.endswith(SAVE_FILE_EXTENSIONS)
+                        or "save" in low or "file" in low or "global" in low
+                    ):
                         fp = os.path.join(root, fn)
                         save_files.append(fp)
+                        if low.endswith((".rpgsave", ".rmmzsave")) and low not in ("global.rpgsave", "config.rpgsave", "global.rmmzsave", "config.rmmzsave"):
+                            editable_rpg_saves += 1
                         st = os.stat(fp)
                         if st.st_mtime > latest_ts:
                             latest_ts = st.st_mtime
@@ -942,7 +1091,7 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
         prefix = f"game_{game_id}_"
         for bf in sorted(backup_root.glob(f"{prefix}*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
             st = bf.stat()
-            is_auto = "_auto_" in bf.name or "自动快照" in bf.name
+            is_auto = "_auto_" in bf.name or "自动快照" in bf.name or "改档前备份" in bf.name
             backups.append({
                 "filename": bf.name,
                 "path": str(bf),
@@ -959,8 +1108,12 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
 
     return {
         "has_save_dir": bool(save_dir),
-        "save_dir": save_dir or "",
+        "save_dir": save_dir,
+        "save_source_type": save_info.get("save_source_type", "none"),
+        "save_source_label": save_info.get("save_source_label", ""),
         "save_count": len(save_files),
+        "editable_save_count": editable_rpg_saves,
+        "can_edit_save": editable_rpg_saves > 0 or can_unlock_cg,
         "latest_save_at": latest_save_time,
         "backup_root": str(backup_root),
         "backups": backups[:25],
@@ -975,7 +1128,7 @@ def open_game_save_folder(game_id: int) -> Dict[str, Any]:
     status = get_game_save_status(game_id)
     if status.get("has_save_dir") and status.get("save_dir"):
         open_game_folder(status["save_dir"])
-        return {"success": True, "message": "已打开游戏存档目录"}
+        return {"success": True, "message": f"已打开存档目录 ({status.get('save_source_label') or 'Save'})"}
     game = get_game_by_id(game_id)
     if game and game.get("folder_path") and os.path.exists(game["folder_path"]):
         open_game_folder(game["folder_path"])
@@ -1021,7 +1174,7 @@ def backup_game_saves(
 
     status = get_game_save_status(game_id)
     if not status.get("has_save_dir") or not status.get("save_dir"):
-        return {"success": False, "message": "未在该游戏目录内检测到存档文件夹"}
+        return {"success": False, "message": "未在该游戏目录或系统 AppData 内检测到存档文件夹"}
 
     save_dir = Path(status["save_dir"])
     cfg = load_config()
@@ -1037,14 +1190,20 @@ def backup_game_saves(
 
     try:
         file_count = 0
-        is_root_save = os.path.normcase(os.path.normpath(str(save_dir))) == os.path.normcase(os.path.normpath(game["folder_path"]))
+        folder_p = game.get("folder_path") or ""
+        is_root_save = bool(folder_p and os.path.normcase(os.path.normpath(str(save_dir))) == os.path.normcase(os.path.normpath(folder_p)))
+        skip_unity_logs = {"player.log", "player-prev.log", "output_log.txt"}
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for root, dirs, files in os.walk(save_dir):
                 if is_root_save:
                     dirs.clear()
+                else:
+                    dirs[:] = [d for d in dirs if d.lower() not in ("unity", "crashes", "logs", "il2cpp")]
                 for fn in files:
+                    low = fn.lower()
+                    if low in skip_unity_logs or low.endswith(".log"):
+                        continue
                     if is_root_save:
-                        low = fn.lower()
                         if not (low.startswith("save") and low.endswith(SAVE_FILE_EXTENSIONS)):
                             continue
                     fp = Path(root) / fn
@@ -1084,7 +1243,7 @@ def backup_game_saves(
 
 
 def restore_game_saves(game_id: int, filename: str) -> Dict[str, Any]:
-    """Restores a save backup zip into the game's save directory with strict ZipSlip protection."""
+    """Restores a save backup zip into the game's save directory (local or AppData) with strict ZipSlip protection."""
     game = get_game_by_id(game_id)
     if not game:
         return {"success": False, "message": "游戏不存在"}
@@ -1100,11 +1259,10 @@ def restore_game_saves(game_id: int, filename: str) -> Dict[str, Any]:
         return {"success": False, "message": "指定的存档备份文件不存在"}
 
     folder_path = game.get("folder_path", "")
-    if not folder_path or not os.path.exists(folder_path):
-        return {"success": False, "message": "游戏本地目录不存在，无法还原存档"}
-
-    save_dir_str = find_game_save_dir(folder_path)
+    save_dir_str = find_game_save_dir(folder_path, game=game)
     if not save_dir_str:
+        if not folder_path or not os.path.exists(folder_path):
+            return {"success": False, "message": "游戏本地目录不存在，无法还原存档"}
         if (Path(folder_path) / "www").is_dir():
             save_dir = Path(folder_path) / "www" / "save"
         else:
@@ -1112,6 +1270,7 @@ def restore_game_saves(game_id: int, filename: str) -> Dict[str, Any]:
         save_dir.mkdir(parents=True, exist_ok=True)
     else:
         save_dir = Path(save_dir_str)
+        save_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         target_root = save_dir.resolve()
@@ -1166,6 +1325,9 @@ def _get_webdav_client_and_url(custom_cfg: Optional[Dict[str, Any]] = None):
     if custom_cfg:
         cfg.update(custom_cfg)
     base_url = (cfg.get("webdav_url") or "").strip().rstrip("/")
+    root_sub = (cfg.get("webdav_root_path") or "").strip().strip("/")
+    if base_url and root_sub and not base_url.lower().endswith("/" + root_sub.lower()):
+        base_url = f"{base_url}/{root_sub}"
     username = (cfg.get("webdav_username") or "").strip()
     password = (cfg.get("webdav_password") or "").strip()
     auth = (username, password) if username or password else None
@@ -1186,11 +1348,11 @@ def test_webdav_connection(custom_cfg: Optional[Dict[str, Any]] = None) -> Dict[
             r = client.request("PROPFIND", base_url + "/", headers={"Depth": "0"})
             ms = int((time.time() - t0) * 1000)
             if r.status_code in (200, 207):
-                return {"success": True, "latency_ms": ms, "message": f"WebDAV 连接成功 ({ms}ms) · 远端存档库已就绪"}
+                return {"success": True, "latency_ms": ms, "message": f"WebDAV 连接成功 ({ms}ms) · 远端存档库已就绪 ({base_url})"}
             elif r.status_code == 404:
                 mk = client.request("MKCOL", base_url + "/")
                 if mk.status_code in (200, 201, 204):
-                    return {"success": True, "latency_ms": ms, "message": f"WebDAV 连接成功 ({ms}ms) · 已自动创建远端备份目录"}
+                    return {"success": True, "latency_ms": ms, "message": f"WebDAV 连接成功 ({ms}ms) · 已自动创建远端备份目录 ({base_url})"}
                 return {"success": False, "message": f"远端目录不存在且自动创建失败 (HTTP {mk.status_code})"}
             elif r.status_code in (401, 403):
                 return {"success": False, "message": f"WebDAV 认证失败 (HTTP {r.status_code})，请检查账号或应用专用密码"}
@@ -1246,7 +1408,7 @@ def sync_game_saves_with_webdav(game_id: int) -> Dict[str, Any]:
     """
     cfg = load_config()
     if not (cfg.get("webdav_url") or "").strip():
-        return {"success": False, "message": "请先在【系统设置 -> 桌面与云同步】中配置 WebDAV 地址与账号"}
+        return {"success": False, "message": "请先在【系统设置 -> 自动快照与 WebDAV】中配置 WebDAV 地址与账号"}
 
     backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
     backup_root.mkdir(parents=True, exist_ok=True)

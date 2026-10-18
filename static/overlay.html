@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ACG Vault 伴侣悬浮窗 (Alt+G)</title>
-  <script src="/static/vendor/tailwindcss.js?v=2.3"></script>
-  <script src="/static/vendor/vue.global.prod.js?v=2.3"></script>
-  <script src="/static/vendor/marked.min.js?v=2.3"></script>
-  <link rel="stylesheet" href="/static/style.css?v=2.3">
+  <script src="/static/vendor/tailwindcss.js?v=2.4"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=2.4"></script>
+  <script src="/static/vendor/marked.min.js?v=2.4"></script>
+  <link rel="stylesheet" href="/static/style.css?v=2.4">
   <style>
     body {
       background: transparent;
@@ -18,23 +18,39 @@
       height: 100vh;
       display: flex;
       flex-direction: column;
-      background: rgba(7, 10, 18, var(--overlay-alpha, 0.94));
+      background: rgba(7, 10, 18, var(--overlay-alpha, 0.92));
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
       border: 1px solid rgba(99, 102, 241, 0.35);
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
+      transition: border-color 0.25s ease, background-color 0.25s ease;
+    }
+    .overlay-shell.hud-click-through {
+      border-color: rgba(6, 182, 212, 0.55);
+      box-shadow: 0 0 28px rgba(6, 182, 212, 0.2);
     }
   </style>
 </head>
 <body class="text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
-  <div id="overlay-app" class="overlay-shell" :style="{ '--overlay-alpha': panelOpacity }">
+  <div id="overlay-app" :class="['overlay-shell', isClickThrough ? 'hud-click-through' : '']" :style="{ '--overlay-alpha': panelOpacity }">
+
+    <!-- Click-Through HUD Active Banner -->
+    <div v-if="isClickThrough" class="px-3 py-1.5 bg-cyan-950/95 border-b border-cyan-500/50 text-[11px] text-cyan-200 flex items-center justify-between shrink-0">
+      <div class="flex items-center space-x-1.5 font-semibold">
+        <span class="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+        <span>📌 HUD 鼠标穿透已锁定 · 点击直达下层游戏</span>
+      </div>
+      <span class="font-mono text-[10px] text-cyan-300 bg-cyan-500/20 px-1.5 py-0.5 rounded border border-cyan-400/30">按 Alt+G 或 Alt+T 解锁</span>
+    </div>
 
     <!-- Top Compact Header Bar -->
-    <header class="px-3.5 py-2.5 bg-slate-950/90 border-b border-slate-800/90 flex items-center justify-between gap-2 shrink-0">
+    <header class="px-3 py-2 bg-slate-950/90 border-b border-slate-800/90 flex items-center justify-between gap-1.5 shrink-0">
       <div class="flex items-center space-x-2 min-w-0 flex-1">
         <span class="w-2 h-2 rounded-full shrink-0" :class="isRunning ? 'bg-emerald-400 animate-ping' : 'bg-indigo-400'"></span>
         <select
           v-model="selectedGameId"
-          @change="loadOverlayContext(selectedGameId)"
-          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-xs font-bold text-slate-100 focus:outline-none focus:border-indigo-500 truncate max-w-[230px] cursor-pointer"
+          @change="loadOverlayContext(selectedGameId, false)"
+          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-xs font-bold text-slate-100 focus:outline-none focus:border-indigo-500 truncate max-w-[185px] cursor-pointer"
         >
           <option v-for="g in gameList" :key="g.id" :value="g.id">
             {{ g.is_running ? '▶ ' : (g.has_walkthrough ? '📖 ' : '') }}{{ g.display_title || g.folder_name }}
@@ -43,26 +59,33 @@
       </div>
 
       <!-- Opacity Slider & Quick Actions -->
-      <div class="flex items-center space-x-1.5 shrink-0">
-        <div class="flex items-center space-x-1 bg-slate-900/90 border border-slate-800 rounded-lg px-2 py-1" title="调节悬浮窗背景不透明度">
-          <span class="text-[10px] text-slate-400 font-mono">透明度</span>
+      <div class="flex items-center space-x-1 shrink-0">
+        <div class="flex items-center space-x-1 bg-slate-900/90 border border-slate-800 rounded-lg px-1.5 py-1" title="调节悬浮窗背景不透明度">
+          <span class="text-[10px] text-slate-400 font-mono">透明</span>
           <input
             type="range"
-            min="0.65"
+            min="0.55"
             max="1.0"
             step="0.05"
             v-model.number="panelOpacity"
             @input="saveOpacity"
-            class="w-12 accent-indigo-500 cursor-pointer h-1"
+            class="w-10 accent-indigo-500 cursor-pointer h-1"
           />
         </div>
+        <button
+          @click="toggleClickThrough"
+          :class="['px-2 py-1 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors', isClickThrough ? 'bg-cyan-600 text-white border-cyan-400 shadow-lg shadow-cyan-600/30' : 'bg-cyan-600/20 border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white']"
+          title="开启后鼠标点击将直接穿透到下层全屏游戏窗口（按 Alt+G 或 Alt+T 解除锁定）"
+        >
+          📌 {{ isClickThrough ? '已穿透' : '锁定穿透' }}
+        </button>
         <button
           @click="captureShot"
           :disabled="isCapturing || !game"
           class="px-2 py-1 rounded-lg bg-pink-600/25 border border-pink-500/40 hover:bg-pink-600 text-pink-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
           title="立即截取当前游戏窗口画面 (F12)"
         >
-          📸 抓拍
+          📸
         </button>
         <button
           @click="quickBackupSave"
@@ -70,13 +93,13 @@
           class="px-2 py-1 rounded-lg bg-emerald-600/25 border border-emerald-500/40 hover:bg-emerald-600 text-emerald-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
           title="一键备份当前游戏存档快照"
         >
-          💾 存快照
+          💾
         </button>
       </div>
     </header>
 
     <!-- Toast Mini Banner -->
-    <div v-if="toastMsg" class="px-3 py-1.5 bg-indigo-950/95 border-b border-indigo-500/40 text-[11px] text-indigo-200 flex items-center justify-between">
+    <div v-if="toastMsg" class="px-3 py-1.5 bg-indigo-950/95 border-b border-indigo-500/40 text-[11px] text-indigo-200 flex items-center justify-between shrink-0">
       <span>{{ toastMsg }}</span>
       <button @click="toastMsg = ''" class="text-slate-400 hover:text-white">✕</button>
     </div>
@@ -262,21 +285,83 @@
 
     <!-- Footer Status Bar -->
     <footer class="px-3.5 py-1.5 bg-slate-950/95 border-t border-slate-800/90 flex items-center justify-between text-[10px] text-slate-500 font-mono shrink-0">
-      <span>快捷键: Alt+G 呼出/隐藏 · F8 全CG · F12 截图</span>
+      <span>快捷键: Alt+G 呼出/解锁 · Alt+T 穿透锁定 · F12 截图</span>
       <span v-if="game">{{ game.engine_type }} · {{ game.rj_code || 'LOCAL' }}</span>
     </footer>
   </div>
 
   <script>
     const { createApp, ref, computed, onMounted } = Vue;
+
+    function escapeHtmlText(str) {
+      return String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function compileMermaidToVisualHtml(code) {
+      const lines = String(code || '').split('\n').map(l => l.trim()).filter(l => l && !/^(graph|flowchart)\s+/i.test(l));
+      const nodes = {};
+      const edges = [];
+      const parseNodeToken = (tok) => {
+        const m = tok.match(/^([A-Za-z0-9_]+)\s*(?:\[\s*"?([^"\]]+)"?\s*\]|\(\s*"?([^"\)]+)"?\s*\)|\{\s*"?([^"\}]+)"?\s*\})?$/);
+        if (!m) return { id: tok.trim(), label: tok.trim() };
+        const id = m[1];
+        const label = (m[2] || m[3] || m[4] || id).trim();
+        nodes[id] = label;
+        return { id, label };
+      };
+      for (const line of lines) {
+        const arrowMatch = line.match(/^(.+?)\s*--(?:\|\s*([^|]+?)\s*\|)?-->\s*(.+)$/) || line.match(/^(.+?)\s*-->\s*(?:\|\s*([^|]+?)\s*\|)?\s*(.+)$/);
+        if (arrowMatch) {
+          const fromNode = parseNodeToken(arrowMatch[1].trim());
+          const cond = (arrowMatch[2] || '').trim();
+          const toNode = parseNodeToken(arrowMatch[3].trim());
+          edges.push({
+            from: nodes[fromNode.id] || fromNode.label,
+            to: nodes[toNode.id] || toNode.label,
+            cond
+          });
+        }
+      }
+      if (edges.length === 0) {
+        return `<pre class="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-indigo-300 overflow-x-auto">${escapeHtmlText(code)}</pre>`;
+      }
+      const rowsHtml = edges.map(e => {
+        const isTrueEnd = /true|真结局|完美|good|he\b/i.test(e.to);
+        const isBadEnd = /bad|be\b|坏结局|战败|堕落/i.test(e.to);
+        const toClass = isTrueEnd ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200' : (isBadEnd ? 'border-rose-500/50 bg-rose-500/15 text-rose-200' : 'border-indigo-500/40 bg-indigo-500/15 text-indigo-100');
+        return `<div class="flex flex-wrap items-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-slate-900/90 border border-slate-800/90 text-[11px]">
+          <span class="px-2 py-0.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 font-semibold">${escapeHtmlText(e.from)}</span>
+          <span class="text-indigo-400 font-mono">──${e.cond ? `<span class="px-1.5 py-0.5 mx-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px]">${escapeHtmlText(e.cond)}</span>` : ''}──▶</span>
+          <span class="px-2 py-0.5 rounded-lg border font-bold ${toClass}">${escapeHtmlText(e.to)}</span>
+        </div>`;
+      }).join('');
+      return `<div class="my-3 p-3 rounded-2xl bg-slate-950/90 border border-indigo-500/30 space-y-1.5">
+        <div class="text-[10px] font-bold text-indigo-400 uppercase tracking-wider mb-1">🗺️ 剧情分支路线图 (离线可视化引擎)</div>
+        ${rowsHtml}
+      </div>`;
+    }
+
+    function sanitizeRenderedHtml(html) {
+      return String(html || '')
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/<(iframe|object|embed|form)\b[^>]*>/gi, '')
+        .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+        .replace(/href\s*=\s*["']\s*javascript:[^"']*["']/gi, 'href="#"');
+    }
+
     createApp({
       setup() {
         const game = ref(null);
         const gameList = ref([]);
         const selectedGameId = ref(null);
         const isRunning = ref(false);
+        const isClickThrough = ref(false);
         const activeTab = ref('walkthrough');
-        const panelOpacity = ref(parseFloat(localStorage.getItem('acg_overlay_opacity') || '0.94'));
+        const panelOpacity = ref(parseFloat(localStorage.getItem('acg_overlay_opacity') || '0.92'));
         const guideSearch = ref('');
         const checklistOnly = ref(false);
         const f9Data = ref({ variables: [], switches: [] });
@@ -291,11 +376,28 @@
 
         const showToast = (msg) => {
           toastMsg.value = msg;
-          setTimeout(() => { if (toastMsg.value === msg) toastMsg.value = ''; }, 2600);
+          setTimeout(() => { if (toastMsg.value === msg) toastMsg.value = ''; }, 2800);
         };
 
         const saveOpacity = () => {
           localStorage.setItem('acg_overlay_opacity', String(panelOpacity.value));
+        };
+
+        const toggleClickThrough = async () => {
+          try {
+            const r = await fetch('/api/overlay/click_through', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enable: !isClickThrough.value })
+            });
+            const d = await r.json();
+            if (d.success) {
+              isClickThrough.value = Boolean(d.click_through);
+              showToast(d.message || (isClickThrough.value ? '已开启鼠标穿透锁定' : '已解除鼠标穿透锁定'));
+            }
+          } catch (e) {
+            showToast('切换穿透锁定失败');
+          }
         };
 
         const f9Count = computed(() => {
@@ -370,8 +472,11 @@
             const matched = blocks.filter(b => b.toLowerCase().includes(q.toLowerCase()));
             if (matched.length > 0) md = matched.join('\n\n');
           }
+          // Replace ```mermaid blocks with visual route cards before marked parsing
+          md = md.replace(/```mermaid\s*\n([\s\S]*?)```/gi, (m, code) => compileMermaidToVisualHtml(code));
+
           if (typeof marked !== 'undefined' && marked.parse) {
-            let html = marked.parse(md);
+            let html = sanitizeRenderedHtml(marked.parse(md));
             let boxIdx = 0;
             html = html.replace(/<input([^>]*?)type="checkbox"([^>]*?)>/gi, (m) => {
               const isChecked = /checked/i.test(m);
@@ -380,7 +485,7 @@
             });
             return html;
           }
-          return md;
+          return escapeHtmlText(md);
         });
 
         const jumpToHeading = (tocIdxStr) => {
@@ -426,11 +531,15 @@
           if (!game.value) return;
           saveState.value = 'saving';
           try {
-            await fetch(`/api/games/${game.value.id}/update`, {
+            const r = await fetch(`/api/games/${game.value.id}/update`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
             });
+            const d = await r.json();
+            if (d.data && d.data.updated_at && game.value) {
+              game.value.updated_at = d.data.updated_at;
+            }
             saveState.value = 'saved';
           } catch (e) {
             saveState.value = 'idle';
@@ -497,7 +606,7 @@
             if (d.success) {
               game.value.walkthrough_md = d.walkthrough_md;
               showToast('全结局攻略生成完成！');
-              loadOverlayContext(game.value.id);
+              loadOverlayContext(game.value.id, false);
             } else {
               showToast(d.message || '生成失败');
             }
@@ -508,16 +617,30 @@
           }
         };
 
-        const loadOverlayContext = async (targetId = null) => {
+        const loadOverlayContext = async (targetId = null, isPolling = false) => {
           try {
             const q = targetId ? `?game_id=${targetId}` : window.location.search;
             const r = await fetch(`/api/overlay/context${q}`);
             const d = await r.json();
+            if (typeof d.click_through === 'boolean') {
+              isClickThrough.value = d.click_through;
+            }
             if (d.game) {
-              game.value = d.game;
-              selectedGameId.value = d.game.id;
-              isRunning.value = Boolean(d.is_running);
-              f9Data.value = d.f9_cheats || { variables: [], switches: [] };
+              // Incremental poll check: only replace walkthrough_md if game changed or updated_at changed,
+              // so expanded <details> spoiler blocks are never reset while reading!
+              if (
+                isPolling &&
+                game.value &&
+                game.value.id === d.game.id &&
+                game.value.updated_at === d.game.updated_at
+              ) {
+                isRunning.value = Boolean(d.is_running);
+              } else {
+                game.value = d.game;
+                selectedGameId.value = d.game.id;
+                isRunning.value = Boolean(d.is_running);
+                f9Data.value = d.f9_cheats || { variables: [], switches: [] };
+              }
             }
             if (d.game_list) {
               gameList.value = d.game_list;
@@ -526,16 +649,17 @@
         };
 
         onMounted(() => {
-          loadOverlayContext();
+          loadOverlayContext(null, false);
           setInterval(() => {
             if (!document.hidden && activeTab.value !== 'memo') {
-              loadOverlayContext(selectedGameId.value);
+              loadOverlayContext(selectedGameId.value, true);
             }
           }, 8000);
         });
 
         return {
-          game, gameList, selectedGameId, isRunning, activeTab, panelOpacity, saveOpacity,
+          game, gameList, selectedGameId, isRunning, isClickThrough, toggleClickThrough,
+          activeTab, panelOpacity, saveOpacity,
           guideSearch, checklistOnly, checklistItems, tocList, renderedWalkthrough,
           jumpToHeading, toggleChecklistByIndex, handleMarkdownClick,
           f9Data, f9Query, f9KeyOnly, f9Count, filteredVars, filteredSwitches,

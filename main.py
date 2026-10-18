@@ -53,7 +53,12 @@ from db.database import (
     get_all_collections,
     save_collection,
     delete_collection_by_id,
-    update_collection_games
+    update_collection_games,
+    add_ignored_path,
+    remove_ignored_path,
+    clear_all_ignored_paths,
+    get_all_ignored_paths,
+    get_archived_games
 )
 from core.scanner import scan_directory
 from core.scraper import (
@@ -105,9 +110,15 @@ from core.launcher import (
     test_webdav_connection,
     sync_game_saves_with_webdav
 )
+from core.save_editor import (
+    list_editable_save_slots,
+    inspect_save_slot,
+    modify_save_slot
+)
 from core.dedup import (
     compute_duplicates_and_update_db,
     archive_game_directory,
+    unarchive_game_directory,
     dismiss_duplicate
 )
 
@@ -191,13 +202,15 @@ app.add_middleware(
 
 
 @app.middleware("http")
-async def add_no_cache_header(request, call_next):
+async def add_cache_headers(request, call_next):
     response = await call_next(request)
     path = request.url.path
     if path in ("/", "/overlay") or path.endswith((".html", ".js", ".css")):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    elif path.startswith("/api/covers/"):
+        response.headers["Cache-Control"] = "public, max-age=604800, immutable"
     return response
 
 
@@ -261,6 +274,7 @@ class ManualUpdateMetadataRequest(BaseModel):
     user_tags: Optional[List[str]] = None
     voice_actors: Optional[List[str]] = None
     sample_images: Optional[List[str]] = None
+    user_notes: Optional[str] = None
 
 
 class ScrapeGameRequest(BaseModel):
@@ -279,6 +293,23 @@ class DismissDuplicateRequest(BaseModel):
     target_id: Optional[int] = None
 
 
+class RemoveIgnoredPathRequest(BaseModel):
+    folder_path: str
+
+
+class OverlayClickThroughRequest(BaseModel):
+    enable: Optional[bool] = None
+
+
+class ModifySaveSlotRequest(BaseModel):
+    filename: str
+    gold: Optional[int] = None
+    variables: Optional[Dict[str, Any]] = None
+    switches: Optional[Dict[str, bool]] = None
+    actors: Optional[List[Dict[str, Any]]] = None
+    unlock_all_switches: bool = False
+
+
 class TestProxyRequest(BaseModel):
     proxy: Optional[str] = ""
 
@@ -294,6 +325,7 @@ class TestWebDAVRequest(BaseModel):
     webdav_url: Optional[str] = None
     webdav_username: Optional[str] = None
     webdav_password: Optional[str] = None
+    webdav_root_path: Optional[str] = None
 
 
 class GenerateGuideRequest(BaseModel):
@@ -354,7 +386,7 @@ def serve_overlay():
 
 @app.get("/api/overlay/context")
 def get_overlay_context(game_id: Optional[int] = Query(None)):
-    """Returns active/running game walkthrough, personal memo, and F9 variable table for the Alt+G companion overlay."""
+    """Returns active/running game walkthrough, personal memo, F9 variable table, and click-through HUD state."""
     running_map = get_running_games_info()
     target_id = game_id
     if not target_id:
@@ -367,6 +399,13 @@ def get_overlay_context(game_id: Optional[int] = Query(None)):
 
     active_game = get_game_by_id(target_id) if target_id else None
     f9_cheats = extract_f9_debug_cheats(active_game["id"]) if active_game else {"supported": False, "variables": [], "switches": []}
+
+    click_through_state = False
+    try:
+        from desktop_app import get_overlay_click_through_state
+        click_through_state = get_overlay_click_through_state()
+    except Exception:
+        pass
 
     # Build compact switcher list prioritizing running games and games with walkthroughs
     sorted_for_switcher = sorted(
@@ -393,7 +432,8 @@ def get_overlay_context(game_id: Optional[int] = Query(None)):
         "is_running": bool(active_game and active_game["id"] in running_map),
         "running_info": running_map.get(active_game["id"]) if active_game else None,
         "f9_cheats": f9_cheats,
-        "game_list": switcher_list
+        "game_list": switcher_list,
+        "click_through": click_through_state
     }
 
 
@@ -410,6 +450,17 @@ def summon_overlay_window_api(game_id: Optional[int] = Query(None)):
         return {"success": True, "message": "已呼出游戏内攻略伴侣悬浮窗 (Alt+G)"}
     except Exception:
         return {"success": False, "message": "请在浏览器新窗口打开伴侣视图"}
+
+
+@app.post("/api/overlay/click_through")
+def toggle_overlay_click_through_api(req: Optional[OverlayClickThroughRequest] = None):
+    """Toggles or sets Win32 WS_EX_LAYERED | WS_EX_TRANSPARENT Click-Through HUD mode on the companion overlay."""
+    try:
+        from desktop_app import set_overlay_click_through
+        enable_val = req.enable if req is not None else None
+        return set_overlay_click_through(enable_val)
+    except Exception as e:
+        return {"success": False, "click_through": False, "message": f"切换穿透模式失败: {str(e)}"}
 
 
 @app.get("/api/covers/thumb/{filename}")
@@ -513,7 +564,7 @@ def localize_all_tags_api():
 
 
 # ---------------------------------------------------------
-# Smart & Custom Collections Endpoints (v2.3)
+# Smart & Custom Collections Endpoints (v2.3 / v2.4)
 # ---------------------------------------------------------
 @app.get("/api/collections")
 def list_collections_api():
@@ -524,7 +575,7 @@ def list_collections_api():
 def save_collection_api(req: SaveCollectionRequest):
     if not req.name or not req.name.strip():
         raise HTTPException(status_code=400, detail="合集名称不能为空")
-    col = save_collection(
+    col, all_cols = save_collection(
         name=req.name,
         icon=req.icon,
         color=req.color,
@@ -534,7 +585,7 @@ def save_collection_api(req: SaveCollectionRequest):
         game_ids=req.game_ids,
         collection_id=req.id
     )
-    return {"success": True, "collection": col, "collections": get_all_collections()}
+    return {"success": True, "collection": col, "collections": all_cols}
 
 
 @app.delete("/api/collections/{collection_id}")
@@ -545,10 +596,53 @@ def delete_collection_api(collection_id: int):
 
 @app.post("/api/collections/{collection_id}/games")
 def update_collection_games_api(collection_id: int, req: UpdateCollectionGamesRequest):
-    col = update_collection_games(collection_id, req.game_ids, action=req.action)
+    col, all_cols = update_collection_games(collection_id, req.game_ids, action=req.action)
     if not col:
         raise HTTPException(status_code=404, detail="合集不存在")
-    return {"success": True, "collection": col, "collections": get_all_collections()}
+    return {"success": True, "collection": col, "collections": all_cols}
+
+
+# ---------------------------------------------------------
+# Ignored Scan Paths & Archived Duplicates Endpoints (v2.4)
+# ---------------------------------------------------------
+@app.get("/api/library/excluded")
+def get_library_excluded_api():
+    """Returns both ignored scan directories and archived duplicate games."""
+    return {
+        "ignored_paths": get_all_ignored_paths(),
+        "archived_games": get_archived_games()
+    }
+
+
+@app.post("/api/library/ignored/remove")
+def remove_ignored_path_api(req: RemoveIgnoredPathRequest):
+    ok = remove_ignored_path(req.folder_path)
+    return {
+        "success": ok,
+        "ignored_paths": get_all_ignored_paths(),
+        "message": "已从扫描忽略名单中恢复，重新扫描目录即可入库" if ok else "未找到该忽略路径"
+    }
+
+
+@app.post("/api/library/ignored/clear")
+def clear_ignored_paths_api():
+    count = clear_all_ignored_paths()
+    return {
+        "success": True,
+        "count": count,
+        "ignored_paths": [],
+        "message": f"已清空 {count} 条扫描忽略记录"
+    }
+
+
+@app.post("/api/duplicates/unarchive")
+def unarchive_duplicate_api(req: ArchiveRequest):
+    success, msg = unarchive_game_directory(req.game_id)
+    return {
+        "success": success,
+        "message": msg,
+        "archived_games": get_archived_games()
+    }
 
 
 @app.get("/api/games/{game_id}")
@@ -580,6 +674,32 @@ def get_game_detail(game_id: int):
 @app.get("/api/games/{game_id}/f9_cheats")
 def get_game_f9_cheats_api(game_id: int):
     return extract_f9_debug_cheats(game_id)
+
+
+# ---------------------------------------------------------
+# Visual RPG Maker Save Editor Endpoints (v2.4)
+# ---------------------------------------------------------
+@app.get("/api/games/{game_id}/save_editor/slots")
+def list_save_editor_slots_api(game_id: int):
+    return list_editable_save_slots(game_id)
+
+
+@app.get("/api/games/{game_id}/save_editor/slot")
+def inspect_save_editor_slot_api(game_id: int, filename: str = Query(...)):
+    return inspect_save_slot(game_id, filename)
+
+
+@app.post("/api/games/{game_id}/save_editor/slot")
+def modify_save_editor_slot_api(game_id: int, req: ModifySaveSlotRequest):
+    return modify_save_slot(
+        game_id=game_id,
+        filename=req.filename,
+        gold=req.gold,
+        variables=req.variables,
+        switches=req.switches,
+        actors=req.actors,
+        unlock_all_switches=req.unlock_all_switches
+    )
 
 
 @app.post("/api/games/{game_id}/update")
@@ -641,6 +761,9 @@ def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest, bg_tasks:
     """Allows manual editing/customization of all scraped fields, including has_translation, cover_url & banner_url."""
     update_data = req.model_dump(exclude_unset=True)
 
+    if "user_notes" in update_data and update_data["user_notes"] is not None:
+        update_game_user_state(game_id=game_id, user_notes=update_data.pop("user_notes"))
+
     if "cover_url" in update_data:
         cov = (update_data["cover_url"] or "").strip()
         cfg = load_config()
@@ -677,9 +800,10 @@ def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest, bg_tasks:
             update_data["cover_url"] = f"/api/covers/{target_name}"
             update_data["banner_url"] = f"/api/covers/{target_name}"
 
-    success = manual_update_game_metadata(game_id, update_data)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to update metadata")
+    if update_data:
+        success = manual_update_game_metadata(game_id, update_data)
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to update metadata")
 
     if any(k in update_data for k in ("display_title", "original_title", "rj_code")):
         bg_tasks.add_task(compute_duplicates_and_update_db)
@@ -973,13 +1097,22 @@ def delete_game_api(game_id: int, req: Optional[DeleteGameRequest] = None, bg_ta
         success = send_to_recycle_bin(game["folder_path"])
         if not success:
             raise HTTPException(status_code=500, detail="移入系统回收站失败，文件可能正被游戏进程或资源管理器占用")
+    elif not delete_local and game.get("folder_path"):
+        add_ignored_path(
+            game["folder_path"],
+            game.get("folder_name", ""),
+            game.get("display_title") or game.get("clean_title") or ""
+        )
     cleanup_old_custom_covers(game_id, cleanup_gallery=True)
     delete_game_by_id(game_id)
     if bg_tasks:
         bg_tasks.add_task(compute_duplicates_and_update_db)
     else:
         compute_duplicates_and_update_db()
-    return {"success": True, "message": "游戏已成功移入回收站并从库中移除" if delete_local else "游戏已从库中移出（本地文件已保留）"}
+    return {
+        "success": True,
+        "message": "游戏已成功移入回收站并从库中移除" if delete_local else "游戏已从库中移出并加入扫描忽略名单（可在设置中随时恢复）"
+    }
 
 
 @app.post("/api/games/cleanup_missing")
@@ -1012,12 +1145,18 @@ def batch_delete_api(req: BatchDeleteRequest, bg_tasks: BackgroundTasks):
     failed_paths = []
     deletable_ids = []
     for gid in req.game_ids:
+        g = get_game_by_id(gid)
         if req.delete_local:
-            g = get_game_by_id(gid)
             if g and g.get("folder_path") and os.path.exists(g["folder_path"]):
                 if not send_to_recycle_bin(g["folder_path"]):
                     failed_paths.append(g.get("folder_name") or str(gid))
                     continue
+        elif g and g.get("folder_path"):
+            add_ignored_path(
+                g["folder_path"],
+                g.get("folder_name", ""),
+                g.get("display_title") or g.get("clean_title") or ""
+            )
         cleanup_old_custom_covers(gid, cleanup_gallery=True)
         deletable_ids.append(gid)
 
@@ -1273,6 +1412,11 @@ def get_system_config():
 @app.post("/api/config")
 def update_system_config(cfg: dict):
     saved = save_config(cfg)
+    try:
+        from desktop_app import reload_global_hotkeys
+        reload_global_hotkeys()
+    except Exception:
+        pass
     return {"success": True, "data": saved}
 
 

@@ -1,9 +1,11 @@
 import sqlite3
+import json
 import os
 import sys
 from pathlib import Path
 from datetime import datetime
 from config import DB_PATH
+from db.database import init_db, normalize_and_localize_tags
 
 if sys.platform == 'win32':
     try:
@@ -11,6 +13,7 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
+init_db()
 conn = sqlite3.connect(DB_PATH)
 cur = conn.cursor()
 
@@ -46,7 +49,7 @@ games_to_register = [
         "executable_path": r"E:\acg\HousekeepingNTR_CN\HousekeepingNTR.exe",
         "circle_name": "独立制作",
         "release_date": "2024",
-        "tags": "Unity, SLG, NTR, 家政妇, 恋爱养成, 汉化",
+        "tags": ["Unity", "SLG", "NTR", "家政妇", "恋爱养成", "汉化"],
         "synopsis": "探索互动型家政妇与多女主互动SLG游戏。玩家扮演男主打扫房间、收集道具、与三位女主角互动交流，推进好感度与堕落度，解锁丰富日常及特殊画廊事件。",
         "has_translation": 1
     },
@@ -61,7 +64,7 @@ games_to_register = [
         "executable_path": r"E:\acg\Hとメイドと無人島 ver.1.02\Game.exe",
         "circle_name": "ジャングリーとコンクル",
         "release_date": "2025",
-        "tags": "RPG Maker MZ, 孤岛探索, 女仆, 换装, 多结局, 探索ADV",
+        "tags": ["RPG Maker MZ", "孤岛探索", "女仆", "换装", "多结局", "探索ADV"],
         "synopsis": "孤岛漂流求生与女仆换装探索ADV。主角与乃亚、尤莉、梨世三位女仆漂流至神秘无人岛，通过修缮设施、寻找关键道具推进主线，解锁丰富的换装及个人与全员脱出结局。",
         "has_translation": 1
     },
@@ -76,7 +79,7 @@ games_to_register = [
         "executable_path": r"E:\acg\カルティベーター ～引退騎士とモン娘のにぎやか開拓記～ Ver1.5d\contents\Game.exe",
         "circle_name": "かえでの",
         "release_date": "2026-09-19",
-        "tags": "RPG Maker MV, 开拓经营, 魔物娘, 农场种植, 引退骑士, 建造, 角色扮演",
+        "tags": ["RPG Maker MV", "开拓经营", "魔物娘", "农场种植", "引退骑士", "建造", "角色扮演"],
         "synopsis": "引退骑士与魔物娘的荒野拓荒建设RPG。退役骑士在边境未开发领地建立据点，与形形色色的魔物娘同伴邂逅、农耕种植、设施建造、击退魔物威胁，开拓繁华的世外桃源。",
         "has_translation": 0
     },
@@ -91,7 +94,7 @@ games_to_register = [
         "executable_path": r"E:\acg\ポンコツ魔法使いセリスVer1.02\GamePro.exe",
         "circle_name": "桜桃社",
         "release_date": "2026-10-02",
-        "tags": "Wolf RPG, 魔法使, 诅咒, 战斗状态异常, 打工, 动态立绘, MTool汉化",
+        "tags": ["Wolf RPG", "魔法使", "诅咒", "战斗状态异常", "打工", "动态立绘", "汉化"],
         "synopsis": "废柴天才魔法使赛莉丝在冒险中被诅咒，身体产生了渴求精液的异常特质。在王都与迷宫中一边打工筹款、一边探索解咒之法，包含丰富的状态变化与战斗互动。",
         "has_translation": 1
     },
@@ -106,7 +109,7 @@ games_to_register = [
         "executable_path": r"E:\acg\状態異常Ⅲ\Game.exe",
         "circle_name": "オクトピグ",
         "release_date": "2026-09-12",
-        "tags": "RPG Maker MZ, 状态异常, 射击战, 汉化, 寄生, 苗床, 凭依, 催眠",
+        "tags": ["RPG Maker MZ", "状态异常", "射击战", "汉化", "寄生", "苗床", "凭依", "催眠"],
         "synopsis": "社团オクトピグ人气系列《状態異常》第三弹终章，由女主角一之濑雫展开的奇妙状态异常冒险。融合了即时射击动作与丰富的异常状态、寄生、改写机制。",
         "has_translation": 1
     }
@@ -120,6 +123,7 @@ for g in games_to_register:
     size_str = format_size(folder_size)
     mtime = os.path.getmtime(folder_path) if os.path.exists(folder_path) else 0
     mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else now_str
+    norm_tags_json = json.dumps(normalize_and_localize_tags(g["tags"], localize=True), ensure_ascii=False)
 
     cur.execute("SELECT id FROM games WHERE folder_name = ? OR folder_path = ?", (g["folder_name"], folder_path))
     row = cur.fetchone()
@@ -147,7 +151,7 @@ for g in games_to_register:
         """, (
             folder_path, g["clean_title"], g["display_title"], g["original_title"],
             g["rj_code"], g["engine_type"], g["executable_path"], folder_size,
-            size_str, mtime_str, g["circle_name"], g["release_date"], g["tags"],
+            size_str, mtime_str, g["circle_name"], g["release_date"], norm_tags_json,
             g["synopsis"], g["has_translation"], now_str, gid
         ))
         print(f"Updated Game [ID {gid}]: {g['display_title']} ({size_str})")
@@ -169,7 +173,7 @@ for g in games_to_register:
         """, (
             g["folder_name"], folder_path, g["clean_title"], g["display_title"], g["original_title"],
             g["rj_code"], g["engine_type"], g["executable_path"], folder_size, size_str,
-            mtime_str, g["circle_name"], g["release_date"], g["tags"], g["synopsis"],
+            mtime_str, g["circle_name"], g["release_date"], norm_tags_json, g["synopsis"],
             g["has_translation"], now_str, now_str
         ))
         gid = cur.lastrowid

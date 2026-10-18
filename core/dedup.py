@@ -26,11 +26,13 @@ except ImportError:
 
     fuzz = _FallbackFuzz()
 
+from config import load_config
 from db.database import (
     get_all_games,
     batch_update_duplicates,
     get_game_by_id,
     mark_archived,
+    unarchive_game_by_id,
     get_all_duplicate_ignores
 )
 
@@ -60,13 +62,21 @@ ROMAN_SEQUEL_MAP = {
 def extract_sequel_marker(s: str) -> Optional[str]:
     """
     Extracts sequel numbers accurately across English, Japanese, and Chinese titles
-    (e.g., '状態異常Ⅲ', '黑兽2', 'Kuroinu II', 'Part 2') without false positives on normal English words.
+    (e.g., '状態異常Ⅲ', '黑兽2', 'Kuroinu II', 'Part 2') while stripping non-sequel numeric noise
+    like '18禁', 'R18', 'Live2D', '3D', '24時間', '1080p', or years.
     """
     if not s:
         return None
     cleaned = re.sub(r"(?:ver\.?|v)\s*\d+(?:\.\d+)*[a-z]?", " ", s, flags=re.I)
     cleaned = re.sub(r"\b\d+(?:\.\d+)+[a-z]?\b", " ", cleaned)
     cleaned = re.sub(r"[RVB]J\d{6,8}", " ", cleaned, flags=re.I)
+    # Strip non-sequel numeric tokens (18禁, R18, 2D/3D/Live2D, durations, ages, resolutions, years)
+    cleaned = re.sub(
+        r"(?:r-?18|18禁|live2d|[23]d|\d+\s*(?:時間|小时|日|日間|歳|才|fps|bit|mb|gb|px)|1080p|720p|4k|\b(?:19|20)\d{2}\b)",
+        " ",
+        cleaned,
+        flags=re.I
+    )
 
     m_uni_roman = re.findall(r"([ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩⅰⅱⅲⅳⅴⅵⅶⅷⅸⅹ])", cleaned)
     if m_uni_roman:
@@ -83,7 +93,7 @@ def extract_sequel_marker(s: str) -> Optional[str]:
         return ROMAN_SEQUEL_MAP.get(token, token)
 
     m_ascii_roman = re.findall(
-        r"(?:^|(?<=[\s_\-:\u4e00-\u9fff\u3040-\u30ff]))(viii|vii|iii|iv|vi|ix|ii)(?=$|[\s_\-:\(\[\【\（\u4e00-\u9fff\u3040-\u30ff])",
+        r"(?:^|(?<=[\s_\-:\u4e00-\u9fff\u3040-\u30ff]))(viii|vii|iii|iv|vi|ix|ii|v|x)(?=$|[\s_\-:\(\[\【\（\u4e00-\u9fff\u3040-\u30ff])",
         cleaned,
         flags=re.I
     )
@@ -248,7 +258,7 @@ def compute_duplicates_and_update_db() -> int:
 
 
 def archive_game_directory(game_id: int, archive_root: str) -> Tuple[bool, str]:
-    """Safely moves duplicate game directory to archive directory and marks game as archived in DB."""
+    """Safely moves duplicate game directory to archive directory, updates folder_path, and marks game as archived in DB."""
     game = get_game_by_id(game_id)
     if not game:
         return False, "游戏不存在"
@@ -269,11 +279,44 @@ def archive_game_directory(game_id: int, archive_root: str) -> Tuple[bool, str]:
 
     try:
         shutil.move(str(src_path), str(dest_dir))
-        mark_archived(game_id)
+        mark_archived(game_id, new_folder_path=str(dest_dir))
         compute_duplicates_and_update_db()
         return True, f"成功归档至 {dest_dir}"
     except Exception as e:
         return False, f"归档失败: {str(e)}"
+
+
+def unarchive_game_directory(game_id: int) -> Tuple[bool, str]:
+    """Restores an archived game directory back to the primary game directory (if inside archive_directory) and unmarks is_archived."""
+    game = get_game_by_id(game_id)
+    if not game:
+        return False, "归档游戏记录不存在"
+
+    cfg = load_config()
+    archive_root = Path(cfg.get("archive_directory", r"E:\ACG\_Archive_Duplicates"))
+    game_dirs = cfg.get("game_directories") or [r"E:\ACG"]
+    primary_root = Path(game_dirs[0]) if game_dirs else Path(r"E:\ACG")
+
+    curr_path = Path(game.get("folder_path") or "")
+    new_path_str = str(curr_path)
+
+    if curr_path.exists() and archive_root.exists():
+        try:
+            if os.path.normcase(str(curr_path.parent)) == os.path.normcase(str(archive_root)):
+                primary_root.mkdir(parents=True, exist_ok=True)
+                target_name = game.get("folder_name") or curr_path.name
+                dest_dir = primary_root / target_name
+                if dest_dir.exists():
+                    dest_dir = primary_root / curr_path.name
+                if not dest_dir.exists():
+                    shutil.move(str(curr_path), str(dest_dir))
+                    new_path_str = str(dest_dir)
+        except Exception as e:
+            return False, f"移动归档文件夹回主目录失败: {str(e)}"
+
+    unarchive_game_by_id(game_id, restored_path=new_path_str)
+    compute_duplicates_and_update_db()
+    return True, f"已将《{game.get('display_title') or game.get('folder_name')}》恢复至主游戏库"
 
 
 def dismiss_duplicate(game_id: int, target_id: Optional[int] = None) -> Tuple[bool, str]:

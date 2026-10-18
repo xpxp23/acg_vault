@@ -1,25 +1,24 @@
-# 🎮 ACG Vault v2.3 (本地 ACG 游戏资产、AI 攻略、游戏内悬浮伴侣与数据馆藏中心)
+# 🎮 ACG Vault v2.4 (本地 ACG 游戏资产、AI 攻略、游戏内穿透悬浮伴侣、可视化改档与数据馆藏中心)
 
-一款专为本地 ACG / Galgame / 同人游戏爱好者打造的殿堂级全功能游戏库管理系统。基于 **FastAPI + SQLite (WAL) + Vue 3 + PyWebView 原生桌面封装** 架构，提供本地游戏目录增量极速扫描、DLsite / Bangumi / Steam / VNDB 四源元数据与竖版海报智能刮削、多源日/英标签自动汉化归一、OpenAI 兼容大模型（DeepSeek / Qwen / Ollama）智能语义清洗与工程解包全结局攻略生成、`Alt+G` 游戏内半透明置顶伴侣小窗、`F12` 实机截图 + 官方商店预览图双画廊、100% 全 CG 回想存档一键注入、游玩退出增量存档快照 + WebDAV 云端同步、动态智能合集以及一键导出年度/月度馆藏长图的数据馆藏看板。
+一款专为本地 ACG / Galgame / 同人游戏爱好者打造的殿堂级全功能游戏库管理系统。基于 **FastAPI + SQLite (WAL) + Vue 3 + PyWebView 原生桌面封装** 架构，提供本地游戏目录增量极速扫描、DLsite / Bangumi / Steam / VNDB 四源元数据与竖版海报智能刮削、多源日/英标签自动汉化归一、OpenAI 兼容大模型（DeepSeek / Qwen / Ollama）智能语义清洗与工程解包全结局攻略生成、`Alt+G` 游戏内无边框毛玻璃 + `Alt+T` 鼠标穿透锁定伴侣小窗、`F12` 实机截图 + 官方商店预览图双画廊、RPG Maker 可视化在线改档器（Save Editor）、跨引擎 AppData 存档自动映射 + WebDAV 云端同步、动态智能合集以及一键导出年度/月度馆藏长图的数据馆藏看板。
 
 ---
 
-## ✨ v2.3 核心特性与升级亮点
+## ✨ v2.4 重磅升级与深度优化亮点
 
-1. 🪟 **游戏内悬浮攻略小窗 (`Alt+G` 伴侣模式)** (`desktop_app.py`, `static/overlay.html`)：
-   - 依托 PyWebView + Win32 全局热键架构，在全屏游玩时无需切出桌面，按下 `Alt+G` 即可在屏幕边缘呼出半透明置顶（Always-on-Top）的迷你「全结局攻略 & F9 变量速查 & 随手记」伴侣小窗。
-   - 支持实时勾选结局 `- [ ]` Checklist、检索 RPG Maker `System.json` 内部开关与变量 ID 编号、调节窗口透明度以及一键抓拍截图/备份存档。
-2. 🏷️ **多源标签自动汉化归一词典** (`data/l10n_tags_zh.json`, `db/database.py`)：
-   - 内置轻量级日/英/繁中 ACG 标签归一化映射表与噪音清洗词典，刮削入库时自动将 DLsite 日文标签（如 `おっぱい`、`純愛`、`寝取られ`）与 VNDB 英文标签（如 `Pure Love`、`Netorare`）统一映射为标准简体中文标签，并提供全库已有标签一键汉化归一。
-3. 🖼️ **详情页「官方商店预览 + 个人实机截图」双画廊体验** (`core/scraper.py`, `static/index.html`)：
-   - 刮削 DLsite、Steam、VNDB 时自动缓存 3~4 张官方商店预览图（Sample CG），与玩家游戏内按 `F12` 抓拍的实机截图共同构成双画廊体验。
-   - **「个人通关笔记」与「全结局攻略」独立拆分**：将随手记录的个人通关便签（`user_notes`）与长篇结构化全结局攻略（`walkthrough_md`）拆分为独立存储与专属 UI 模块，已有历史笔记平滑无损归入全结局攻略。
-4. ☁️ **游玩退出自动增量存档快照 + WebDAV 跨设备云备份** (`core/launcher.py`)：
-   - 当监听到游戏进程退出且单次游玩时长 `>= 5 分钟` 时，自动打包生成带时间戳的滚动存档快照（默认保留最近 5 份防坏档）。
-   - 支持挂载坚果云 / Alist / Nextcloud 等标准 WebDAV 服务，实现跨设备存档双向同步。
-5. 🗂️ **动态智能合集（Smart Collections）与馆藏回顾长图导出** (`db/database.py`, `static/app.js`)：
-   - 支持创建基于多维规则（引擎、汉化状态、评分、攻略、标签、游玩时长）的动态智能合集与手动精选合集。
-   - 数据馆藏看板新增 **一键导出年度/月度 ACG 游玩总结高清长图 (PNG)**，离线纯前端 Canvas 2x 高分屏渲染。
+1. 🎨 **Collector's UI 2.4 视觉降噪与卡片底部「智能信息槽」** (`static/style.css`, `static/index.html`, `static/app.js`)：
+   - **左上角一体式毛玻璃胶囊**：彻底重塑卡片左上角徽章，采用圆角毛玻璃胶囊 + 引擎语义色彩编码，并将「攻略 (`📖`) / 随手记 (`📝`)」整合为胶囊内轻量微图标，把封面下半部分 100% 留给角色立绘。
+   - **底部动态智能信息槽**：当 `user_rating > 0` 时展示金色星级；未评分（`user_rating === 0`）时自动切换展示前 2 个汉化标签微胶囊（如 `#纯爱 #魔物娘`）或累计游玩时长（`⏱ 6.2h`），告别满屏暗灰空心星。
+2. 🪟 **伴侣悬浮窗 (`Alt+G`) 进阶：毛玻璃 + Win32 鼠标穿透锁定 (`Click-Through HUD`)** (`desktop_app.py`, `static/overlay.html`)：
+   - 新增 Win32 `WS_EX_LAYERED | WS_EX_TRANSPARENT` 鼠标穿透锁定开关（按钮或全局热键 `Alt+T`）：开启后伴侣窗半透明固定在全屏游戏上方展示全结局 Checklist 与离线可视化 Mermaid 路线图，鼠标点击直接穿透至底层游戏窗口，按 `Alt+G` 或 `Alt+T` 随时解锁交互。
+   - 增量状态轮询优化：8 秒轮询仅在 `updated_at` 发生变化时更新攻略 DOM，彻底解决阅读时 `<details>` 剧透折叠框被自动重置的问题。
+3. 🛠️ **跨引擎 AppData 存档自动映射 & RPG Maker 可视化存档修改器 (`Save Editor`)** (`core/save_editor.py`, `core/launcher.py`)：
+   - **跨引擎存档探测**：除游戏目录内 `save/` 外，自动识别 Unity（`%USERPROFILE%\AppData\LocalLow\<Company>\<Product>`，支持解析 `*_Data/app.info`）、Ren'Py（`%APPDATA%\RenPy\`）与 Kirikiri 存档目录，让退出自动快照与 WebDAV 云同步覆盖全引擎。
+   - **RPG Maker 可视化改档面板**：纯 Python 直接解包与重编码 `.rpgsave`（LZString Base64）与 `.rmmzsave`（Zlib/Pako），在详情抽屉提供可视化的「持有金币 / 角色等级与 HP / 核心好感度变量 / 剧情与回想开关」在线修改器，修改前自动创建防坏档备份。
+4. ⚡ **全链路性能与逻辑深度修复**：
+   - 运行时翻译补丁 (`translation_patch.js` v2.4) 引入 6000 条目 `Map` 缓存，彻底消除 RPG Maker 60fps `drawText` 正则替换掉帧；
+   - 扫描器翻译字典校验改为 64KB 切片嗅探，避免大体积 JSON 全量反序列化阻塞；
+   - 新增「移出库自动加入扫描忽略名单」与「已归档重复版本一键恢复至主库」闭环管理。
 
 ---
 
@@ -35,6 +34,6 @@
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动原生桌面端 (支持 Alt+Space 老板键与 Alt+G 游戏内攻略伴侣小窗)
+# 启动原生桌面端 (支持 Alt+Space 老板键、Alt+G 伴侣小窗与 Alt+T 鼠标穿透锁定)
 python desktop_app.py
 ```
