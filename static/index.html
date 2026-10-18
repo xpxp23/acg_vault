@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>ACG Game Vault v2.2 - 本地游戏资产、AI攻略与数据馆藏中心</title>
+  <title>ACG Game Vault v2.3 - 本地游戏资产、AI攻略与数据馆藏中心</title>
 
   <!-- Global Diagnostic & Error Interceptor -->
   <script>
@@ -67,11 +67,11 @@
     };
   </script>
   <!-- Local Vendor Libraries (100% Offline, Zero External CDN) -->
-  <script src="/static/vendor/tailwindcss.js?v=2.2"></script>
-  <script src="/static/vendor/vue.global.prod.js?v=2.2"></script>
-  <script src="/static/vendor/lucide.min.js?v=2.2"></script>
-  <script src="/static/vendor/marked.min.js?v=2.2"></script>
-  <link rel="stylesheet" href="/static/style.css?v=2.2">
+  <script src="/static/vendor/tailwindcss.js?v=2.3"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=2.3"></script>
+  <script src="/static/vendor/lucide.min.js?v=2.3"></script>
+  <script src="/static/vendor/marked.min.js?v=2.3"></script>
+  <link rel="stylesheet" href="/static/style.css?v=2.3">
 </head>
 <body class="bg-[#070a12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
   <!-- Boot / Crash Emergency Fallback Banner -->
@@ -166,7 +166,7 @@
       </div>
     </transition>
 
-    <!-- Screenshot Lightbox Modal -->
+    <!-- Screenshot & Official Sample Lightbox Modal -->
     <transition name="modal">
       <div
         v-if="lightboxShot"
@@ -185,22 +185,26 @@
             </button>
           </div>
           <div class="w-full max-w-3xl glass-panel rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div class="flex-1 flex items-center space-x-2 min-w-[220px]">
+            <div v-if="!lightboxShot.is_sample" class="flex-1 flex items-center space-x-2 min-w-[220px]">
               <input
                 type="text"
                 v-model="lightboxShot.caption"
                 @change="saveScreenshotCaptionAction(lightboxShot)"
                 placeholder="输入截图备注说明（回车保存）..."
-                class="flex-1 bg-slate-900/90 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-500"
+                class="flex-1 min-w-0 bg-slate-900/90 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-500"
               />
-              <button @click="saveScreenshotCaptionAction(lightboxShot)" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer">
+              <button @click="saveScreenshotCaptionAction(lightboxShot)" class="shrink-0 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer">
                 保存备注
               </button>
+            </div>
+            <div v-else class="flex items-center space-x-2 text-indigo-300 font-semibold">
+              <span class="px-2 py-0.5 rounded bg-indigo-500/20 border border-indigo-500/40 text-[11px]">官方商店预览 CG</span>
+              <span class="text-slate-200">{{ lightboxShot.caption }}</span>
             </div>
             <div class="flex items-center space-x-3 text-slate-400 font-mono text-[11px]">
               <span v-if="lightboxShot.width">{{ lightboxShot.width }}×{{ lightboxShot.height }}</span>
               <span>{{ lightboxShot.created_at }}</span>
-              <button @click="deleteScreenshotAction(lightboxShot)" class="px-2.5 py-1 rounded-lg bg-rose-600/25 hover:bg-rose-600 text-rose-300 hover:text-white transition-colors cursor-pointer">
+              <button v-if="!lightboxShot.is_sample" @click="deleteScreenshotAction(lightboxShot)" class="px-2.5 py-1 rounded-lg bg-rose-600/25 hover:bg-rose-600 text-rose-300 hover:text-white transition-colors cursor-pointer">
                 删除
               </button>
             </div>
@@ -220,7 +224,7 @@
           <div>
             <div class="flex items-center space-x-2">
               <h1 class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-indigo-300 bg-clip-text text-transparent">ACG Vault</h1>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v2.2</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v2.3</span>
             </div>
             <p class="text-[11px] text-slate-400 font-medium">本地 ACG 资产、AI 攻略与馆藏中心</p>
           </div>
@@ -240,7 +244,7 @@
             <i data-lucide="clock" class="w-3.5 h-3.5 text-amber-400"></i>
             <span class="font-mono text-amber-200 font-semibold">{{ stats.total_played_hours }}h</span>
           </div>
-          <div v-if="Object.keys(runningGames).length > 0" class="px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/50 flex items-center space-x-1.5 text-emerald-300" title="当前正在运行中的游戏数（按 F12 可随时截图归档）">
+          <div v-if="Object.keys(runningGames).length > 0" class="px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/50 flex items-center space-x-1.5 text-emerald-300" title="当前正在运行中的游戏数（按 Alt+G 呼出悬浮攻略，按 F12 截图归档）">
             <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
             <span class="font-semibold">{{ Object.keys(runningGames).length }} 款运行中</span>
           </div>
@@ -280,6 +284,16 @@
           <span>{{ batchScrapeState.is_running ? '刮削中...' : '一键刮削' }}</span>
         </button>
 
+        <!-- In-Game Companion Overlay Quick Launch Button (v2.3 Feature #1) -->
+        <button
+          @click="openCompanionOverlayAction(selectedGame)"
+          class="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-cyan-500/15 border border-cyan-500/35 hover:bg-cyan-500/30 text-cyan-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
+          title="呼出置顶半透明「游戏内悬浮攻略 & F9变量速查」伴侣小窗 (全局热键 Alt+G)"
+        >
+          <i data-lucide="layers" class="w-3.5 h-3.5 text-cyan-400"></i>
+          <span class="hidden md:inline">伴侣小窗</span>
+        </button>
+
         <button
           @click="setViewMode(viewMode === 'analytics' ? 'grid' : 'analytics')"
           :class="[
@@ -315,7 +329,7 @@
         <button
           @click="showShortcutModal = true"
           class="p-2 rounded-xl bg-purple-600/20 border border-purple-500/30 hover:bg-purple-600/40 text-purple-300 transition-all shadow-sm cursor-pointer"
-          title="查看快捷键、F8 全回想与 F12 游戏内截图指南"
+          title="查看快捷键、Alt+G 悬浮攻略、F8 全回想与 F12 游戏内截图指南"
         >
           <i data-lucide="keyboard" class="w-4 h-4"></i>
         </button>
@@ -394,10 +408,10 @@
         <button
           @click="hasNotesOnly = !hasNotesOnly; fetchGames()"
           :class="['pill-toggle', hasNotesOnly ? 'active-indigo' : '']"
-          title="仅显示包含通关攻略或笔记的游戏"
+          title="仅显示包含全结局攻略或个人通关笔记的游戏"
         >
           <i data-lucide="book-open" class="w-3.5 h-3.5 text-indigo-400"></i>
-          <span>有攻略</span>
+          <span>有攻略/笔记</span>
           <span v-if="stats.has_notes > 0" class="font-mono text-[10px] opacity-80">({{ stats.has_notes }})</span>
         </button>
 
@@ -509,6 +523,76 @@
       </div>
     </div>
 
+    <!-- ==================== SMART & CUSTOM COLLECTIONS BAR (v2.3 Feature #5 & #2) ==================== -->
+    <div v-if="viewMode !== 'analytics'" class="bg-slate-950/75 border-b border-slate-800/70 px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div class="flex items-center space-x-1.5 overflow-x-auto scrollbar-none py-0.5">
+        <span class="text-[11px] text-slate-400 font-semibold flex items-center space-x-1 shrink-0 mr-1">
+          <i data-lucide="Sparkles" class="w-3.5 h-3.5 text-indigo-400"></i>
+          <span>智能合集:</span>
+        </span>
+
+        <button
+          @click="activeCollectionId = null"
+          :class="[
+            'px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all shrink-0 cursor-pointer border',
+            !activeCollectionId
+              ? 'bg-indigo-600/30 border-indigo-500/60 text-indigo-200 font-semibold shadow-sm'
+              : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+          ]"
+        >
+          全部馆藏 ({{ games.length }})
+        </button>
+
+        <div
+          v-for="col in collections"
+          :key="col.id"
+          class="inline-flex items-center rounded-lg border transition-all shrink-0"
+          :class="[
+            activeCollectionId === col.id
+              ? 'bg-gradient-to-r from-indigo-600/40 to-purple-600/40 border-indigo-400/70 text-white font-semibold shadow-sm'
+              : 'bg-slate-900/80 border-slate-800/90 text-slate-300 hover:border-slate-700 hover:text-white'
+          ]"
+        >
+          <button
+            @click="selectCollectionFilter(col)"
+            class="px-2.5 py-1 flex items-center space-x-1.5 text-[11px] cursor-pointer"
+            :title="col.description || col.name"
+          >
+            <span class="w-1.5 h-1.5 rounded-full" :class="col.is_smart ? 'bg-cyan-400' : 'bg-pink-400'"></span>
+            <span>{{ col.name }}</span>
+            <span class="font-mono text-[10px] opacity-75">({{ col.count !== undefined ? col.count : (col.game_ids || []).length }})</span>
+          </button>
+          <button
+            @click.stop="openEditCollectionModal(col)"
+            class="pr-2 pl-0.5 py-1 text-slate-500 hover:text-indigo-300 text-[10px] cursor-pointer"
+            title="编辑或删除此合集"
+          >
+            ✎
+          </button>
+        </div>
+
+        <button
+          @click="openCreateCollectionModal"
+          class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-indigo-950/60 border border-dashed border-slate-700 hover:border-indigo-500/50 text-indigo-300 text-[11px] font-medium flex items-center space-x-1 shrink-0 cursor-pointer transition-colors"
+        >
+          <span>+ 新建动态/自定义合集</span>
+        </button>
+      </div>
+
+      <!-- Right: Multi-Source Tag Localization One-Click Trigger (v2.3 Feature #2) -->
+      <div class="flex items-center space-x-2 shrink-0">
+        <button
+          @click="localizeAllTagsAction"
+          :disabled="isLocalizingTags"
+          class="px-2.5 py-1 rounded-lg bg-emerald-950/50 hover:bg-emerald-900/60 border border-emerald-500/35 text-emerald-300 text-[11px] font-medium flex items-center space-x-1 cursor-pointer transition-colors disabled:opacity-50"
+          title="基于内置 l10n_tags_zh.json 词典，将全库 DLsite 日文标签、VNDB 英文标签一键汉化归一为标准简体中文标签"
+        >
+          <i data-lucide="languages" class="w-3 h-3"></i>
+          <span>{{ isLocalizingTags ? '归一中...' : '全库标签汉化归一' }}</span>
+        </button>
+      </div>
+    </div>
+
     <!-- Active Banner Notification for Directory Scan -->
     <div v-if="scanState.is_running" class="bg-indigo-950/90 border-b border-indigo-700/50 px-6 py-2 flex items-center justify-between text-xs text-indigo-200">
       <div class="flex items-center space-x-2">
@@ -540,7 +624,7 @@
     <!-- Main Content Area -->
     <main class="flex-1 p-6 max-w-[1920px] mx-auto w-full">
 
-      <!-- ==================== ANALYTICS & TIMELINE DASHBOARD VIEW (v2.2) ==================== -->
+      <!-- ==================== ANALYTICS & TIMELINE DASHBOARD VIEW (v2.3) ==================== -->
       <div v-if="viewMode === 'analytics'" class="space-y-6">
         <div v-if="isLoadingAnalytics || !analyticsData" class="flex flex-col items-center justify-center py-28 space-y-3">
           <div class="w-10 h-10 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin"></div>
@@ -548,6 +632,29 @@
         </div>
 
         <template v-else>
+          <!-- Analytics Top Action Bar with One-Click Poster Export (v2.3 Feature #5) -->
+          <div class="glass-panel rounded-2xl px-5 py-3.5 border border-indigo-500/30 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center space-x-3">
+              <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-pink-500 flex items-center justify-center text-white shadow">
+                <i data-lucide="bar-chart-3" class="w-5 h-5"></i>
+              </div>
+              <div>
+                <h2 class="text-sm sm:text-base font-extrabold text-white">ACG Vault 全景馆藏数据看板与时间线回顾</h2>
+                <p class="text-[11px] text-slate-400">实时统计本地馆藏规模、引擎分布、社团声优偏好与近 12 个月游玩轨迹</p>
+              </div>
+            </div>
+            <div class="flex items-center space-x-2">
+              <button
+                @click="exportAnalyticsPosterAction"
+                :disabled="isExportingPoster"
+                class="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 hover:from-indigo-500 hover:to-pink-500 text-white text-xs font-bold shadow-lg shadow-indigo-600/30 flex items-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
+              >
+                <i data-lucide="image-down" class="w-4 h-4"></i>
+                <span>{{ isExportingPoster ? '正在渲染高清长图...' : '导出年度/月度 ACG 游玩总结长图 (PNG)' }}</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Top Hero KPI Cards -->
           <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
             <div class="glass-panel rounded-2xl p-4 border border-indigo-500/25">
@@ -855,422 +962,453 @@
       </div>
 
       <!-- Empty State -->
-      <div v-else-if="games.length === 0" class="flex flex-col items-center justify-center py-32 space-y-4 text-center">
+      <div v-else-if="filteredGames.length === 0" class="flex flex-col items-center justify-center py-32 space-y-4 text-center">
         <div class="w-20 h-20 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center text-slate-400 mb-2 shadow-xl">
           <i data-lucide="folder-search" class="w-10 h-10"></i>
         </div>
         <h3 class="text-lg font-bold text-slate-200">未找到符合条件的游戏</h3>
-        <p class="text-xs text-slate-400 max-w-md">尝试重置筛选条件，或在系统设置中检查您的本地游戏目录路径。</p>
+        <p class="text-xs text-slate-400 max-w-md">尝试重置筛选条件、切换合集，或在系统设置中检查您的本地游戏目录路径。</p>
         <button @click="resetFilters" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-xl transition-all shadow-lg shadow-indigo-600/30 cursor-pointer">
           重置所有筛选
         </button>
       </div>
 
-      <!-- Grid View (Collector's Poster Wall) -->
-      <div
-        v-else-if="viewMode === 'grid'"
-        :class="['grid', gridColumnsClass]"
-      >
-        <div
-          v-for="game in games"
-          :key="game.id"
-          @click="isBatchMode ? toggleGameSelect(game.id) : openGameDetail(game)"
-          :class="[
-            'glass-card rounded-2xl overflow-hidden cursor-pointer group flex flex-col justify-between relative',
-            cardHoverStyle === 'classic' ? 'hover-classic' : 'hover-minimal',
-            isGameSelected(game.id) ? 'ring-2 ring-indigo-500 bg-slate-800/90' : '',
-            isGameRunning(game.id) ? 'is-running-card' : ''
-          ]"
-        >
-          <!-- Batch Checkbox -->
-          <div v-if="isBatchMode" @click.stop="toggleGameSelect(game.id)" class="absolute top-2.5 left-2.5 z-30">
-            <input type="checkbox" :checked="isGameSelected(game.id)" class="w-5 h-5 rounded text-indigo-600 bg-slate-900 border-2 border-indigo-400 cursor-pointer shadow-lg">
-          </div>
+      <!-- Grid View (Collector's Poster Wall with Progressive Rendering & Unified Badges) -->
+      <div v-else-if="viewMode === 'grid'" class="space-y-6">
+        <div :class="['grid', gridColumnsClass]">
+          <div
+            v-for="game in displayedGames"
+            :key="game.id"
+            @click="isBatchMode ? toggleGameSelect(game.id) : openGameDetail(game)"
+            :class="[
+              'glass-card rounded-2xl overflow-hidden cursor-pointer group flex flex-col justify-between relative',
+              cardHoverStyle === 'classic' ? 'hover-classic' : 'hover-minimal',
+              isGameSelected(game.id) ? 'ring-2 ring-indigo-500 bg-slate-800/90' : '',
+              isGameRunning(game.id) ? 'is-running-card' : ''
+            ]"
+          >
+            <!-- Batch Checkbox -->
+            <div v-if="isBatchMode" @click.stop="toggleGameSelect(game.id)" class="absolute top-2.5 left-2.5 z-30">
+              <input type="checkbox" :checked="isGameSelected(game.id)" class="w-5 h-5 rounded text-indigo-600 bg-slate-900 border-2 border-indigo-400 cursor-pointer shadow-lg">
+            </div>
 
-          <!-- Top-Left Streamlined Composite Badges -->
-          <div :class="['card-top-badges absolute top-2.5 z-20 flex flex-wrap gap-1 items-center max-w-[68%]', isBatchMode ? 'left-9' : 'left-2.5']">
-            <span
-              v-if="isGameRunning(game.id)"
-              class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-600/95 backdrop-blur-md text-white shadow-md flex items-center space-x-1.5 border border-emerald-400/40"
-            >
-              <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
-              <span>运行中 {{ formatRunningDuration(getGameRunningInfo(game.id)?.elapsed_seconds) }}</span>
-            </span>
-            <template v-else>
-              <span class="px-2 py-0.5 rounded-md text-[10px] font-bold tracking-wide uppercase bg-slate-950/80 border border-white/10 text-indigo-300 shadow-sm">
-                {{ formatEngineShort(game.engine_type) }}
-              </span>
+            <!-- Top-Left Unified Glassmorphic Capsule Badge (v2.3 Visual Polish) -->
+            <div :class="['card-top-badges absolute top-2.5 z-20 flex flex-wrap gap-1 items-center max-w-[72%]', isBatchMode ? 'left-9' : 'left-2.5']">
               <span
-                v-if="game.is_missing"
-                class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-600/95 text-white shadow-sm animate-pulse"
-                title="本地游戏目录不存在或已被移动"
+                v-if="isGameRunning(game.id)"
+                class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-600/95 backdrop-blur-md text-white shadow-md flex items-center space-x-1.5 border border-emerald-400/40"
               >
-                缺失
+                <span class="w-1.5 h-1.5 rounded-full bg-white animate-ping"></span>
+                <span>运行中 {{ formatRunningDuration(getGameRunningInfo(game.id)?.elapsed_seconds) }}</span>
               </span>
+              <template v-else>
+                <div class="card-unified-badge">
+                  <span class="text-indigo-300 font-bold tracking-wide uppercase">{{ formatEngineShort(game.engine_type) }}</span>
+                  <template v-if="game.is_missing">
+                    <span class="badge-dot"></span>
+                    <span class="text-rose-400 font-bold animate-pulse">缺失</span>
+                  </template>
+                  <template v-else-if="game.is_translated || game.has_translation">
+                    <span class="badge-dot"></span>
+                    <span class="text-emerald-300 font-bold">汉化</span>
+                  </template>
+                  <template v-if="game.cg_unlocked">
+                    <span class="badge-dot"></span>
+                    <span class="text-purple-300 font-bold">全CG</span>
+                  </template>
+                </div>
+              </template>
+            </div>
+
+            <!-- Top-Right Action & Status Pill -->
+            <div class="absolute top-2.5 right-2.5 z-20 flex items-center gap-1.5">
               <span
-                v-else-if="game.is_translated || game.has_translation"
-                class="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-emerald-600/90 text-white shadow-sm flex items-center space-x-0.5"
-                title="已汉化或包含中文翻译"
+                v-if="game.duplicate_count > 0"
+                @click.stop="openDuplicateModalForGame(game)"
+                class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/95 text-black shadow-md flex items-center space-x-0.5 hover:scale-105 transition-transform"
+                title="存在多个重复/关联版本，点击直达对比"
               >
-                <span>汉化</span>
+                <span>{{ game.duplicate_count + 1 }}版本</span>
               </span>
-              <span
-                v-if="game.cg_unlocked"
-                class="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-purple-600/90 text-white shadow-sm"
-                title="已注入 100% 全 CG / 回想解锁"
+
+              <button
+                @click.stop="toggleFavorite(game)"
+                :class="[
+                  'w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer',
+                  game.is_favorite ? 'bg-pink-500/25 border border-pink-500/50 text-pink-400 shadow-md shadow-pink-500/20' : 'bg-black/60 border border-white/10 text-slate-400 hover:text-pink-400 opacity-80 group-hover:opacity-100'
+                ]"
+                title="收藏"
               >
-                全CG
-              </span>
-            </template>
-          </div>
+                <svg class="w-3.5 h-3.5 transition-transform active:scale-125" viewBox="0 0 24 24" :fill="game.is_favorite ? '#ec4899' : 'none'" :stroke="game.is_favorite ? '#ec4899' : 'currentColor'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+                </svg>
+              </button>
+            </div>
 
-          <!-- Top-Right Action & Status Pill -->
-          <div class="absolute top-2.5 right-2.5 z-20 flex items-center gap-1.5">
-            <span
-              v-if="game.duplicate_count > 0"
-              @click.stop="openDuplicateModalForGame(game)"
-              class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/95 text-black shadow-md flex items-center space-x-0.5 hover:scale-105 transition-transform"
-              title="存在多个重复/关联版本，点击直达对比"
-            >
-              <span>{{ game.duplicate_count + 1 }}版本</span>
-            </span>
+            <!-- Poster Image Container (Uses Lightweight Thumbnail URL for 60fps Scrolling) -->
+            <div :class="['poster-container', 'fit-' + coverFitMode]">
+              <template v-if="game.cover_url">
+                <img
+                  v-if="coverFitMode === 'smart'"
+                  :src="getThumbUrl(game.cover_url)"
+                  aria-hidden="true"
+                  loading="lazy"
+                  class="poster-blur-backdrop"
+                />
+                <img
+                  :src="getThumbUrl(game.cover_url)"
+                  :alt="game.display_title"
+                  loading="lazy"
+                  :class="coverFitMode === 'smart' ? 'poster-img-smart' : 'poster-img'"
+                  @error="game.cover_url = ''"
+                />
+              </template>
 
-            <button
-              @click.stop="toggleFavorite(game)"
-              :class="[
-                'w-7 h-7 rounded-full flex items-center justify-center transition-all cursor-pointer',
-                game.is_favorite ? 'bg-pink-500/25 border border-pink-500/50 text-pink-400 shadow-md shadow-pink-500/20' : 'bg-black/60 border border-white/10 text-slate-400 hover:text-pink-400 opacity-80 group-hover:opacity-100'
-              ]"
-              title="收藏"
-            >
-              <svg class="w-3.5 h-3.5 transition-transform active:scale-125" viewBox="0 0 24 24" :fill="game.is_favorite ? '#ec4899' : 'none'" :stroke="game.is_favorite ? '#ec4899' : 'currentColor'" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
-              </svg>
-            </button>
-          </div>
+              <!-- Upgraded Collector's Fallback Poster -->
+              <div v-else class="w-full h-full flex flex-col items-center justify-center p-4 text-center poster-fallback-pattern relative">
+                <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-2.5 shadow-inner">
+                  <span class="text-xl font-black bg-gradient-to-br from-indigo-300 to-pink-400 bg-clip-text text-transparent">
+                    {{ (game.clean_title || 'G')[0] }}
+                  </span>
+                </div>
+                <span class="text-xs text-slate-300 line-clamp-3 px-2 font-semibold leading-relaxed">{{ game.clean_title || game.folder_name }}</span>
+                <span class="mt-2 text-[10px] font-mono text-slate-500 uppercase tracking-wider">{{ formatEngineShort(game.engine_type) }}</span>
+              </div>
 
-          <!-- Poster Image Container (Uses Lightweight Thumbnail URL for 60fps Scrolling) -->
-          <div :class="['poster-container', 'fit-' + coverFitMode]">
-            <template v-if="game.cover_url">
-              <img
-                v-if="coverFitMode === 'smart'"
-                :src="getThumbUrl(game.cover_url)"
-                aria-hidden="true"
-                loading="lazy"
-                class="poster-blur-backdrop"
-              />
-              <img
-                :src="getThumbUrl(game.cover_url)"
-                :alt="game.display_title"
-                loading="lazy"
-                :class="coverFitMode === 'smart' ? 'poster-img-smart' : 'poster-img'"
-                @error="game.cover_url = ''"
-              />
-            </template>
-
-            <!-- Upgraded Collector's Fallback Poster -->
-            <div v-else class="w-full h-full flex flex-col items-center justify-center p-4 text-center poster-fallback-pattern relative">
-              <div class="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-2.5 shadow-inner">
-                <span class="text-xl font-black bg-gradient-to-br from-indigo-300 to-pink-400 bg-clip-text text-transparent">
-                  {{ (game.clean_title || 'G')[0] }}
+              <!-- Bottom-Right Walkthrough & Personal Memo Quick Badges (Visible when not hovered) -->
+              <div class="group-hover:opacity-0 transition-opacity absolute bottom-2 right-2 z-20 flex items-center gap-1">
+                <span
+                  v-if="hasPersonalMemo(game)"
+                  class="px-1.5 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/90 text-black shadow-md flex items-center space-x-0.5"
+                  title="包含个人通关笔记"
+                >
+                  <span>📝 笔记</span>
+                </span>
+                <span
+                  v-if="hasGameWalkthrough(game)"
+                  @click.stop="openNotesFullscreen(game)"
+                  class="px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-600/90 text-white shadow-md flex items-center space-x-1 border border-indigo-400/40"
+                  title="包含全结局攻略 (点击全屏查看)"
+                >
+                  <i data-lucide="book-open" class="w-3 h-3"></i>
+                  <span>攻略</span>
                 </span>
               </div>
-              <span class="text-xs text-slate-300 line-clamp-3 px-2 font-semibold leading-relaxed">{{ game.clean_title || game.folder_name }}</span>
-              <span class="mt-2 text-[10px] font-mono text-slate-500 uppercase tracking-wider">{{ formatEngineShort(game.engine_type) }}</span>
-            </div>
 
-            <!-- Bottom-Right Walkthrough Quick Badge (Visible when not hovered) -->
-            <div
-              v-if="hasGameWalkthrough(game)"
-              @click.stop="openNotesFullscreen(game)"
-              class="group-hover:opacity-0 transition-opacity absolute bottom-2 right-2 z-20 px-2 py-0.5 rounded-md text-[10px] font-bold bg-indigo-600/90 text-white shadow-md flex items-center space-x-1 border border-indigo-400/40"
-              title="包含通关攻略/备忘"
-            >
-              <i data-lucide="book-open" class="w-3 h-3"></i>
-              <span>攻略</span>
-            </div>
-
-            <!-- Hover Overlay Mode A: Minimal Unobstructed Artwork (Default in v2.2) -->
-            <div
-              v-if="!isBatchMode && cardHoverStyle !== 'classic'"
-              class="absolute inset-x-0 bottom-0 z-20 pt-10 pb-2.5 px-2.5 bg-gradient-to-t from-slate-950/95 via-slate-950/60 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-end justify-between gap-1.5"
-            >
-              <!-- Compact Left Action Pill -->
-              <div class="card-hover-dock px-2 py-1 rounded-xl flex items-center gap-1" @click.stop>
-                <button
-                  v-if="shouldUseMToolPrimary(game)"
-                  @click="launchGameAction(game, 'native')"
-                  class="p-1 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                  title="原版直接启动"
-                >
-                  <i data-lucide="play" class="w-3.5 h-3.5"></i>
-                </button>
-                <button
-                  v-else-if="isMToolEngine(game.engine_type)"
-                  @click="launchMToolAction(game)"
-                  class="p-1 rounded-lg hover:bg-purple-500/30 text-purple-300 hover:text-white transition-colors cursor-pointer"
-                  title="MTool 辅助修改器启动"
-                >
-                  <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
-                </button>
-
-                <button
-                  @click="launchLEAction(game)"
-                  class="px-1.5 py-0.5 rounded-lg hover:bg-amber-500/25 text-[10px] font-bold text-amber-300 hover:text-amber-200 transition-colors cursor-pointer"
-                  title="通过 Locale Emulator 日文转区启动"
-                >
-                  LE
-                </button>
-
-                <button
-                  @click="openFolderAction(game)"
-                  class="p-1 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white transition-colors cursor-pointer"
-                  title="打开所在文件夹"
-                >
-                  <i data-lucide="folder" class="w-3.5 h-3.5"></i>
-                </button>
-
-                <button
-                  @click="openNotesFullscreen(game)"
-                  :class="[
-                    'p-1 rounded-lg transition-colors cursor-pointer',
-                    hasGameWalkthrough(game) ? 'bg-indigo-600/80 text-white hover:bg-indigo-500' : 'hover:bg-white/10 text-slate-300 hover:text-white'
-                  ]"
-                  title="全屏阅读/编辑攻略"
-                >
-                  <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
-                </button>
-              </div>
-
-              <!-- Corner Primary Play Button -->
-              <button
-                v-if="isGameRunning(game.id)"
-                @click.stop="openGameDetail(game)"
-                class="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-lg shadow-emerald-600/50 cursor-pointer shrink-0"
-                title="游戏正在运行中"
+              <!-- Hover Overlay Mode A: Minimal Unobstructed Artwork -->
+              <div
+                v-if="!isBatchMode && cardHoverStyle !== 'classic'"
+                class="absolute inset-x-0 bottom-0 z-20 pt-10 pb-2.5 px-2.5 bg-gradient-to-t from-slate-950/95 via-slate-950/60 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-end justify-between gap-1.5"
               >
-                <i data-lucide="activity" class="w-5 h-5 animate-pulse"></i>
-              </button>
-              <button
-                v-else-if="shouldUseMToolPrimary(game)"
-                @click.stop="launchMToolAction(game)"
-                class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white flex items-center justify-center shadow-lg shadow-emerald-600/50 hover:scale-105 transition-all cursor-pointer shrink-0"
-                title="【MTool 汉化启动】挂载外挂翻译字典启动"
-              >
-                <i data-lucide="globe" class="w-5 h-5"></i>
-              </button>
-              <button
-                v-else
-                @click.stop="launchGameAction(game, 'native')"
-                class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-400 hover:to-purple-500 text-white flex items-center justify-center shadow-lg shadow-indigo-600/50 hover:scale-105 transition-all cursor-pointer shrink-0"
-                title="一键启动游戏"
-              >
-                <i data-lucide="play" class="w-5 h-5 ml-0.5 fill-white"></i>
-              </button>
-            </div>
+                <!-- Compact Left Action Pill -->
+                <div class="card-hover-dock px-2 py-1 rounded-xl flex items-center gap-1" @click.stop>
+                  <button
+                    v-if="shouldUseMToolPrimary(game)"
+                    @click="launchGameAction(game, 'native')"
+                    class="p-1 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                    title="原版直接启动"
+                  >
+                    <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                  </button>
+                  <button
+                    v-else-if="isMToolEngine(game.engine_type)"
+                    @click="launchMToolAction(game)"
+                    class="p-1 rounded-lg hover:bg-purple-500/30 text-purple-300 hover:text-white transition-colors cursor-pointer"
+                    title="MTool 辅助修改器启动"
+                  >
+                    <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+                  </button>
 
-            <!-- Hover Overlay Mode B: Classic Center Play Button -->
-            <div v-else-if="!isBatchMode" class="absolute inset-0 z-20 bg-gradient-to-t from-slate-950/90 via-slate-950/45 to-slate-950/20 opacity-0 group-hover:opacity-100 transition-all duration-250 flex flex-col items-center justify-between p-3">
-              <div></div>
-              <button
-                v-if="isGameRunning(game.id)"
-                @click.stop="openGameDetail(game)"
-                class="w-14 h-14 p-3.5 rounded-full bg-emerald-600/90 text-white flex items-center justify-center shadow-xl shadow-emerald-600/50 cursor-pointer"
-              >
-                <i data-lucide="activity" class="w-6 h-6 animate-pulse"></i>
-              </button>
-              <button
-                v-else-if="shouldUseMToolPrimary(game)"
-                @click.stop="launchMToolAction(game)"
-                class="w-14 h-14 p-3.5 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shadow-xl shadow-emerald-600/50 hover:scale-110 transition-all cursor-pointer"
-              >
-                <i data-lucide="globe" class="w-6 h-6"></i>
-              </button>
-              <button
-                v-else
-                @click.stop="launchGameAction(game, 'native')"
-                class="w-14 h-14 p-3.5 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center shadow-xl shadow-indigo-600/50 hover:scale-110 transition-all cursor-pointer"
-              >
-                <i data-lucide="play" class="w-6 h-6 ml-0.5 fill-white"></i>
-              </button>
+                  <button
+                    @click="launchLEAction(game)"
+                    class="px-1.5 py-0.5 rounded-lg hover:bg-amber-500/25 text-[10px] font-bold text-amber-300 hover:text-amber-200 transition-colors cursor-pointer"
+                    title="通过 Locale Emulator 日文转区启动"
+                  >
+                    LE
+                  </button>
 
-              <div class="card-hover-dock px-2.5 py-1.5 rounded-xl flex items-center gap-1.5" @click.stop>
-                <button @click="launchLEAction(game)" class="px-1.5 py-1 rounded-lg hover:bg-amber-500/25 text-[10px] font-bold text-amber-300 cursor-pointer">LE转区</button>
-                <button @click="openFolderAction(game)" class="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer"><i data-lucide="folder" class="w-3.5 h-3.5"></i></button>
-                <button @click="openNotesFullscreen(game)" class="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer"><i data-lucide="book-open" class="w-3.5 h-3.5"></i></button>
-              </div>
-            </div>
-          </div>
+                  <button
+                    @click="openFolderAction(game)"
+                    class="p-1 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white transition-colors cursor-pointer"
+                    title="打开所在文件夹"
+                  >
+                    <i data-lucide="folder" class="w-3.5 h-3.5"></i>
+                  </button>
 
-          <!-- Card Footer Info -->
-          <div class="p-3.5 flex flex-col justify-between flex-1 gap-2">
-            <div>
-              <div class="flex items-center justify-between gap-1 mb-1">
-                <div class="flex items-center space-x-1.5 min-w-0">
-                  <span class="w-2 h-2 rounded-full shrink-0" :class="getStatusDotColor(game.play_status)"></span>
-                  <span class="text-[11px] font-medium text-slate-400 truncate">{{ game.circle_name || getStatusLabel(game.play_status) }}</span>
+                  <button
+                    @click="openNotesFullscreen(game)"
+                    :class="[
+                      'p-1 rounded-lg transition-colors cursor-pointer',
+                      hasGameWalkthrough(game) ? 'bg-indigo-600/80 text-white hover:bg-indigo-500' : 'hover:bg-white/10 text-slate-300 hover:text-white'
+                    ]"
+                    title="全屏阅读/编辑全结局攻略"
+                  >
+                    <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
+                  </button>
                 </div>
-                <span v-if="game.rj_code" class="text-[10px] text-indigo-400/90 font-mono shrink-0">{{ game.rj_code }}</span>
+
+                <!-- Corner Primary Play Button -->
+                <button
+                  v-if="isGameRunning(game.id)"
+                  @click.stop="openGameDetail(game)"
+                  class="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-lg shadow-emerald-600/50 cursor-pointer shrink-0"
+                  title="游戏正在运行中"
+                >
+                  <i data-lucide="activity" class="w-5 h-5 animate-pulse"></i>
+                </button>
+                <button
+                  v-else-if="shouldUseMToolPrimary(game)"
+                  @click.stop="launchMToolAction(game)"
+                  class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white flex items-center justify-center shadow-lg shadow-emerald-600/50 hover:scale-105 transition-all cursor-pointer shrink-0"
+                  title="【MTool 汉化启动】挂载外挂翻译字典启动"
+                >
+                  <i data-lucide="globe" class="w-5 h-5"></i>
+                </button>
+                <button
+                  v-else
+                  @click.stop="launchGameAction(game, 'native')"
+                  class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-400 hover:to-purple-500 text-white flex items-center justify-center shadow-lg shadow-indigo-600/50 hover:scale-105 transition-all cursor-pointer shrink-0"
+                  title="一键启动游戏"
+                >
+                  <i data-lucide="play" class="w-5 h-5 ml-0.5 fill-white"></i>
+                </button>
               </div>
-              <h4 class="text-xs font-bold text-slate-100 line-clamp-2 leading-snug group-hover:text-indigo-300 transition-colors" :title="game.display_title || game.folder_name">
-                {{ game.display_title || game.folder_name }}
-              </h4>
+
+              <!-- Hover Overlay Mode B: Classic Center Play Button -->
+              <div v-else-if="!isBatchMode" class="absolute inset-0 z-20 bg-gradient-to-t from-slate-950/90 via-slate-950/45 to-slate-950/20 opacity-0 group-hover:opacity-100 transition-all duration-250 flex flex-col items-center justify-between p-3">
+                <div></div>
+                <button
+                  v-if="isGameRunning(game.id)"
+                  @click.stop="openGameDetail(game)"
+                  class="w-14 h-14 p-3.5 rounded-full bg-emerald-600/90 text-white flex items-center justify-center shadow-xl shadow-emerald-600/50 cursor-pointer"
+                >
+                  <i data-lucide="activity" class="w-6 h-6 animate-pulse"></i>
+                </button>
+                <button
+                  v-else-if="shouldUseMToolPrimary(game)"
+                  @click.stop="launchMToolAction(game)"
+                  class="w-14 h-14 p-3.5 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 text-white flex items-center justify-center shadow-xl shadow-emerald-600/50 hover:scale-110 transition-all cursor-pointer"
+                >
+                  <i data-lucide="globe" class="w-6 h-6"></i>
+                </button>
+                <button
+                  v-else
+                  @click.stop="launchGameAction(game, 'native')"
+                  class="w-14 h-14 p-3.5 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center shadow-xl shadow-indigo-600/50 hover:scale-110 transition-all cursor-pointer"
+                >
+                  <i data-lucide="play" class="w-6 h-6 ml-0.5 fill-white"></i>
+                </button>
+
+                <div class="card-hover-dock px-2.5 py-1.5 rounded-xl flex items-center gap-1.5" @click.stop>
+                  <button @click="launchLEAction(game)" class="px-1.5 py-1 rounded-lg hover:bg-amber-500/25 text-[10px] font-bold text-amber-300 cursor-pointer">LE转区</button>
+                  <button @click="openFolderAction(game)" class="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer"><i data-lucide="folder" class="w-3.5 h-3.5"></i></button>
+                  <button @click="openNotesFullscreen(game)" class="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 hover:text-white cursor-pointer"><i data-lucide="book-open" class="w-3.5 h-3.5"></i></button>
+                </div>
+              </div>
             </div>
 
-            <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
-              <div class="flex items-center space-x-0.5">
-                <svg
-                  v-for="star in 5"
-                  :key="star"
-                  class="w-3 h-3"
-                  viewBox="0 0 24 24"
-                  :fill="star <= game.user_rating ? '#f59e0b' : 'none'"
-                  :stroke="star <= game.user_rating ? '#f59e0b' : '#475569'"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                </svg>
+            <!-- Card Footer Info -->
+            <div class="p-3.5 flex flex-col justify-between flex-1 gap-2">
+              <div>
+                <div class="flex items-center justify-between gap-1 mb-1">
+                  <div class="flex items-center space-x-1.5 min-w-0">
+                    <span class="w-2 h-2 rounded-full shrink-0" :class="getStatusDotColor(game.play_status)"></span>
+                    <span class="text-[11px] font-medium text-slate-400 truncate">{{ game.circle_name || getStatusLabel(game.play_status) }}</span>
+                  </div>
+                  <span v-if="game.rj_code" class="text-[10px] text-indigo-400/90 font-mono shrink-0">{{ game.rj_code }}</span>
+                </div>
+                <h4 class="text-xs font-bold text-slate-100 line-clamp-2 leading-snug group-hover:text-indigo-300 transition-colors" :title="game.display_title || game.folder_name">
+                  {{ game.display_title || game.folder_name }}
+                </h4>
               </div>
-              <span class="font-mono text-[10px] text-slate-500">{{ game.folder_size_str }}</span>
+
+              <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
+                <div class="flex items-center space-x-0.5">
+                  <svg
+                    v-for="star in 5"
+                    :key="star"
+                    class="w-3 h-3"
+                    viewBox="0 0 24 24"
+                    :fill="star <= game.user_rating ? '#f59e0b' : 'none'"
+                    :stroke="star <= game.user_rating ? '#f59e0b' : '#475569'"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                  </svg>
+                </div>
+                <span class="font-mono text-[10px] text-slate-500">{{ game.folder_size_str }}</span>
+              </div>
             </div>
           </div>
+        </div>
+
+        <!-- Progressive Rendering Load More Footer -->
+        <div v-if="displayedGames.length < filteredGames.length" class="flex items-center justify-center gap-3 py-4">
+          <button
+            @click="loadMoreGames"
+            class="px-5 py-2 rounded-xl bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white text-xs font-semibold border border-slate-700 transition-all cursor-pointer shadow"
+          >
+            加载更多馆藏 ({{ displayedGames.length }} / {{ filteredGames.length }})
+          </button>
+          <button
+            @click="visibleLimit = filteredGames.length"
+            class="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 text-xs border border-slate-800 transition-all cursor-pointer"
+          >
+            全部展开
+          </button>
         </div>
       </div>
 
       <!-- List View -->
-      <div v-else class="glass-panel rounded-2xl overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs text-slate-300 min-w-[860px]">
-            <thead class="bg-slate-900/90 text-slate-400 border-b border-slate-800 select-none">
-              <tr>
-                <th v-if="isBatchMode" class="py-3 px-3 w-8">
-                  <input type="checkbox" :checked="selectedGameIds.length === games.length && games.length > 0" @click="selectAllCurrentGames" class="rounded bg-slate-900 border-indigo-500 text-indigo-600 cursor-pointer">
-                </th>
-                <th class="py-3 px-4 w-12">状态</th>
-                <th @click="sortByColumn('title')" class="py-3 px-4 cursor-pointer hover:text-white transition-colors">
-                  <span>游戏标题 / 文件夹</span>
-                  <span v-if="sortBy === 'title'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
-                </th>
-                <th class="py-3 px-4 w-28">引擎</th>
-                <th class="py-3 px-4 w-28">RJ / 来源</th>
-                <th @click="sortByColumn('size')" class="py-3 px-4 w-24 cursor-pointer hover:text-white transition-colors">
-                  <span>体积</span>
-                  <span v-if="sortBy === 'size'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
-                </th>
-                <th @click="sortByColumn('downloaded_at')" class="py-3 px-4 w-32 cursor-pointer hover:text-white transition-colors">
-                  <span>下载时间</span>
-                  <span v-if="sortBy === 'downloaded_at'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
-                </th>
-                <th @click="sortByColumn('release_date')" class="py-3 px-4 w-28 cursor-pointer hover:text-white transition-colors">
-                  <span>发售日期</span>
-                  <span v-if="sortBy === 'release_date'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
-                </th>
-                <th @click="sortByColumn('rating')" class="py-3 px-4 w-24 cursor-pointer hover:text-white transition-colors">
-                  <span>评分</span>
-                  <span v-if="sortBy === 'rating'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
-                </th>
-                <th class="py-3 px-4 w-36 text-right">快捷操作</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-800/50">
-              <tr
-                v-for="game in games"
-                :key="game.id"
-                @click="isBatchMode ? toggleGameSelect(game.id) : openGameDetail(game)"
-                :class="[
-                  'hover:bg-slate-800/40 cursor-pointer transition-colors',
-                  isGameSelected(game.id) ? 'bg-indigo-950/40' : '',
-                  isGameRunning(game.id) ? 'bg-emerald-950/25' : ''
-                ]"
-              >
-                <td v-if="isBatchMode" class="py-3 px-3" @click.stop="toggleGameSelect(game.id)">
-                  <input type="checkbox" :checked="isGameSelected(game.id)" class="rounded bg-slate-900 border-indigo-400 text-indigo-600 cursor-pointer">
-                </td>
-                <td class="py-3 px-4">
-                  <span class="w-2.5 h-2.5 rounded-full inline-block" :class="getStatusDotColor(game.play_status)" :title="getStatusLabel(game.play_status)"></span>
-                </td>
-                <td class="py-3 px-4">
-                  <div class="flex items-center space-x-3">
-                    <div class="w-10 h-12 rounded-lg bg-slate-800 overflow-hidden shrink-0 border border-slate-700/60 flex items-center justify-center">
-                      <img v-if="game.cover_url" :src="getThumbUrl(game.cover_url)" class="w-full h-full object-cover" @error="game.cover_url = ''">
-                      <span v-else class="text-[10px] font-bold text-indigo-400">{{ (game.clean_title || 'G')[0] }}</span>
-                    </div>
-                    <div>
-                      <div class="font-semibold text-slate-100 text-sm flex items-center flex-wrap gap-1.5">
-                        <span>{{ game.display_title || game.folder_name }}</span>
-                        <span v-if="isGameRunning(game.id)" class="px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-bold">运行中</span>
-                        <span v-if="game.is_missing" class="px-1.5 py-0.5 rounded bg-rose-600/40 text-rose-300 border border-rose-500/40 text-[10px] font-bold">缺失</span>
-                        <span v-if="game.is_translated || game.has_translation" class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">汉化</span>
-                        <span v-if="game.cg_unlocked" class="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">全CG</span>
-                        <span
-                          v-if="game.duplicate_count > 0"
-                          @click.stop="openDuplicateModalForGame(game)"
-                          class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold hover:bg-amber-500/35"
-                        >
-                          {{ game.duplicate_count + 1 }}版本
-                        </span>
-                        <span
-                          v-if="hasGameWalkthrough(game)"
-                          @click.stop="openNotesFullscreen(game)"
-                          class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 text-[10px] font-bold flex items-center gap-1 hover:bg-indigo-500/40 transition-colors cursor-pointer"
-                        >
-                          <span>攻略</span>
-                        </span>
+      <div v-else class="space-y-4">
+        <div class="glass-panel rounded-2xl overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300 min-w-[860px]">
+              <thead class="bg-slate-900/90 text-slate-400 border-b border-slate-800 select-none">
+                <tr>
+                  <th v-if="isBatchMode" class="py-3 px-3 w-8">
+                    <input type="checkbox" :checked="selectedGameIds.length === filteredGames.length && filteredGames.length > 0" @click="selectAllCurrentGames" class="rounded bg-slate-900 border-indigo-500 text-indigo-600 cursor-pointer">
+                  </th>
+                  <th class="py-3 px-4 w-12">状态</th>
+                  <th @click="sortByColumn('title')" class="py-3 px-4 cursor-pointer hover:text-white transition-colors">
+                    <span>游戏标题 / 文件夹</span>
+                    <span v-if="sortBy === 'title'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+                  </th>
+                  <th class="py-3 px-4 w-28">引擎</th>
+                  <th class="py-3 px-4 w-28">RJ / 来源</th>
+                  <th @click="sortByColumn('size')" class="py-3 px-4 w-24 cursor-pointer hover:text-white transition-colors">
+                    <span>体积</span>
+                    <span v-if="sortBy === 'size'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+                  </th>
+                  <th @click="sortByColumn('downloaded_at')" class="py-3 px-4 w-32 cursor-pointer hover:text-white transition-colors">
+                    <span>下载时间</span>
+                    <span v-if="sortBy === 'downloaded_at'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+                  </th>
+                  <th @click="sortByColumn('release_date')" class="py-3 px-4 w-28 cursor-pointer hover:text-white transition-colors">
+                    <span>发售日期</span>
+                    <span v-if="sortBy === 'release_date'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+                  </th>
+                  <th @click="sortByColumn('rating')" class="py-3 px-4 w-24 cursor-pointer hover:text-white transition-colors">
+                    <span>评分</span>
+                    <span v-if="sortBy === 'rating'" class="ml-1 text-indigo-400">{{ sortOrder === 'asc' ? '↑' : '↓' }}</span>
+                  </th>
+                  <th class="py-3 px-4 w-36 text-right">快捷操作</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/50">
+                <tr
+                  v-for="game in displayedGames"
+                  :key="game.id"
+                  @click="isBatchMode ? toggleGameSelect(game.id) : openGameDetail(game)"
+                  :class="[
+                    'hover:bg-slate-800/40 cursor-pointer transition-colors',
+                    isGameSelected(game.id) ? 'bg-indigo-950/40' : '',
+                    isGameRunning(game.id) ? 'bg-emerald-950/25' : ''
+                  ]"
+                >
+                  <td v-if="isBatchMode" class="py-3 px-3" @click.stop="toggleGameSelect(game.id)">
+                    <input type="checkbox" :checked="isGameSelected(game.id)" class="rounded bg-slate-900 border-indigo-400 text-indigo-600 cursor-pointer">
+                  </td>
+                  <td class="py-3 px-4">
+                    <span class="w-2.5 h-2.5 rounded-full inline-block" :class="getStatusDotColor(game.play_status)" :title="getStatusLabel(game.play_status)"></span>
+                  </td>
+                  <td class="py-3 px-4">
+                    <div class="flex items-center space-x-3">
+                      <div class="w-10 h-12 rounded-lg bg-slate-800 overflow-hidden shrink-0 border border-slate-700/60 flex items-center justify-center">
+                        <img v-if="game.cover_url" :src="getThumbUrl(game.cover_url)" class="w-full h-full object-cover" @error="game.cover_url = ''">
+                        <span v-else class="text-[10px] font-bold text-indigo-400">{{ (game.clean_title || 'G')[0] }}</span>
                       </div>
-                      <div class="text-slate-500 text-[11px]">{{ game.folder_name }}</div>
+                      <div>
+                        <div class="font-semibold text-slate-100 text-sm flex items-center flex-wrap gap-1.5">
+                          <span>{{ game.display_title || game.folder_name }}</span>
+                          <span v-if="isGameRunning(game.id)" class="px-1.5 py-0.5 rounded bg-emerald-600 text-white text-[10px] font-bold">运行中</span>
+                          <span v-if="game.is_missing" class="px-1.5 py-0.5 rounded bg-rose-600/40 text-rose-300 border border-rose-500/40 text-[10px] font-bold">缺失</span>
+                          <span v-if="game.is_translated || game.has_translation" class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold">汉化</span>
+                          <span v-if="game.cg_unlocked" class="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">全CG</span>
+                          <span
+                            v-if="game.duplicate_count > 0"
+                            @click.stop="openDuplicateModalForGame(game)"
+                            class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold hover:bg-amber-500/35"
+                          >
+                            {{ game.duplicate_count + 1 }}版本
+                          </span>
+                          <span
+                            v-if="hasPersonalMemo(game)"
+                            class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold"
+                          >
+                            笔记
+                          </span>
+                          <span
+                            v-if="hasGameWalkthrough(game)"
+                            @click.stop="openNotesFullscreen(game)"
+                            class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 text-[10px] font-bold flex items-center gap-1 hover:bg-indigo-500/40 transition-colors cursor-pointer"
+                          >
+                            <span>攻略</span>
+                          </span>
+                        </div>
+                        <div class="text-slate-500 text-[11px]">{{ game.folder_name }}</div>
+                      </div>
                     </div>
-                  </div>
-                </td>
-                <td class="py-3 px-4 text-slate-400">{{ game.engine_type }}</td>
-                <td class="py-3 px-4 font-mono text-slate-400">{{ game.rj_code || (game.source_type && game.source_type !== 'none' ? game.source_type.toUpperCase() : '-') }}</td>
-                <td class="py-3 px-4 font-mono text-slate-400">{{ game.folder_size_str }}</td>
-                <td class="py-3 px-4 font-mono text-slate-400">{{ game.downloaded_at ? game.downloaded_at.slice(0, 16) : '-' }}</td>
-                <td class="py-3 px-4 text-slate-400">{{ game.release_date || '-' }}</td>
-                <td class="py-3 px-4">
-                  <div class="flex items-center space-x-0.5">
-                    <svg v-for="star in 5" :key="star" class="w-3 h-3" viewBox="0 0 24 24" :fill="star <= game.user_rating ? '#f59e0b' : 'none'" :stroke="star <= game.user_rating ? '#f59e0b' : '#475569'" stroke-width="2">
-                      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
-                    </svg>
-                  </div>
-                </td>
-                <td class="py-3 px-4 text-right">
-                  <div class="flex items-center justify-end space-x-1" @click.stop>
-                    <button @click="toggleFavorite(game)" class="p-1.5 rounded-lg text-slate-400 hover:text-pink-400 hover:bg-slate-800 transition-colors cursor-pointer" title="收藏">
-                      <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" :fill="game.is_favorite ? '#ec4899' : 'none'" :stroke="game.is_favorite ? '#ec4899' : '#94a3b8'" stroke-width="2">
-                        <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+                  </td>
+                  <td class="py-3 px-4 text-slate-400">{{ game.engine_type }}</td>
+                  <td class="py-3 px-4 font-mono text-slate-400">{{ game.rj_code || (game.source_type && game.source_type !== 'none' ? game.source_type.toUpperCase() : '-') }}</td>
+                  <td class="py-3 px-4 font-mono text-slate-400">{{ game.folder_size_str }}</td>
+                  <td class="py-3 px-4 font-mono text-slate-400">{{ game.downloaded_at ? game.downloaded_at.slice(0, 16) : '-' }}</td>
+                  <td class="py-3 px-4 text-slate-400">{{ game.release_date || '-' }}</td>
+                  <td class="py-3 px-4">
+                    <div class="flex items-center space-x-0.5">
+                      <svg v-for="star in 5" :key="star" class="w-3 h-3" viewBox="0 0 24 24" :fill="star <= game.user_rating ? '#f59e0b' : 'none'" :stroke="star <= game.user_rating ? '#f59e0b' : '#475569'" stroke-width="2">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
                       </svg>
-                    </button>
-                    <button v-if="shouldUseMToolPrimary(game)" @click="launchMToolAction(game)" class="p-1.5 rounded-lg bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600 hover:text-white cursor-pointer" title="MTool 汉化启动">
-                      <i data-lucide="globe" class="w-3.5 h-3.5"></i>
-                    </button>
-                    <button @click="launchGameAction(game, 'native')" class="p-1.5 rounded-lg bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600 hover:text-white cursor-pointer" title="直接启动游戏">
-                      <i data-lucide="play" class="w-3.5 h-3.5"></i>
-                    </button>
-                    <button @click="openFolderAction(game)" class="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white cursor-pointer" title="打开目录">
-                      <i data-lucide="folder" class="w-3.5 h-3.5"></i>
-                    </button>
-                    <button
-                      @click="openNotesFullscreen(game)"
-                      :class="[
-                        'p-1.5 rounded-lg transition-colors cursor-pointer',
-                        hasGameWalkthrough(game) ? 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600 hover:text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
-                      ]"
-                      title="全屏攻略备忘"
-                    >
-                      <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                    </div>
+                  </td>
+                  <td class="py-3 px-4 text-right">
+                    <div class="flex items-center justify-end space-x-1" @click.stop>
+                      <button @click="toggleFavorite(game)" class="p-1.5 rounded-lg text-slate-400 hover:text-pink-400 hover:bg-slate-800 transition-colors cursor-pointer" title="收藏">
+                        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" :fill="game.is_favorite ? '#ec4899' : 'none'" :stroke="game.is_favorite ? '#ec4899' : '#94a3b8'" stroke-width="2">
+                          <path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/>
+                        </svg>
+                      </button>
+                      <button v-if="shouldUseMToolPrimary(game)" @click="launchMToolAction(game)" class="p-1.5 rounded-lg bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600 hover:text-white cursor-pointer" title="MTool 汉化启动">
+                        <i data-lucide="globe" class="w-3.5 h-3.5"></i>
+                      </button>
+                      <button @click="launchGameAction(game, 'native')" class="p-1.5 rounded-lg bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600 hover:text-white cursor-pointer" title="直接启动游戏">
+                        <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                      </button>
+                      <button @click="openFolderAction(game)" class="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white cursor-pointer" title="打开目录">
+                        <i data-lucide="folder" class="w-3.5 h-3.5"></i>
+                      </button>
+                      <button
+                        @click="openNotesFullscreen(game)"
+                        :class="[
+                          'p-1.5 rounded-lg transition-colors cursor-pointer',
+                          hasGameWalkthrough(game) ? 'bg-indigo-600/30 text-indigo-300 hover:bg-indigo-600 hover:text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+                        ]"
+                        title="全屏攻略工作台"
+                      >
+                        <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div v-if="displayedGames.length < filteredGames.length" class="flex items-center justify-center gap-3 py-2">
+          <button
+            @click="loadMoreGames"
+            class="px-5 py-2 rounded-xl bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white text-xs font-semibold border border-slate-700 transition-all cursor-pointer"
+          >
+            加载更多 ({{ displayedGames.length }} / {{ filteredGames.length }})
+          </button>
         </div>
       </div>
     </main>
-
-    <!-- ==================== GAME DETAIL DRAWER (BENTO EDITION v2.2) ==================== -->
+    <!-- ==================== GAME DETAIL DRAWER (BENTO EDITION v2.3) ==================== -->
     <transition name="drawer">
       <div
         v-if="selectedGame"
@@ -1290,7 +1428,7 @@
             <div class="absolute inset-0 bg-gradient-to-b from-black/65 via-[#0b101e]/40 to-[#0b101e]"></div>
 
             <!-- Top Left Prev / Next Game Navigation -->
-            <div v-if="!isEditMode && games.length > 1" class="absolute top-4 left-5 z-30 flex items-center space-x-1.5">
+            <div v-if="!isEditMode && filteredGames.length > 1" class="absolute top-4 left-5 z-30 flex items-center space-x-1.5">
               <button
                 @click="navigateAdjacentGame(-1)"
                 :disabled="currentGameIndex <= 0"
@@ -1301,14 +1439,14 @@
               </button>
               <button
                 @click="navigateAdjacentGame(1)"
-                :disabled="currentGameIndex < 0 || currentGameIndex >= games.length - 1"
+                :disabled="currentGameIndex < 0 || currentGameIndex >= filteredGames.length - 1"
                 class="w-8 h-8 rounded-xl bg-slate-900/90 border border-white/15 hover:bg-slate-800 text-slate-200 hover:text-white disabled:opacity-35 flex items-center justify-center cursor-pointer transition-all"
                 title="下一部游戏 (键盘 →)"
               >
                 <i data-lucide="chevron-right" class="w-4 h-4"></i>
               </button>
               <span v-if="currentGameIndex >= 0" class="px-2 py-1 rounded-lg bg-slate-900/85 text-[11px] font-mono text-slate-300 border border-white/10">
-                {{ currentGameIndex + 1 }} / {{ games.length }}
+                {{ currentGameIndex + 1 }} / {{ filteredGames.length }}
               </span>
             </div>
 
@@ -1529,7 +1667,7 @@
               <div class="text-xs">
                 <label class="text-slate-400 block mb-1 font-semibold">游戏启动主程序路径 (.exe，重扫时自动保护不覆盖)</label>
                 <div class="flex items-center space-x-2">
-                  <input type="text" v-model="editForm.executable_path" placeholder="例如: E:\ACG\Game\Game.exe" class="flex-1 bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 font-mono" />
+                  <input type="text" v-model="editForm.executable_path" placeholder="例如: E:\ACG\Game\Game.exe" class="flex-1 min-w-0 bg-slate-950 border border-slate-700 rounded-lg p-2 text-slate-100 font-mono" />
                   <button @click="pickLocalPathAction('game_exe')" type="button" class="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 text-indigo-300 font-medium shrink-0 cursor-pointer">
                     浏览...
                   </button>
@@ -1538,7 +1676,12 @@
 
               <div>
                 <label class="text-slate-400 block mb-1 font-semibold text-xs">故事背景与游戏简介</label>
-                <textarea v-model="editForm.synopsis" rows="4" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-100"></textarea>
+                <textarea v-model="editForm.synopsis" rows="3" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-100"></textarea>
+              </div>
+
+              <div>
+                <label class="text-amber-300 block mb-1 font-semibold text-xs">个人通关笔记 (随手记)</label>
+                <textarea v-model="editForm.user_notes" rows="2" placeholder="随手记录通关感想、进度或备忘..." class="w-full bg-slate-950 border border-amber-500/40 rounded-lg p-2.5 text-xs text-amber-100"></textarea>
               </div>
 
               <!-- Interactive Tag Chips Editor (Official Tags + Personal User Tags) -->
@@ -1551,9 +1694,9 @@
                       <button @click="removeEditTagChip(idx, false)" type="button" class="text-slate-400 hover:text-rose-400 cursor-pointer">×</button>
                     </span>
                   </div>
-                  <div class="flex items-center gap-1.5">
-                    <input type="text" v-model="newEditTagInput" @keydown.enter.prevent="addEditTagChip(false)" placeholder="输入标签按回车..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-slate-100" />
-                    <button @click="addEditTagChip(false)" type="button" class="px-2.5 py-1 rounded-lg bg-indigo-600/30 text-indigo-200 hover:bg-indigo-600 cursor-pointer">添加</button>
+                  <div class="flex items-center gap-1.5 w-full">
+                    <input type="text" v-model="newEditTagInput" @keydown.enter.prevent="addEditTagChip(false)" placeholder="输入标签按回车..." class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-slate-100" />
+                    <button @click="addEditTagChip(false)" type="button" class="shrink-0 whitespace-nowrap px-2.5 py-1 rounded-lg bg-indigo-600/30 text-indigo-200 hover:bg-indigo-600 cursor-pointer">添加</button>
                   </div>
                 </div>
 
@@ -1565,9 +1708,9 @@
                       <button @click="removeEditTagChip(idx, true)" type="button" class="text-slate-400 hover:text-rose-400 cursor-pointer">×</button>
                     </span>
                   </div>
-                  <div class="flex items-center gap-1.5">
-                    <input type="text" v-model="newEditUserTagInput" @keydown.enter.prevent="addEditTagChip(true)" placeholder="如: 神作, 二周目, 必玩..." class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-slate-100" />
-                    <button @click="addEditTagChip(true)" type="button" class="px-2.5 py-1 rounded-lg bg-emerald-600/30 text-emerald-200 hover:bg-emerald-600 cursor-pointer">添加</button>
+                  <div class="flex items-center gap-1.5 w-full">
+                    <input type="text" v-model="newEditUserTagInput" @keydown.enter.prevent="addEditTagChip(true)" placeholder="如: 神作, 二周目, 必玩..." class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-slate-100" />
+                    <button @click="addEditTagChip(true)" type="button" class="shrink-0 whitespace-nowrap px-2.5 py-1 rounded-lg bg-emerald-600/30 text-emerald-200 hover:bg-emerald-600 cursor-pointer">添加</button>
                   </div>
                 </div>
               </div>
@@ -1589,7 +1732,7 @@
             </div>
           </div>
 
-          <!-- ==================== VIEW MODE ==================== -->
+          <!-- ==================== VIEW MODE (v2.3 3-TAB ORGANIZED BENTO WORKSPACE) ==================== -->
           <div v-else class="p-6 space-y-5">
 
             <!-- Primary Action Bar: Play Status, Rating & Multi-Mode Launchers -->
@@ -1611,15 +1754,15 @@
                   </button>
                 </div>
 
-                <!-- Interactive Star Rating -->
-                <div class="flex items-center space-x-0.5 bg-slate-950/60 px-3 py-1 rounded-xl border border-slate-800/70">
+                <!-- Interactive Star Rating (Click same star again to reset to 0) -->
+                <div class="flex items-center space-x-0.5 bg-slate-950/60 px-3 py-1 rounded-xl border border-slate-800/70" title="点击评分（再次点击当前星级可清零）">
                   <span class="text-[11px] text-slate-500 mr-1.5">评分</span>
                   <button
                     v-for="star in 5"
                     :key="star"
                     @click="updateGameRating(star)"
                     class="star-btn p-0.5 text-slate-600 hover:text-amber-400 cursor-pointer"
-                    :title="`评分: ${star} 星`"
+                    :title="star === selectedGame.user_rating ? '再次点击清零评分' : `评分: ${star} 星`"
                   >
                     <svg class="w-4 h-4 transition-colors" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"
                       :fill="star <= (selectedGame.user_rating || 0) ? '#f59e0b' : 'none'"
@@ -1716,6 +1859,15 @@
                   >
                     <span>LE 转区启动</span>
                   </button>
+
+                  <button
+                    @click="openCompanionOverlayAction(selectedGame)"
+                    class="px-3 py-2 bg-cyan-500/15 border border-cyan-500/35 hover:bg-cyan-500/30 text-cyan-200 text-xs font-semibold rounded-xl flex items-center space-x-1 transition-all cursor-pointer"
+                    title="呼出游戏内半透明置顶「全结局攻略 & F9变量表 & 随手记」伴侣小窗 (Alt+G)"
+                  >
+                    <i data-lucide="layers" class="w-3.5 h-3.5 text-cyan-400"></i>
+                    <span>伴侣小窗 (Alt+G)</span>
+                  </button>
                 </div>
 
                 <!-- Folder & Explorer Reveal -->
@@ -1738,363 +1890,358 @@
               </div>
             </div>
 
-            <!-- 2x3 Bento Grid Metadata Cards -->
-            <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
-              <div class="bento-card">
-                <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
-                  <i data-lucide="hard-drive" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>文件体积</span>
-                </div>
-                <div class="font-mono font-bold text-slate-100 text-sm">{{ selectedGame.folder_size_str || '-' }}</div>
-              </div>
-
-              <div class="bento-card">
-                <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
-                  <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>驱动引擎</span>
-                </div>
-                <div class="font-bold text-indigo-300 truncate">{{ selectedGame.engine_type || 'Unknown' }}</div>
-              </div>
-
-              <div class="bento-card">
-                <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
-                  <i data-lucide="clock" class="w-3.5 h-3.5 text-amber-400"></i>
-                  <span>游玩记录</span>
-                </div>
-                <div class="font-mono font-semibold text-amber-300">
-                  {{ formatPlayedTime(selectedGame.played_seconds) }}
-                  <span v-if="selectedGame.play_count" class="text-[10px] text-slate-400">({{ selectedGame.play_count }}次)</span>
-                </div>
-              </div>
-
-              <div class="bento-card">
-                <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
-                  <i data-lucide="calendar" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>官方发售日</span>
-                </div>
-                <div class="font-mono text-slate-200">{{ selectedGame.release_date || '未知' }}</div>
-              </div>
-
-              <div class="bento-card">
-                <div class="text-[11px] text-indigo-300 flex items-center space-x-1.5 mb-1">
-                  <i data-lucide="download" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>本地入库时间</span>
-                </div>
-                <div class="font-mono text-indigo-200 font-semibold">{{ selectedGame.downloaded_at || '-' }}</div>
-              </div>
-
-              <div class="bento-card">
-                <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
-                  <i data-lucide="compass" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>作品编号与外部源</span>
-                </div>
-                <div class="flex items-center space-x-2">
-                  <span class="font-mono text-slate-200 font-semibold">{{ selectedGame.rj_code || (selectedGame.source_type && selectedGame.source_type !== 'none' ? selectedGame.source_type.toUpperCase() : '本地') }}</span>
-                  <a
-                    v-if="selectedGame.source_url"
-                    :href="selectedGame.source_url"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="text-[11px] text-indigo-400 hover:text-indigo-300 underline"
-                  >
-                    直达商店 ↗
-                  </a>
-                </div>
-              </div>
+            <!-- 3-Tab Segmented Navigation inside Detail Drawer (v2.3 UX Upgrade) -->
+            <div class="flex items-center space-x-1 bg-slate-950/90 p-1 rounded-2xl border border-slate-800/90 text-xs">
+              <button
+                @click="drawerActiveTab = 'overview'; refreshIcons()"
+                :class="[
+                  'flex-1 py-2 px-3 rounded-xl font-bold transition-all cursor-pointer flex items-center justify-center space-x-1.5',
+                  drawerActiveTab === 'overview' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30' : 'text-slate-400 hover:text-slate-200'
+                ]"
+              >
+                <i data-lucide="layout-dashboard" class="w-3.5 h-3.5"></i>
+                <span>概览 · 个人笔记 · 双画廊</span>
+              </button>
+              <button
+                @click="drawerActiveTab = 'walkthrough'; refreshIcons()"
+                :class="[
+                  'flex-1 py-2 px-3 rounded-xl font-bold transition-all cursor-pointer flex items-center justify-center space-x-1.5',
+                  drawerActiveTab === 'walkthrough' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30' : 'text-slate-400 hover:text-slate-200'
+                ]"
+              >
+                <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
+                <span>全结局攻略</span>
+                <span v-if="hasGameWalkthrough(selectedGame)" class="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-500/30 text-emerald-200 font-mono">已备</span>
+              </button>
+              <button
+                @click="drawerActiveTab = 'engineering'; refreshIcons()"
+                :class="[
+                  'flex-1 py-2 px-3 rounded-xl font-bold transition-all cursor-pointer flex items-center justify-center space-x-1.5',
+                  drawerActiveTab === 'engineering' ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30' : 'text-slate-400 hover:text-slate-200'
+                ]"
+              >
+                <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
+                <span>存档云同步 · 刮削 · 多版本</span>
+                <span v-if="selectedGameVariants.length > 1" class="px-1.5 py-0.2 rounded-full text-[10px] bg-amber-500 text-black font-extrabold">{{ selectedGameVariants.length }}</span>
+              </button>
             </div>
 
-            <!-- Save Data Snapshot, Backup, Restore & 100% Full CG Unlocker Center -->
-            <div class="p-3.5 rounded-2xl bg-slate-900/60 border border-slate-800/80 space-y-3 text-xs">
-              <div class="flex flex-wrap items-center justify-between gap-3">
-                <div class="flex items-center space-x-2.5">
-                  <div class="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                    <i data-lucide="archive" class="w-4 h-4"></i>
+            <!-- ==================== DRAWER TAB 1: OVERVIEW, TAGS, PERSONAL STICKY MEMO & DUAL GALLERY ==================== -->
+            <div v-show="drawerActiveTab === 'overview'" class="space-y-5">
+
+              <!-- 2x3 Bento Grid Metadata Cards -->
+              <div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+                <div class="bento-card">
+                  <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
+                    <i data-lucide="hard-drive" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    <span>文件体积</span>
                   </div>
-                  <div>
-                    <div class="font-bold text-slate-200 flex items-center flex-wrap gap-1.5">
-                      <span>存档快照与 100% 全 CG 回想中心</span>
-                      <span v-if="selectedGameSave && selectedGameSave.has_save_dir" class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-mono">
-                        {{ selectedGameSave.save_count }} 个存档
-                      </span>
-                      <span v-if="selectedGame.cg_unlocked" class="px-1.5 py-0.5 rounded bg-purple-500/25 text-purple-300 text-[10px] font-bold">
-                        全CG已就绪
-                      </span>
-                    </div>
-                    <div class="text-[11px] text-slate-400 mt-0.5">
-                      <span v-if="selectedGameSave && selectedGameSave.latest_save_at">最近更新: {{ selectedGameSave.latest_save_at }}</span>
-                      <span v-else>支持存档备份回档、一键注入全CG回想开关 (游戏内按 F8) 或导入全CG存档包</span>
-                    </div>
+                  <div class="font-mono font-bold text-slate-100 text-sm">{{ selectedGame.folder_size_str || '-' }}</div>
+                </div>
+
+                <div class="bento-card">
+                  <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
+                    <i data-lucide="cpu" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    <span>驱动引擎</span>
+                  </div>
+                  <div class="font-bold text-indigo-300 truncate">{{ selectedGame.engine_type || 'Unknown' }}</div>
+                </div>
+
+                <div class="bento-card">
+                  <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
+                    <i data-lucide="clock" class="w-3.5 h-3.5 text-amber-400"></i>
+                    <span>游玩记录</span>
+                  </div>
+                  <div class="font-mono font-semibold text-amber-300">
+                    {{ formatPlayedTime(selectedGame.played_seconds) }}
+                    <span v-if="selectedGame.play_count" class="text-[10px] text-slate-400">({{ selectedGame.play_count }}次)</span>
                   </div>
                 </div>
 
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <button
-                    v-if="selectedGameSave && selectedGameSave.can_unlock_cg"
-                    @click="unlockAllCGAction(selectedGame)"
-                    :disabled="isUnlockingCG"
-                    class="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-purple-600/30 to-pink-600/30 border border-purple-500/50 hover:from-purple-600 hover:to-pink-600 text-purple-200 hover:text-white font-semibold flex items-center space-x-1 transition-all cursor-pointer disabled:opacity-50"
-                    title="扫描 System.json 回想开关并注入全回想插件（游戏内按 F8 一键全开回想与满金币）"
-                  >
-                    <i data-lucide="unlock" class="w-3.5 h-3.5"></i>
-                    <span>{{ isUnlockingCG ? '注入中...' : '一键全CG解锁' }}</span>
-                  </button>
-
-                  <button
-                    @click="triggerCGSaveImport"
-                    :disabled="isUnlockingCG"
-                    class="px-2.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/35 hover:bg-amber-500/30 text-amber-200 font-medium flex items-center space-x-1 transition-colors cursor-pointer"
-                    title="上传外部下载的全CG存档压缩包 (.zip) 或单个存档文件 (.rpgsave/.rmmzsave/.sav)，自动备份原存档并合入"
-                  >
-                    <i data-lucide="package-plus" class="w-3.5 h-3.5"></i>
-                    <span>导入全CG存档</span>
-                  </button>
-
-                  <button
-                    @click="openSaveFolderAction(selectedGame)"
-                    class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium flex items-center space-x-1 transition-colors cursor-pointer"
-                  >
-                    <i data-lucide="folder-open" class="w-3.5 h-3.5 text-indigo-400"></i>
-                    <span>存档目录</span>
-                  </button>
-
-                  <button
-                    v-if="selectedGameSave && selectedGameSave.backups && selectedGameSave.backups.length > 0"
-                    @click="showSaveBackupsList = !showSaveBackupsList; refreshIcons()"
-                    class="px-2.5 py-1.5 rounded-xl bg-indigo-600/20 border border-indigo-500/40 hover:bg-indigo-600/35 text-indigo-200 font-medium flex items-center space-x-1 transition-colors cursor-pointer"
-                  >
-                    <i data-lucide="history" class="w-3.5 h-3.5"></i>
-                    <span>快照 ({{ selectedGameSave.backups.length }})</span>
-                  </button>
-
-                  <button
-                    v-if="selectedGameSave && selectedGameSave.has_save_dir"
-                    @click="backupSaveAction(selectedGame)"
-                    :disabled="isBackingUpSave"
-                    class="px-3 py-1.5 rounded-xl bg-emerald-600/25 border border-emerald-500/40 hover:bg-emerald-600 text-emerald-200 hover:text-white font-semibold flex items-center space-x-1 transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i>
-                    <span>{{ isBackingUpSave ? '备份中...' : '备份' }}</span>
-                  </button>
+                <div class="bento-card">
+                  <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
+                    <i data-lucide="calendar" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    <span>官方发售日</span>
+                  </div>
+                  <div class="font-mono text-slate-200">{{ selectedGame.release_date || '未知' }}</div>
                 </div>
-              </div>
 
-              <!-- Expandable Save Snapshot List -->
-              <div v-if="showSaveBackupsList && selectedGameSave && selectedGameSave.backups && selectedGameSave.backups.length > 0" class="pt-2.5 border-t border-slate-800/80 space-y-2">
-                <div class="flex items-center justify-between text-[11px] text-slate-400 px-1">
-                  <span>共 {{ selectedGameSave.backups.length }} 份存档快照（点击“一键回档”即可恢复进度）</span>
-                  <button @click="openSaveBackupsFolderAction(selectedGame)" class="text-indigo-400 hover:text-indigo-300 underline cursor-pointer">
-                    打开备份文件夹 ↗
-                  </button>
+                <div class="bento-card">
+                  <div class="text-[11px] text-indigo-300 flex items-center space-x-1.5 mb-1">
+                    <i data-lucide="download" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    <span>本地入库时间</span>
+                  </div>
+                  <div class="font-mono text-indigo-200 font-semibold">{{ selectedGame.downloaded_at || '-' }}</div>
                 </div>
-                <div class="max-h-44 overflow-y-auto space-y-1.5 pr-1">
-                  <div
-                    v-for="bak in selectedGameSave.backups"
-                    :key="bak.filename"
-                    class="px-3 py-2 rounded-xl bg-slate-950/75 border border-slate-800/90 flex items-center justify-between gap-2"
-                  >
-                    <div class="min-w-0 flex-1">
-                      <div class="font-mono text-slate-200 text-[11px] truncate" :title="bak.filename">{{ bak.filename }}</div>
-                      <div class="text-[10px] text-slate-500 font-mono">备份于 {{ bak.created_at }} · {{ bak.size_kb }} KB</div>
-                    </div>
-                    <div class="flex items-center space-x-1.5 shrink-0">
-                      <button
-                        @click="restoreSaveBackupAction(selectedGame, bak)"
-                        :disabled="isRestoringSave"
-                        class="px-2.5 py-1 rounded-lg bg-indigo-600/30 border border-indigo-500/40 hover:bg-indigo-600 text-indigo-200 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer"
-                      >
-                        一键回档
-                      </button>
-                      <button
-                        @click="deleteSaveBackupAction(selectedGame, bak)"
-                        class="p-1 rounded-lg bg-slate-800 hover:bg-rose-600/80 text-slate-400 hover:text-white transition-colors cursor-pointer"
-                        title="删除此备份"
-                      >
-                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-                      </button>
-                    </div>
+
+                <div class="bento-card">
+                  <div class="text-[11px] text-slate-400 flex items-center space-x-1.5 mb-1">
+                    <i data-lucide="compass" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    <span>作品编号与外部源</span>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <span class="font-mono text-slate-200 font-semibold">{{ selectedGame.rj_code || (selectedGame.source_type && selectedGame.source_type !== 'none' ? selectedGame.source_type.toUpperCase() : '本地') }}</span>
+                    <a
+                      v-if="selectedGame.source_url"
+                      :href="selectedGame.source_url"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="text-[11px] text-indigo-400 hover:text-indigo-300 underline"
+                    >
+                      直达商店 ↗
+                    </a>
                   </div>
                 </div>
               </div>
-            </div>
 
-            <!-- In-Game Screenshot Gallery Section (v2.2) -->
-            <div class="p-3.5 rounded-2xl bg-slate-900/50 border border-slate-800/80 space-y-3 text-xs">
-              <div class="flex items-center justify-between flex-wrap gap-2">
-                <div class="flex items-center space-x-2">
-                  <i data-lucide="camera" class="w-4 h-4 text-pink-400"></i>
-                  <span class="font-bold text-slate-200">游戏内截图与专属画廊</span>
-                  <span class="text-[11px] text-slate-500 font-mono">({{ selectedGameScreenshots.length }} 张 · 游戏内按 {{ configData.screenshot_hotkey || 'F12' }} 自动抓拍)</span>
-                </div>
-                <div class="flex items-center space-x-1.5">
-                  <button
-                    @click="captureGameScreenshotAction(selectedGame)"
-                    :disabled="isCapturingScreenshot"
-                    class="px-2.5 py-1 rounded-lg bg-pink-600/20 border border-pink-500/40 hover:bg-pink-600 text-pink-200 hover:text-white text-[11px] font-medium flex items-center space-x-1 transition-colors cursor-pointer"
-                  >
-                    <i data-lucide="aperture" class="w-3 h-3"></i>
-                    <span>{{ isCapturingScreenshot ? '截图中...' : '立即抓拍画面' }}</span>
-                  </button>
-                  <button
-                    @click="triggerScreenshotUpload"
-                    class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] flex items-center space-x-1 transition-colors cursor-pointer"
-                  >
-                    <i data-lucide="plus" class="w-3 h-3"></i>
-                    <span>添加图片</span>
-                  </button>
-                </div>
-              </div>
-
-              <div v-if="selectedGameScreenshots.length > 0" class="grid grid-cols-3 sm:grid-cols-4 gap-2.5 pt-1">
+              <!-- FIXED "分类与个人标签" & "出演声优 (CV)" Bento Cards (Auto-spans 2 columns when CV is empty) -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div
-                  v-for="shot in selectedGameScreenshots"
-                  :key="shot.id"
-                  @click="lightboxShot = shot"
-                  class="group relative aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-800 hover:border-pink-500/60 cursor-pointer"
-                >
-                  <img :src="shot.url" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                  <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-1.5 text-[10px] text-slate-200 truncate">
-                    {{ shot.caption || shot.created_at }}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Synopsis / Story Intro -->
-            <div>
-              <div class="flex items-center justify-between mb-2">
-                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-1.5">
-                  <i data-lucide="align-left" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>故事背景与作品简介</span>
-                </h3>
-              </div>
-              <div class="p-4 rounded-2xl bg-slate-900/50 border border-slate-800/80 text-xs text-slate-300 leading-relaxed max-h-56 overflow-y-auto whitespace-pre-line">
-                {{ selectedGame.synopsis || '暂无简介，可展开下方【精准重新刮削】从 DLsite / Steam / Bangumi / VNDB 自动抓取，或点击右上角【编辑资料】手动补充。' }}
-              </div>
-            </div>
-
-            <!-- Tags (Official + Personal User Tags) & Voice Actors -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div class="space-y-2">
-                <div class="flex items-center justify-between">
-                  <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">分类与个人标签</h3>
-                  <button
-                    @click="showAddUserTag = !showAddUserTag"
-                    class="text-[11px] text-emerald-400 hover:text-emerald-300 font-semibold cursor-pointer"
-                  >
-                    + 添加个人标签
-                  </button>
-                </div>
-
-                <div v-if="showAddUserTag" class="flex items-center gap-1.5 pb-1">
-                  <input
-                    type="text"
-                    v-model="newUserTagInput"
-                    @keydown.enter.prevent="addQuickUserTag"
-                    placeholder="输入自定义标签 (如: 纯爱神作)..."
-                    class="flex-1 bg-slate-950 border border-emerald-500/50 rounded-lg px-2.5 py-1 text-xs text-slate-100 focus:outline-none"
-                  />
-                  <button @click="addQuickUserTag" class="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-semibold cursor-pointer">保存</button>
-                </div>
-
-                <div class="flex flex-wrap gap-1.5">
-                  <!-- Personal User Tags (Emerald) -->
-                  <span
-                    v-for="ut in (selectedGame.user_tags || [])"
-                    :key="'u-' + ut"
-                    class="px-2.5 py-0.5 rounded-lg bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-[11px] flex items-center gap-1"
-                  >
-                    <span @click="filterByKeyword(ut)" class="cursor-pointer hover:underline">★ {{ ut }}</span>
-                    <button @click.stop="removeQuickUserTag(ut)" class="text-slate-400 hover:text-rose-400 ml-0.5 cursor-pointer" title="移除个人标签">×</button>
-                  </span>
-
-                  <!-- Official Scraped Tags (Indigo/Slate) -->
-                  <button
-                    v-for="t in (selectedGame.tags || [])"
-                    :key="'t-' + t"
-                    @click="filterByKeyword(t)"
-                    class="px-2.5 py-0.5 rounded-lg bg-slate-800/90 hover:bg-indigo-600/40 text-slate-300 hover:text-indigo-200 text-[11px] border border-slate-700/70 hover:border-indigo-500/50 transition-colors cursor-pointer"
-                  >
-                    # {{ t }}
-                  </button>
-
-                  <span v-if="!(selectedGame.tags && selectedGame.tags.length) && !(selectedGame.user_tags && selectedGame.user_tags.length)" class="text-xs text-slate-500 italic">
-                    暂无标签，点击右上「+ 添加个人标签」即可标记
-                  </span>
-                </div>
-              </div>
-
-              <div v-if="selectedGame.voice_actors && selectedGame.voice_actors.length" class="space-y-2">
-                <div class="flex items-center justify-between">
-                  <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">出演声优 (CV)</h3>
-                  <span class="text-[10px] text-slate-500">点击声优筛选作品</span>
-                </div>
-                <div class="flex flex-wrap gap-1.5">
-                  <button
-                    v-for="va in selectedGame.voice_actors"
-                    :key="va"
-                    @click="filterByKeyword(va)"
-                    class="px-2.5 py-0.5 rounded-lg bg-pink-950/35 hover:bg-pink-900/50 border border-pink-500/30 hover:border-pink-500/60 text-pink-300 hover:text-pink-100 text-[11px] transition-colors cursor-pointer"
-                  >
-                    {{ va }}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Duplicates Comparison in Detail -->
-            <div v-if="selectedGameVariants.length > 1" class="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/30 space-y-3">
-              <h3 class="text-xs font-bold text-amber-300 flex items-center space-x-1.5">
-                <i data-lucide="copy" class="w-4 h-4"></i>
-                <span>检测到 {{ selectedGameVariants.length }} 个关联/多版本副本</span>
-              </h3>
-              <div class="space-y-2">
-                <div
-                  v-for="v in selectedGameVariants"
-                  :key="v.id"
                   :class="[
-                    'p-3 rounded-xl border flex items-center justify-between text-xs',
-                    v.id === selectedGame.id ? 'bg-amber-500/10 border-amber-500/50' : 'bg-slate-900/80 border-slate-800'
+                    'p-4 rounded-2xl bg-slate-900/55 border border-slate-800/80 space-y-2.5',
+                    !(selectedGame.voice_actors && selectedGame.voice_actors.length) ? 'sm:col-span-2' : ''
                   ]"
                 >
-                  <div class="flex-1 pr-3 min-w-0">
-                    <div class="font-semibold text-slate-200 flex items-center space-x-2">
-                      <span class="truncate">{{ v.folder_name }}</span>
-                      <span v-if="v.id === selectedGame.id" class="text-[10px] text-amber-400 font-bold shrink-0">(当前查看)</span>
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center space-x-2">
+                      <i data-lucide="tags" class="w-3.5 h-3.5 text-indigo-400"></i>
+                      <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300">分类与个人标签</h3>
+                      <span class="px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 text-[10px] font-mono">
+                        {{ (selectedGame.user_tags || []).length + (selectedGame.tags || []).length }}
+                      </span>
                     </div>
-                    <div class="text-[11px] text-slate-400 mt-0.5">
-                      体积: {{ v.folder_size_str }} | 入库于: {{ v.downloaded_at || '-' }}
+                    <button
+                      @click="showAddUserTag = !showAddUserTag"
+                      class="text-[11px] text-emerald-400 hover:text-emerald-300 font-semibold cursor-pointer shrink-0"
+                    >
+                      {{ showAddUserTag ? '收起输入框' : '+ 添加个人标签' }}
+                    </button>
+                  </div>
+
+                  <div v-if="showAddUserTag" class="flex items-center gap-2 w-full pb-1">
+                    <input
+                      type="text"
+                      v-model="newUserTagInput"
+                      @keydown.enter.prevent="addQuickUserTag"
+                      placeholder="输入自定义标签 (如: 纯爱神作)..."
+                      class="flex-1 min-w-0 bg-slate-950 border border-emerald-500/50 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-emerald-400"
+                    />
+                    <button
+                      @click="addQuickUserTag"
+                      type="button"
+                      class="shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer transition-colors"
+                    >
+                      保存
+                    </button>
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-1.5 max-h-40 overflow-y-auto pr-1">
+                    <!-- Personal User Tags (Emerald) -->
+                    <span
+                      v-for="ut in (selectedGame.user_tags || [])"
+                      :key="'u-' + ut"
+                      class="px-2.5 py-1 rounded-lg bg-emerald-950/75 border border-emerald-500/45 text-emerald-300 text-[11px] inline-flex items-center gap-1 max-w-full break-all shadow-sm"
+                    >
+                      <span @click="filterByKeyword(ut)" class="cursor-pointer hover:underline">★ {{ ut }}</span>
+                      <button @click.stop="removeQuickUserTag(ut)" class="text-slate-400 hover:text-rose-400 ml-0.5 cursor-pointer shrink-0" title="移除个人标签">×</button>
+                    </span>
+
+                    <!-- Official Scraped & Localized Tags (Indigo/Slate) -->
+                    <button
+                      v-for="t in (selectedGame.tags || [])"
+                      :key="'t-' + t"
+                      @click="filterByKeyword(t)"
+                      class="px-2.5 py-1 rounded-lg bg-slate-800/90 hover:bg-indigo-600/40 text-slate-200 hover:text-indigo-100 text-[11px] border border-slate-700/75 hover:border-indigo-500/50 transition-colors cursor-pointer inline-flex items-center max-w-full break-all"
+                    >
+                      <span># {{ t }}</span>
+                    </button>
+
+                    <span v-if="!(selectedGame.tags && selectedGame.tags.length) && !(selectedGame.user_tags && selectedGame.user_tags.length)" class="text-xs text-slate-500 italic py-1">
+                      暂无标签，点击右上「+ 添加个人标签」即可标记，或前往「刮削」页抓取官方分类
+                    </span>
+                  </div>
+                </div>
+
+                <!-- Voice Actors Bento Card -->
+                <div
+                  v-if="selectedGame.voice_actors && selectedGame.voice_actors.length"
+                  class="p-4 rounded-2xl bg-slate-900/55 border border-slate-800/80 space-y-2.5"
+                >
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <i data-lucide="mic" class="w-3.5 h-3.5 text-pink-400"></i>
+                      <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300">出演声优 (CV)</h3>
+                    </div>
+                    <span class="text-[10px] text-slate-500">点击声优筛选作品</span>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-1.5 max-h-40 overflow-y-auto pr-1">
+                    <button
+                      v-for="va in selectedGame.voice_actors"
+                      :key="va"
+                      @click="filterByKeyword(va)"
+                      class="px-2.5 py-1 rounded-lg bg-pink-950/40 hover:bg-pink-900/55 border border-pink-500/35 hover:border-pink-500/65 text-pink-200 hover:text-white text-[11px] transition-colors cursor-pointer inline-flex items-center"
+                    >
+                      <span>🎙️ {{ va }}</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- SEPARATED "个人通关笔记 (Personal Sticky Memo)" (v2.3 Core User Requirement) -->
+              <div class="sticky-memo-card p-4 rounded-2xl space-y-2.5">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="flex items-center space-x-2">
+                    <i data-lucide="sticky-note" class="w-4 h-4 text-amber-400"></i>
+                    <h3 class="text-xs font-bold text-amber-200">个人通关笔记 (随手记)</h3>
+                    <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono">
+                      {{ personalMemoSaveStatus === 'saved' ? '✓ 自动保存' : personalMemoSaveStatus === 'saving' ? '保存中...' : '未保存' }}
+                    </span>
+                  </div>
+
+                  <div class="flex items-center flex-wrap gap-1.5 text-[11px]">
+                    <button
+                      @click="appendPersonalMemoSnippet('📍 当前进度：')"
+                      type="button"
+                      class="px-2 py-0.5 rounded-md bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/30 text-amber-200 cursor-pointer"
+                    >
+                      + 进度
+                    </button>
+                    <button
+                      @click="appendPersonalMemoSnippet('🔑 密码/解谜备忘：')"
+                      type="button"
+                      class="px-2 py-0.5 rounded-md bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/30 text-amber-200 cursor-pointer"
+                    >
+                      + 密码备忘
+                    </button>
+                    <button
+                      @click="appendPersonalMemoSnippet('⭐ 通关短评：')"
+                      type="button"
+                      class="px-2 py-0.5 rounded-md bg-amber-950/60 hover:bg-amber-900/70 border border-amber-500/30 text-amber-200 cursor-pointer"
+                    >
+                      + 短评
+                    </button>
+                    <button
+                      @click="drawerActiveTab = 'walkthrough'; refreshIcons()"
+                      type="button"
+                      class="px-2.5 py-0.5 rounded-md bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/40 text-indigo-200 hover:text-white font-semibold cursor-pointer"
+                    >
+                      查看全结局攻略 📖 →
+                    </button>
+                  </div>
+                </div>
+
+                <textarea
+                  v-model="selectedGame.user_notes"
+                  @input="onPersonalNoteInput"
+                  @blur="savePersonalNoteNow(true)"
+                  rows="3"
+                  placeholder="随手打一打个人通关感受、当前推到的章节、宝箱密码或吐槽备忘（与「全结局攻略」独立分开存储，实时自动保存）..."
+                  class="w-full bg-slate-950/65 border border-amber-500/25 focus:border-amber-400/70 rounded-xl p-3 text-xs text-amber-100/95 placeholder-slate-500 focus:outline-none leading-relaxed resize-y"
+                ></textarea>
+              </div>
+
+              <!-- Synopsis / Story Intro -->
+              <div>
+                <div class="flex items-center justify-between mb-2">
+                  <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-1.5">
+                    <i data-lucide="align-left" class="w-3.5 h-3.5 text-indigo-400"></i>
+                    <span>故事背景与作品简介</span>
+                  </h3>
+                  <button
+                    v-if="!selectedGame.synopsis"
+                    @click="drawerActiveTab = 'engineering'; showRescrapePanel = true; refreshIcons()"
+                    class="text-[11px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                  >
+                    前往重新刮削简介 ↗
+                  </button>
+                </div>
+                <div class="p-4 rounded-2xl bg-slate-900/50 border border-slate-800/80 text-xs text-slate-300 leading-relaxed max-h-56 overflow-y-auto whitespace-pre-line">
+                  {{ selectedGame.synopsis || '暂无简介，可切换至上方【存档云同步 · 刮削】标签页从 DLsite / Steam / Bangumi / VNDB 自动抓取，或点击右上角【编辑资料】手动补充。' }}
+                </div>
+              </div>
+
+              <!-- DUAL GALLERY EXPERIENCE: Official Sample Previews (Feature #3) + In-Game F12 Screenshots -->
+              <div class="space-y-3.5">
+                <!-- Part 1: Official Store Sample Previews (DLsite / Steam / VNDB) -->
+                <div v-if="selectedGame.sample_images && selectedGame.sample_images.length > 0" class="p-3.5 rounded-2xl bg-slate-900/55 border border-indigo-500/25 space-y-2.5 text-xs">
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                      <i data-lucide="images" class="w-4 h-4 text-indigo-400"></i>
+                      <span class="font-bold text-slate-200">官方商店预览画廊 (Sample CG)</span>
+                      <span class="text-[11px] text-indigo-300 font-mono">({{ selectedGame.sample_images.length }} 张官方预览图)</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500">点击放大检视</span>
+                  </div>
+                  <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div
+                      v-for="(imgUrl, sIdx) in selectedGame.sample_images"
+                      :key="imgUrl"
+                      @click="openSampleLightbox(imgUrl, sIdx)"
+                      class="group relative aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-800 hover:border-indigo-400/70 cursor-pointer shadow"
+                    >
+                      <img :src="imgUrl" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                      <div class="absolute top-1.5 left-1.5 px-1.5 py-0.5 rounded bg-indigo-950/85 border border-indigo-500/40 text-[9px] font-mono text-indigo-200">
+                        SAMPLE #{{ sIdx + 1 }}
+                      </div>
                     </div>
                   </div>
-                  <div class="flex items-center space-x-2 shrink-0">
-                    <button @click="launchGameAction(v)" class="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] cursor-pointer">
-                      启动
-                    </button>
-                    <button
-                      v-if="v.id !== selectedGame.id"
-                      @click="dismissDuplicateAction(v, selectedGame.id)"
-                      class="px-2.5 py-1 bg-amber-600/30 hover:bg-amber-600 text-amber-300 hover:text-white rounded-lg text-[11px] transition-colors cursor-pointer"
+                </div>
+
+                <!-- Part 2: Player's In-Game F12 Screenshot Gallery -->
+                <div class="p-3.5 rounded-2xl bg-slate-900/50 border border-slate-800/80 space-y-3 text-xs">
+                  <div class="flex items-center justify-between flex-wrap gap-2">
+                    <div class="flex items-center space-x-2">
+                      <i data-lucide="camera" class="w-4 h-4 text-pink-400"></i>
+                      <span class="font-bold text-slate-200">个人实机纪念画廊 (F12 截图)</span>
+                      <span class="text-[11px] text-slate-500 font-mono">({{ selectedGameScreenshots.length }} 张 · 游戏内按 {{ configData.screenshot_hotkey || 'F12' }} 自动抓拍)</span>
+                    </div>
+                    <div class="flex items-center space-x-1.5">
+                      <button
+                        @click="captureGameScreenshotAction(selectedGame)"
+                        :disabled="isCapturingScreenshot"
+                        class="px-2.5 py-1 rounded-lg bg-pink-600/20 border border-pink-500/40 hover:bg-pink-600 text-pink-200 hover:text-white text-[11px] font-medium flex items-center space-x-1 transition-colors cursor-pointer"
+                      >
+                        <i data-lucide="aperture" class="w-3 h-3"></i>
+                        <span>{{ isCapturingScreenshot ? '截图中...' : '立即抓拍画面' }}</span>
+                      </button>
+                      <button
+                        @click="triggerScreenshotUpload"
+                        class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[11px] flex items-center space-x-1 transition-colors cursor-pointer"
+                      >
+                        <i data-lucide="plus" class="w-3 h-3"></i>
+                        <span>添加图片</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div v-if="selectedGameScreenshots.length > 0" class="grid grid-cols-3 sm:grid-cols-4 gap-2.5 pt-1">
+                    <div
+                      v-for="shot in selectedGameScreenshots"
+                      :key="shot.id"
+                      @click="lightboxShot = shot"
+                      class="group relative aspect-video rounded-xl overflow-hidden bg-slate-950 border border-slate-800 hover:border-pink-500/60 cursor-pointer"
                     >
-                      并非重复
-                    </button>
-                    <button
-                      v-if="v.id !== selectedGame.id"
-                      @click="archiveSingleVariant(v)"
-                      class="px-2.5 py-1 bg-rose-600/30 hover:bg-rose-600 text-rose-300 hover:text-white rounded-lg text-[11px] transition-colors cursor-pointer"
-                    >
-                      归档此版
-                    </button>
+                      <img :src="shot.url" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                      <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent p-1.5 text-[10px] text-slate-200 truncate">
+                        {{ shot.caption || shot.created_at }}
+                      </div>
+                    </div>
+                  </div>
+                  <div v-else class="text-[11px] text-slate-500 py-2 text-center">
+                    游玩时按下 <kbd class="px-1.5 py-0.5 rounded bg-slate-800 text-pink-300 font-mono">{{ configData.screenshot_hotkey || 'F12' }}</kbd> 即可随时定格精彩瞬间并归档于此。
                   </div>
                 </div>
               </div>
             </div>
 
-            <!-- Notes & Walkthrough Section (With AI Unpack & Walkthrough Generator) -->
-            <div class="space-y-3">
+            <!-- ==================== DRAWER TAB 2: DEDICATED FULL WALKTHROUGH (`walkthrough_md`) ==================== -->
+            <div v-show="drawerActiveTab === 'walkthrough'" class="space-y-3.5">
               <div class="flex items-center justify-between flex-wrap gap-2">
-                <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center space-x-1.5">
-                  <i data-lucide="book-open" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>个人通关笔记 & 全结局攻略</span>
-                </h3>
+                <div class="flex items-center space-x-2">
+                  <i data-lucide="book-open" class="w-4 h-4 text-indigo-400"></i>
+                  <h3 class="text-xs font-bold uppercase tracking-wider text-slate-200">全结局攻略 & 分支路线指南</h3>
+                  <span class="text-[11px] font-mono text-slate-500">({{ (selectedGame.walkthrough_md || '').length }} 字符)</span>
+                </div>
                 <div class="flex items-center flex-wrap gap-1.5">
                   <button
                     type="button"
@@ -2105,6 +2252,16 @@
                   >
                     <i data-lucide="wand-2" class="w-3 h-3"></i>
                     <span>{{ isGeneratingGuide ? '正在解包生成...' : 'AI 解包生成攻略' }}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    @click="openCompanionOverlayAction(selectedGame)"
+                    class="px-2.5 py-1 text-xs rounded-lg border border-cyan-500/40 bg-cyan-600/15 hover:bg-cyan-600 text-cyan-200 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
+                    title="在悬浮置顶伴侣小窗中打开此攻略 (Alt+G)"
+                  >
+                    <i data-lucide="layers" class="w-3 h-3"></i>
+                    <span>悬浮小窗速查</span>
                   </button>
 
                   <button
@@ -2135,11 +2292,11 @@
                 </div>
               </div>
 
-              <!-- Markdown Preview Mode (Debounced & Font-Size Aware) -->
+              <!-- Markdown Preview Mode (Supports Offline Mermaid Flowchart & Interactive Checklists) -->
               <div
                 v-if="!notesEditMode"
                 id="drawer-notes-preview-container"
-                :class="['w-full min-h-[5rem] max-h-96 overflow-y-auto bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-slate-200 notes-markdown-body selection:bg-indigo-500', 'notes-size-' + notesFontSize]"
+                :class="['w-full min-h-[14rem] max-h-[34rem] overflow-y-auto bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-slate-200 notes-markdown-body selection:bg-indigo-500', 'notes-size-' + notesFontSize]"
                 @click="handleNotesContentClick"
                 v-html="debouncedNotesHtml"
               ></div>
@@ -2156,35 +2313,160 @@
                     <button @click="insertMarkdownSnippet('template')" type="button" class="px-2 py-0.5 rounded bg-indigo-600/30 text-indigo-200 hover:bg-indigo-600 hover:text-white cursor-pointer">攻略模板</button>
                   </div>
                   <button @click="saveGameNotes(false)" type="button" class="px-2.5 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer">
-                    保存 (Ctrl+S)
+                    保存攻略 (Ctrl+S)
                   </button>
                 </div>
                 <textarea
                   id="drawer-notes-textarea"
-                  v-model="selectedGame.user_notes"
+                  v-model="selectedGame.walkthrough_md"
                   @input="onNotesInput(false)"
                   @blur="saveGameNotes(true)"
-                  placeholder="记录通关感受、全结局分支条件、CG收集表或作弊备忘（支持 Markdown 语法与交互式 - [ ] 任务列表）..."
-                  rows="8"
+                  placeholder="在此编写结构化全结局攻略、分支条件表、Mermaid 路线图与 CG 收集清单（支持交互式 - [ ] 复选框）..."
+                  rows="14"
                   class="w-full bg-transparent p-3.5 text-xs text-slate-200 focus:outline-none font-mono leading-relaxed"
                 ></textarea>
               </div>
             </div>
 
-            <!-- Collapsible Scrape / Rescrape & AI Semantic Parser Accordion -->
-            <div class="rounded-2xl bg-slate-900/50 border border-slate-800/90 overflow-hidden">
-              <button
-                @click="showRescrapePanel = !showRescrapePanel"
-                class="w-full px-4 py-3 flex items-center justify-between text-xs font-bold text-indigo-300 hover:bg-slate-800/50 transition-colors cursor-pointer"
-              >
-                <span class="flex items-center space-x-2">
-                  <i data-lucide="sparkles" class="w-4 h-4"></i>
-                  <span>精准重新刮削 & AI 语义提取 (DLsite / Steam / Bangumi / VNDB / LLM)</span>
-                </span>
-                <span class="text-slate-400 text-[11px]">{{ showRescrapePanel ? '收起 ▲' : '展开 ▼' }}</span>
-              </button>
+            <!-- ==================== DRAWER TAB 3: SAVE SNAPSHOTS, WEBDAV CLOUD SYNC, RESCRAPE & DUPLICATES ==================== -->
+            <div v-show="drawerActiveTab === 'engineering'" class="space-y-4">
 
-              <div v-if="showRescrapePanel" class="p-4 pt-2 border-t border-slate-800/80 space-y-3">
+              <!-- Save Data Snapshot, Auto-Backup, WebDAV Cloud Sync & 100% Full CG Unlocker Center (v2.3 Feature #4) -->
+              <div class="p-4 rounded-2xl bg-slate-900/65 border border-slate-800/90 space-y-3 text-xs">
+                <div class="flex flex-wrap items-center justify-between gap-3">
+                  <div class="flex items-center space-x-2.5">
+                    <div class="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                      <i data-lucide="archive" class="w-4 h-4"></i>
+                    </div>
+                    <div>
+                      <div class="font-bold text-slate-200 flex items-center flex-wrap gap-1.5">
+                        <span>存档快照、WebDAV 云同步与 100% 全 CG 中心</span>
+                        <span v-if="selectedGameSave && selectedGameSave.has_save_dir" class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-mono">
+                          {{ selectedGameSave.save_count }} 个存档
+                        </span>
+                        <span v-if="configData.enable_auto_save_backup" class="px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 text-[10px] font-mono" title="单次游玩满指定时长退出后自动创建增量防坏档快照">
+                          退出自动快照 (保留{{ configData.auto_backup_max_keep || 5 }}份)
+                        </span>
+                      </div>
+                      <div class="text-[11px] text-slate-400 mt-0.5">
+                        <span v-if="selectedGameSave && selectedGameSave.latest_save_at">最近存档更新: {{ selectedGameSave.latest_save_at }}</span>
+                        <span v-else>支持退出自动增量备份、坚果云/Alist WebDAV 云端同步与一键全CG回想解锁</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <button
+                      v-if="selectedGameSave && selectedGameSave.can_unlock_cg"
+                      @click="unlockAllCGAction(selectedGame)"
+                      :disabled="isUnlockingCG"
+                      class="px-2.5 py-1.5 rounded-xl bg-gradient-to-r from-purple-600/30 to-pink-600/30 border border-purple-500/50 hover:from-purple-600 hover:to-pink-600 text-purple-200 hover:text-white font-semibold flex items-center space-x-1 transition-all cursor-pointer disabled:opacity-50"
+                      title="扫描 System.json 回想开关并注入全回想插件（游戏内按 F8 一键全开回想与满金币）"
+                    >
+                      <i data-lucide="unlock" class="w-3.5 h-3.5"></i>
+                      <span>{{ isUnlockingCG ? '注入中...' : '一键全CG解锁' }}</span>
+                    </button>
+
+                    <button
+                      @click="triggerCGSaveImport"
+                      :disabled="isUnlockingCG"
+                      class="px-2.5 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/35 hover:bg-amber-500/30 text-amber-200 font-medium flex items-center space-x-1 transition-colors cursor-pointer"
+                      title="上传外部下载的全CG存档压缩包 (.zip) 或单个存档文件 (.rpgsave/.rmmzsave/.sav)，自动备份原存档并合入"
+                    >
+                      <i data-lucide="package-plus" class="w-3.5 h-3.5"></i>
+                      <span>导入全CG存档</span>
+                    </button>
+
+                    <button
+                      @click="syncGameWebDAVAction(selectedGame)"
+                      :disabled="isSyncingWebDAV"
+                      class="px-2.5 py-1.5 rounded-xl bg-cyan-600/20 border border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white font-semibold flex items-center space-x-1 transition-all cursor-pointer disabled:opacity-50"
+                      title="与 WebDAV 云端 (坚果云 / Alist / Nextcloud) 双向同步最新存档快照"
+                    >
+                      <i data-lucide="cloud" class="w-3.5 h-3.5"></i>
+                      <span>{{ isSyncingWebDAV ? '云同步中...' : 'WebDAV 云同步' }}</span>
+                    </button>
+
+                    <button
+                      @click="openSaveFolderAction(selectedGame)"
+                      class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium flex items-center space-x-1 transition-colors cursor-pointer"
+                    >
+                      <i data-lucide="folder-open" class="w-3.5 h-3.5 text-indigo-400"></i>
+                      <span>存档目录</span>
+                    </button>
+
+                    <button
+                      v-if="selectedGameSave && selectedGameSave.backups && selectedGameSave.backups.length > 0"
+                      @click="showSaveBackupsList = !showSaveBackupsList; refreshIcons()"
+                      class="px-2.5 py-1.5 rounded-xl bg-indigo-600/20 border border-indigo-500/40 hover:bg-indigo-600/35 text-indigo-200 font-medium flex items-center space-x-1 transition-colors cursor-pointer"
+                    >
+                      <i data-lucide="history" class="w-3.5 h-3.5"></i>
+                      <span>快照 ({{ selectedGameSave.backups.length }})</span>
+                    </button>
+
+                    <button
+                      v-if="selectedGameSave && selectedGameSave.has_save_dir"
+                      @click="backupSaveAction(selectedGame)"
+                      :disabled="isBackingUpSave"
+                      class="px-3 py-1.5 rounded-xl bg-emerald-600/25 border border-emerald-500/40 hover:bg-emerald-600 text-emerald-200 hover:text-white font-semibold flex items-center space-x-1 transition-all cursor-pointer disabled:opacity-50"
+                    >
+                      <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i>
+                      <span>{{ isBackingUpSave ? '备份中...' : '立即备份' }}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Expandable Save Snapshot List -->
+                <div v-if="(showSaveBackupsList || true) && selectedGameSave && selectedGameSave.backups && selectedGameSave.backups.length > 0" class="pt-2.5 border-t border-slate-800/80 space-y-2">
+                  <div class="flex items-center justify-between text-[11px] text-slate-400 px-1">
+                    <span>共 {{ selectedGameSave.backups.length }} 份存档快照（含退出自动快照与云端拉取快照，点击“一键回档”即可恢复）</span>
+                    <button @click="openSaveBackupsFolderAction(selectedGame)" class="text-indigo-400 hover:text-indigo-300 underline cursor-pointer">
+                      打开备份文件夹 ↗
+                    </button>
+                  </div>
+                  <div class="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                    <div
+                      v-for="bak in selectedGameSave.backups"
+                      :key="bak.filename"
+                      class="px-3 py-2 rounded-xl bg-slate-950/75 border border-slate-800/90 flex items-center justify-between gap-2"
+                    >
+                      <div class="min-w-0 flex-1">
+                        <div class="font-mono text-slate-200 text-[11px] truncate flex items-center space-x-1.5" :title="bak.filename">
+                          <span v-if="bak.filename.includes('_auto_')" class="px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 text-[9px]">自动快照</span>
+                          <span class="truncate">{{ bak.filename }}</span>
+                        </div>
+                        <div class="text-[10px] text-slate-500 font-mono">备份于 {{ bak.created_at }} · {{ bak.size_kb }} KB</div>
+                      </div>
+                      <div class="flex items-center space-x-1.5 shrink-0">
+                        <button
+                          @click="restoreSaveBackupAction(selectedGame, bak)"
+                          :disabled="isRestoringSave"
+                          class="px-2.5 py-1 rounded-lg bg-indigo-600/30 border border-indigo-500/40 hover:bg-indigo-600 text-indigo-200 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer"
+                        >
+                          一键回档
+                        </button>
+                        <button
+                          @click="deleteSaveBackupAction(selectedGame, bak)"
+                          class="p-1 rounded-lg bg-slate-800 hover:bg-rose-600/80 text-slate-400 hover:text-white transition-colors cursor-pointer"
+                          title="删除此备份"
+                        >
+                          <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Accurate Re-Scrape & AI Semantic Parser Panel -->
+              <div class="rounded-2xl bg-slate-900/60 border border-slate-800/90 p-4 space-y-3">
+                <div class="flex items-center justify-between text-xs font-bold text-indigo-300">
+                  <span class="flex items-center space-x-2">
+                    <i data-lucide="sparkles" class="w-4 h-4"></i>
+                    <span>精准重新刮削 & AI 语义提取 (自动缓存封面 + 4张官方预览图 + 中文归一标签)</span>
+                  </span>
+                </div>
+
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div>
                     <label class="text-slate-400 block mb-1">RJ 编号 / Steam AppID</label>
@@ -2247,14 +2529,210 @@
                   </div>
                 </div>
               </div>
+
+              <!-- Duplicates Comparison in Detail -->
+              <div v-if="selectedGameVariants.length > 1" class="p-4 rounded-2xl bg-amber-950/20 border border-amber-500/30 space-y-3">
+                <h3 class="text-xs font-bold text-amber-300 flex items-center space-x-1.5">
+                  <i data-lucide="copy" class="w-4 h-4"></i>
+                  <span>检测到 {{ selectedGameVariants.length }} 个关联/多版本副本</span>
+                </h3>
+                <div class="space-y-2">
+                  <div
+                    v-for="v in selectedGameVariants"
+                    :key="v.id"
+                    :class="[
+                      'p-3 rounded-xl border flex items-center justify-between text-xs',
+                      v.id === selectedGame.id ? 'bg-amber-500/10 border-amber-500/50' : 'bg-slate-900/80 border-slate-800'
+                    ]"
+                  >
+                    <div class="flex-1 pr-3 min-w-0">
+                      <div class="font-semibold text-slate-200 flex items-center space-x-2">
+                        <span class="truncate">{{ v.folder_name }}</span>
+                        <span v-if="v.id === selectedGame.id" class="text-[10px] text-amber-400 font-bold shrink-0">(当前查看)</span>
+                      </div>
+                      <div class="text-[11px] text-slate-400 mt-0.5">
+                        体积: {{ v.folder_size_str }} | 入库于: {{ v.downloaded_at || '-' }}
+                      </div>
+                    </div>
+                    <div class="flex items-center space-x-2 shrink-0">
+                      <button @click="launchGameAction(v)" class="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] cursor-pointer">
+                        启动
+                      </button>
+                      <button
+                        v-if="v.id !== selectedGame.id"
+                        @click="dismissDuplicateAction(v, selectedGame.id)"
+                        class="px-2.5 py-1 bg-amber-600/30 hover:bg-amber-600 text-amber-300 hover:text-white rounded-lg text-[11px] transition-colors cursor-pointer"
+                      >
+                        并非重复
+                      </button>
+                      <button
+                        v-if="v.id !== selectedGame.id"
+                        @click="archiveSingleVariant(v)"
+                        class="px-2.5 py-1 bg-rose-600/30 hover:bg-rose-600 text-rose-300 hover:text-white rounded-lg text-[11px] transition-colors cursor-pointer"
+                      >
+                        归档此版
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Compact Path Footer -->
+              <div class="px-3.5 py-2.5 rounded-xl bg-slate-950/60 border border-slate-800/60 flex flex-col gap-1 text-[11px] text-slate-500 font-mono">
+                <div class="truncate">路径: <span class="text-slate-400 select-all">{{ selectedGame.folder_path }}</span></div>
+                <div class="truncate">程序: <span class="text-slate-400 select-all">{{ selectedGame.executable_path || '启动时自动探测' }}</span></div>
+              </div>
             </div>
 
-            <!-- Compact Path Footer -->
-            <div class="px-3.5 py-2.5 rounded-xl bg-slate-950/60 border border-slate-800/60 flex flex-col gap-1 text-[11px] text-slate-500 font-mono">
-              <div class="truncate">路径: <span class="text-slate-400 select-all">{{ selectedGame.folder_path }}</span></div>
-              <div class="truncate">程序: <span class="text-slate-400 select-all">{{ selectedGame.executable_path || '启动时自动探测' }}</span></div>
+          </div>
+        </div>
+      </div>
+    </transition>
+    <!-- ==================== SMART & CUSTOM COLLECTION EDITOR MODAL (v2.3 Feature #5) ==================== -->
+    <transition name="modal">
+      <div
+        v-if="showCollectionModal"
+        class="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+        @click.self="showCollectionModal = false"
+      >
+        <div class="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-6 space-y-4 text-xs">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h2 class="text-base font-bold text-white flex items-center space-x-2">
+              <i data-lucide="folder-heart" class="w-5 h-5 text-indigo-400"></i>
+              <span>{{ collectionForm.id ? '编辑馆藏合集' : '新建动态智能 / 自定义合集' }}</span>
+            </h2>
+            <button @click="showCollectionModal = false" class="text-slate-400 hover:text-white cursor-pointer">✕</button>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div class="sm:col-span-2">
+              <label class="text-slate-300 font-semibold block mb-1">合集名称</label>
+              <input type="text" v-model="collectionForm.name" placeholder="如: 年度十佳神作 / 纯爱全汉化合集" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-100" />
+            </div>
+            <div>
+              <label class="text-slate-300 font-semibold block mb-1">合集类型</label>
+              <select v-model="collectionForm.is_smart" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200">
+                <option :value="true">⚡ 动态规则合集</option>
+                <option :value="false">📌 手动精选合集</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label class="text-slate-400 block mb-1">合集简介备注 (可选)</label>
+            <input type="text" v-model="collectionForm.description" placeholder="描述该合集的收录标准..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200" />
+          </div>
+
+          <!-- Smart Collection Rules Builder -->
+          <div v-if="collectionForm.is_smart" class="p-4 rounded-xl bg-slate-950/80 border border-indigo-500/30 space-y-3">
+            <div class="text-indigo-300 font-bold flex items-center space-x-1.5">
+              <span>⚡ 动态筛选规则 (符合以下全部条件的游戏将自动归入此合集)</span>
             </div>
 
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label class="text-slate-400 block mb-1">游戏引擎</label>
+                <select v-model="collectionForm.rules.engine" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200">
+                  <option value="all">不限引擎</option>
+                  <option value="RPG Maker">RPG Maker</option>
+                  <option value="Unity">Unity</option>
+                  <option value="Kirikiri">Kirikiri</option>
+                  <option value="Wolf">Wolf RPG</option>
+                  <option value="Ren'Py">Ren'Py</option>
+                  <option value="Native PC">Native PC</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-slate-400 block mb-1">游玩状态</label>
+                <select v-model="collectionForm.rules.play_status" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200">
+                  <option value="all">不限状态</option>
+                  <option value="unplayed">未开始</option>
+                  <option value="playing">游玩中</option>
+                  <option value="completed">已通关</option>
+                  <option value="backlog">待推搁置</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-slate-400 block mb-1">最低个人评分</label>
+                <select v-model.number="collectionForm.rules.min_rating" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200">
+                  <option :value="0">不限评分</option>
+                  <option :value="3">★ 3 星及以上</option>
+                  <option :value="4">★ 4 星及以上</option>
+                  <option :value="5">★ 5 星满分神作</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label class="text-slate-400 block mb-1">包含标签 (Tag)</label>
+                <input type="text" v-model="collectionForm.rules.tag" placeholder="如: 纯爱 / RPG / 触摸" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200" />
+              </div>
+              <div>
+                <label class="text-slate-400 block mb-1">标题/社团关键词</label>
+                <input type="text" v-model="collectionForm.rules.keyword" placeholder="如: 社团名或系列名..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200" />
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-4 pt-1">
+              <label class="flex items-center space-x-1.5 cursor-pointer text-slate-300">
+                <input type="checkbox" v-model="collectionForm.rules.translated_only" class="rounded bg-slate-900 border-slate-700 text-indigo-600" />
+                <span>仅限已汉化作品</span>
+              </label>
+              <label class="flex items-center space-x-1.5 cursor-pointer text-slate-300">
+                <input type="checkbox" v-model="collectionForm.rules.favorite_only" class="rounded bg-slate-900 border-slate-700 text-pink-600" />
+                <span>仅限已收藏</span>
+              </label>
+              <label class="flex items-center space-x-1.5 cursor-pointer text-slate-300">
+                <input type="checkbox" v-model="collectionForm.rules.has_walkthrough" class="rounded bg-slate-900 border-slate-700 text-indigo-600" />
+                <span>仅限含全结局攻略</span>
+              </label>
+              <label class="flex items-center space-x-1.5 cursor-pointer text-slate-300">
+                <input type="checkbox" v-model="collectionForm.rules.cg_unlocked_only" class="rounded bg-slate-900 border-slate-700 text-purple-600" />
+                <span>仅限已全CG解锁</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Manual Collection Game Selector -->
+          <div v-else class="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
+            <div class="flex items-center justify-between text-slate-300 font-semibold">
+              <span>勾选收录进此合集的作品 (已选 {{ collectionForm.game_ids.length }} 部)</span>
+            </div>
+            <div class="max-h-52 overflow-y-auto space-y-1 pr-1">
+              <label
+                v-for="g in games"
+                :key="g.id"
+                class="flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-slate-900 cursor-pointer"
+              >
+                <div class="flex items-center space-x-2 min-w-0">
+                  <input type="checkbox" :value="g.id" v-model="collectionForm.game_ids" class="rounded bg-slate-900 border-slate-700 text-indigo-600" />
+                  <span class="text-slate-200 truncate">{{ g.display_title || g.folder_name }}</span>
+                </div>
+                <span class="text-[10px] font-mono text-slate-500 shrink-0 ml-2">{{ g.rj_code || g.engine_type }}</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-3 border-t border-slate-800">
+            <div>
+              <button
+                v-if="collectionForm.id"
+                @click="deleteCollectionAction(collectionForm)"
+                type="button"
+                class="px-3 py-2 rounded-xl bg-rose-600/20 border border-rose-500/40 hover:bg-rose-600 text-rose-300 hover:text-white font-semibold cursor-pointer"
+              >
+                删除此合集
+              </button>
+            </div>
+            <div class="flex items-center space-x-2">
+              <button @click="showCollectionModal = false" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer">
+                取消
+              </button>
+              <button @click="saveCollectionAction" class="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-lg shadow-indigo-600/30 cursor-pointer">
+                保存合集
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -2350,7 +2828,7 @@
       </div>
     </transition>
 
-    <!-- ==================== UPGRADED 4-TAB SETTINGS MODAL (v2.2) ==================== -->
+    <!-- ==================== UPGRADED 5-TAB SETTINGS MODAL (v2.3) ==================== -->
     <transition name="modal">
       <div
         v-if="showSettingsModal"
@@ -2361,7 +2839,7 @@
           <div class="flex items-center justify-between border-b border-slate-800 pb-3">
             <h2 class="text-base font-bold text-white flex items-center space-x-2">
               <i data-lucide="settings" class="w-5 h-5 text-indigo-400"></i>
-              <span>ACG Vault v2.2 系统与个性化定制中心</span>
+              <span>ACG Vault v2.3 系统与个性化定制中心</span>
             </h2>
             <button @click="showSettingsModal = false" class="text-slate-400 hover:text-white cursor-pointer">
               <i data-lucide="x" class="w-5 h-5"></i>
@@ -2369,18 +2847,19 @@
           </div>
 
           <!-- Settings Navigation Tabs -->
-          <div class="flex items-center space-x-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+          <div class="flex flex-wrap items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
             <button
               v-for="tab in [
                 { id: 'dirs', label: '📂 目录与扫描' },
-                { id: 'ui', label: '🎨 界面与阅读偏好' },
-                { id: 'ai', label: '🤖 AI 大模型与网络' },
-                { id: 'desktop', label: '🖥️ 桌面端与热键' }
+                { id: 'ui', label: '🎨 界面与阅读' },
+                { id: 'ai', label: '🤖 AI 与标签归一' },
+                { id: 'cloud', label: '☁️ 自动快照与 WebDAV' },
+                { id: 'desktop', label: '🖥️ 桌面端与伴侣热键' }
               ]"
               :key="tab.id"
               @click="settingsActiveTab = tab.id"
               :class="[
-                'flex-1 py-2 px-3 rounded-lg font-semibold transition-all cursor-pointer text-center',
+                'flex-1 py-2 px-2.5 rounded-lg font-semibold transition-all cursor-pointer text-center whitespace-nowrap',
                 settingsActiveTab === tab.id ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
               ]"
             >
@@ -2398,7 +2877,7 @@
                     type="text"
                     v-model="configData.game_directories[idx]"
                     placeholder="例如: E:\ACG"
-                    class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono"
+                    class="flex-1 min-w-0 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono"
                   />
                   <button @click="pickLocalPathAction('game_dir', idx)" type="button" class="px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 text-indigo-300 shrink-0 cursor-pointer">
                     浏览...
@@ -2462,7 +2941,7 @@
             <div class="flex items-center justify-between py-2 border-t border-slate-800">
               <div>
                 <div class="text-slate-200 font-semibold">扫描完成后自动刮削新游戏元数据</div>
-                <div class="text-[11px] text-slate-500">开启后，每次扫描入库新游戏将自动在后台拉取封面与中文简介</div>
+                <div class="text-[11px] text-slate-500">开启后，每次扫描入库新游戏将自动在后台拉取封面、预览图与中文简介</div>
               </div>
               <input type="checkbox" v-model="configData.auto_scrape" class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer">
             </div>
@@ -2542,7 +3021,7 @@
             </div>
           </div>
 
-          <!-- Tab 3: AI LLM Engine & Scraper Proxy -->
+          <!-- Tab 3: AI LLM Engine, Tag Localization & Scraper Proxy -->
           <div v-if="settingsActiveTab === 'ai'" class="space-y-4 text-xs max-h-[62vh] overflow-y-auto pr-1">
             <!-- Proxy & 4-Source Connectivity Matrix -->
             <div class="p-3.5 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2.5">
@@ -2554,7 +3033,7 @@
                       type="text"
                       v-model="configData.proxy"
                       placeholder="例如: http://127.0.0.1:7890 (留空为直连)"
-                      class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono"
+                      class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono"
                     />
                     <button
                       @click="testProxyAction"
@@ -2593,6 +3072,25 @@
               </div>
             </div>
 
+            <!-- Multi-Source Tag Localization Dictionary Settings (v2.3 Feature #2) -->
+            <div class="p-3.5 rounded-xl bg-slate-950/80 border border-emerald-500/30 flex items-center justify-between gap-3">
+              <div class="space-y-0.5">
+                <div class="font-bold text-emerald-300">多源标签自动汉化与同义词归一 (data/l10n_tags_zh.json)</div>
+                <div class="text-[11px] text-slate-400">刮削入库时自动将 DLsite 日文标签 (如 純愛/寝取られ) 与 VNDB 英文标签 (如 Pure Love) 归一化为标准中文标签</div>
+              </div>
+              <div class="flex items-center space-x-2 shrink-0">
+                <button
+                  @click="localizeAllTagsAction"
+                  :disabled="isLocalizingTags"
+                  type="button"
+                  class="px-3 py-1.5 rounded-lg bg-emerald-600/25 border border-emerald-500/40 hover:bg-emerald-600 text-emerald-200 hover:text-white font-semibold cursor-pointer"
+                >
+                  {{ isLocalizingTags ? '处理中...' : '立即全库归一' }}
+                </button>
+                <input type="checkbox" v-model="configData.auto_localize_tags" class="w-4 h-4 rounded border-slate-700 text-emerald-600 bg-slate-800 cursor-pointer">
+              </div>
+            </div>
+
             <!-- OpenAI-Compatible LLM Engine Settings -->
             <div class="p-4 rounded-xl bg-slate-950/80 border border-indigo-500/30 space-y-3">
               <div class="flex items-center justify-between">
@@ -2628,7 +3126,7 @@
                 <div>
                   <label class="text-slate-400 block mb-1">模型名称 (Model)</label>
                   <div class="flex items-center space-x-2">
-                    <input type="text" v-model="configData.llm_model" placeholder="deepseek-chat / qwen2.5:14b" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
+                    <input type="text" v-model="configData.llm_model" placeholder="deepseek-chat / qwen2.5:14b" class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
                     <button
                       @click="testLLMConnectionAction"
                       :disabled="isTestingLLM"
@@ -2648,7 +3146,75 @@
             </div>
           </div>
 
-          <!-- Tab 4: Native Desktop Window, System Tray & In-Game Hotkeys -->
+          <!-- Tab 4: Play Exit Auto Save Snapshot & WebDAV Cloud Sync (v2.3 Feature #4) -->
+          <div v-if="settingsActiveTab === 'cloud'" class="space-y-4 text-xs max-h-[62vh] overflow-y-auto pr-1">
+            <div class="p-4 rounded-xl bg-slate-950/80 border border-emerald-500/30 space-y-3">
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="font-bold text-emerald-300 text-sm">游玩退出自动增量存档快照 (防坏档滚动保护)</div>
+                  <div class="text-[11px] text-slate-400 mt-0.5">当监听到游戏进程退出且单次游玩时长达到设定阈值时，自动打包生成带时间戳的存档快照</div>
+                </div>
+                <input type="checkbox" v-model="configData.enable_auto_save_backup" class="w-4 h-4 rounded border-slate-700 text-emerald-600 bg-slate-800 cursor-pointer">
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label class="text-slate-400 block mb-1">触发自动快照的最短游玩时长 (分钟)</label>
+                  <input type="number" v-model.number="configData.auto_backup_min_minutes" min="1" max="120" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">每部游戏最多保留自动快照份数</label>
+                  <input type="number" v-model.number="configData.auto_backup_max_keep" min="1" max="30" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
+                </div>
+              </div>
+            </div>
+
+            <div class="p-4 rounded-xl bg-slate-950/80 border border-cyan-500/30 space-y-3">
+              <div class="flex items-center justify-between">
+                <div>
+                  <div class="font-bold text-cyan-300 text-sm">WebDAV 跨设备云端存档同步 (坚果云 / Alist / Nextcloud)</div>
+                  <div class="text-[11px] text-slate-400 mt-0.5">将本地存档快照同步至个人 WebDAV 云盘，实现台式机与掌机/笔记本跨设备无缝续玩</div>
+                </div>
+                <input type="checkbox" v-model="configData.webdav_enabled" class="w-4 h-4 rounded border-slate-700 text-cyan-600 bg-slate-800 cursor-pointer">
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div class="sm:col-span-2">
+                  <label class="text-slate-400 block mb-1">WebDAV 服务器地址 (URL)</label>
+                  <input type="text" v-model="configData.webdav_url" placeholder="https://dav.jianguoyun.com/dav/" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">远端同步目录</label>
+                  <input type="text" v-model="configData.webdav_root_path" placeholder="/ACG_Vault_Saves" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
+                </div>
+                <div>
+                  <label class="text-slate-400 block mb-1">WebDAV 账号 / 用户名</label>
+                  <input type="text" v-model="configData.webdav_username" placeholder="输入邮箱或账号..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
+                </div>
+                <div class="sm:col-span-2">
+                  <label class="text-slate-400 block mb-1">应用专用密码 / Token</label>
+                  <div class="flex items-center space-x-2">
+                    <input type="password" v-model="configData.webdav_password" placeholder="输入 WebDAV 应用密码..." class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 font-mono" />
+                    <button
+                      @click="testWebDAVAction"
+                      :disabled="isTestingWebDAV"
+                      type="button"
+                      class="px-3 py-1.5 rounded-lg bg-cyan-600/25 border border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white font-semibold shrink-0 cursor-pointer"
+                    >
+                      {{ isTestingWebDAV ? '连接中...' : '测试 WebDAV' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between pt-2 border-t border-slate-800/80">
+                <span class="text-slate-300">每次生成存档快照后自动静默上传至 WebDAV 云端</span>
+                <input type="checkbox" v-model="configData.webdav_auto_sync" class="w-4 h-4 rounded border-slate-700 text-cyan-600 bg-slate-800 cursor-pointer">
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 5: Native Desktop Window, System Tray & In-Game Companion Hotkeys -->
           <div v-if="settingsActiveTab === 'desktop'" class="space-y-4 text-xs max-h-[62vh] overflow-y-auto pr-1">
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
@@ -2665,7 +3231,17 @@
               </div>
 
               <div>
-                <label class="font-semibold text-slate-300 block mb-1.5">全局呼出/隐藏老板键 (Windows 桌面模式)</label>
+                <label class="font-semibold text-cyan-300 block mb-1.5">游戏内悬浮攻略小窗热键 (伴侣模式 v2.3)</label>
+                <select v-model="configData.global_overlay_hotkey" class="w-full bg-slate-800 border border-cyan-500/40 rounded-lg px-3 py-2 text-cyan-200 font-mono">
+                  <option value="Alt+G">Alt+G (推荐 · 呼出半透明置顶攻略/F9变量表)</option>
+                  <option value="Ctrl+Alt+G">Ctrl+Alt+G</option>
+                  <option value="Alt+Q">Alt+Q</option>
+                  <option value="None">禁用伴侣小窗热键</option>
+                </select>
+              </div>
+
+              <div>
+                <label class="font-semibold text-slate-300 block mb-1.5">全局呼出/隐藏主窗口老板键</label>
                 <select v-model="configData.global_boss_hotkey" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 font-mono">
                   <option value="Alt+Space">Alt+Space (推荐)</option>
                   <option value="Ctrl+Alt+V">Ctrl+Alt+V</option>
@@ -2722,7 +3298,7 @@
       </div>
     </transition>
 
-    <!-- MTool Shortcut & In-Game Cheats Guide Modal -->
+    <!-- MTool Shortcut & In-Game Cheats Guide Modal (v2.3) -->
     <transition name="modal">
       <div
         v-if="showShortcutModal"
@@ -2736,8 +3312,8 @@
                 <i data-lucide="keyboard" class="w-4 h-4"></i>
               </div>
               <div>
-                <h3 class="text-base font-bold text-white">快捷键与游戏内黑科技指南 (v2.2)</h3>
-                <p class="text-[11px] text-slate-400">全局老板键、F8 全回想解锁、F12 截图与 MTool 热键一览</p>
+                <h3 class="text-base font-bold text-white">快捷键与游戏内黑科技指南 (v2.3)</h3>
+                <p class="text-[11px] text-slate-400">Alt+G 悬浮攻略伴侣、F8 全回想解锁、F12 截图与全局老板键一览</p>
               </div>
             </div>
             <button @click="showShortcutModal = false" class="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer">
@@ -2746,6 +3322,21 @@
           </div>
 
           <div class="space-y-3 text-xs">
+            <div class="p-3.5 rounded-2xl bg-cyan-950/30 border border-cyan-500/40 flex items-start space-x-3.5">
+              <div class="flex flex-col space-y-1 items-center shrink-0">
+                <kbd class="px-2.5 py-1 rounded-lg bg-slate-900 text-cyan-300 font-mono font-bold text-xs border border-cyan-500/50 shadow">Alt+G</kbd>
+              </div>
+              <div class="flex-1 space-y-1">
+                <div class="font-bold text-cyan-200 text-sm flex items-center space-x-1.5">
+                  <span>游戏内半透明置顶攻略 & F9 变量速查伴侣小窗</span>
+                  <span class="px-1.5 py-0.5 rounded bg-cyan-500/25 text-cyan-200 text-[10px]">v2.3 重磅</span>
+                </div>
+                <p class="text-slate-300 text-xs leading-relaxed">
+                  全屏游玩时无需切出桌面，按下 <kbd class="px-1 bg-slate-900 rounded">Alt+G</kbd> 即可在屏幕边缘呼出半透明置顶伴侣小窗，实时勾选全结局 Checklist、检索 RPG Maker `F9` 内部开关变量编号与记录随手便签。
+                </p>
+              </div>
+            </div>
+
             <div class="p-3.5 rounded-2xl bg-slate-800/50 border border-slate-700/60 flex items-start space-x-3.5">
               <div class="flex flex-col space-y-1 items-center shrink-0">
                 <kbd class="px-2.5 py-1 rounded-lg bg-slate-800 text-purple-300 font-mono font-bold text-xs border border-slate-700 shadow">F8</kbd>
@@ -2754,7 +3345,6 @@
               <div class="flex-1 space-y-1">
                 <div class="font-bold text-slate-200 text-sm flex items-center space-x-1.5">
                   <span>一键全 CG 回想解锁 & 游戏内实时抓拍</span>
-                  <span class="px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 text-[10px]">v2.2 新增</span>
                 </div>
                 <p class="text-slate-400 text-xs leading-relaxed">
                   注入全CG补丁后在游戏内按 <kbd class="px-1 bg-slate-900 rounded">F8</kbd> 一键激活全部回想开关与满金币（按 <kbd class="px-1 bg-slate-900 rounded">Shift+F8</kbd> 强开全开关）；游玩时按 <kbd class="px-1 bg-slate-900 rounded">F12</kbd> 自动截取游戏窗口并存入专属画廊。
@@ -2770,10 +3360,9 @@
               <div class="flex-1 space-y-1">
                 <div class="font-bold text-slate-200 text-sm flex items-center space-x-1.5">
                   <span>MTool 悬浮修改器 & RPG Maker 原生调试面板</span>
-                  <span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px]">游戏内</span>
                 </div>
                 <p class="text-slate-400 text-xs leading-relaxed">
-                  按 <kbd class="px-1 bg-slate-900 rounded">~</kbd> 或 <kbd class="px-1 bg-slate-900 rounded">Tab</kbd> 呼出 MTool 修改金钱/穿墙/变速；按 <kbd class="px-1 bg-slate-900 rounded">F9</kbd> 呼出 RPG Maker 原生变量与开关面板，对照 AI 生成攻略中的 `Var/Sw ID` 精准调优。
+                  按 <kbd class="px-1 bg-slate-900 rounded">~</kbd> 或 <kbd class="px-1 bg-slate-900 rounded">Tab</kbd> 呼出 MTool 修改金钱/穿墙/变速；按 <kbd class="px-1 bg-slate-900 rounded">F9</kbd> 呼出 RPG Maker 原生变量与开关面板，对照伴侣小窗中的 `Var/Sw ID` 精准调优。
                 </p>
               </div>
             </div>
@@ -2786,10 +3375,9 @@
               <div class="flex-1 space-y-1">
                 <div class="font-bold text-slate-200 text-sm flex items-center space-x-1.5">
                   <span>桌面全局老板键与控制台导航</span>
-                  <span class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px]">全局 / 控制台</span>
                 </div>
                 <p class="text-slate-400 text-xs leading-relaxed">
-                  桌面模式下按 <kbd class="px-1 bg-slate-900 rounded">Alt+Space</kbd> 随时召唤或隐藏主窗口；按 <kbd class="px-1 bg-slate-900 rounded">/</kbd> 聚焦搜索框；详情页按 <kbd class="px-1 bg-slate-900 rounded">←</kbd> / <kbd class="px-1 bg-slate-900 rounded">→</kbd> 切换上下部游戏，按 <kbd class="px-1 bg-slate-900 rounded">Ctrl+V</kbd> 直接粘贴封面。
+                  桌面模式下按 <kbd class="px-1 bg-slate-900 rounded">Alt+Space</kbd> 随时召唤或隐藏主窗口；按 <kbd class="px-1 bg-slate-900 rounded">/</kbd> 聚焦搜索框；详情页按 <kbd class="px-1 bg-slate-900 rounded">←</kbd> / <kbd class="px-1 bg-slate-900 rounded">→</kbd> 切换上下部游戏。
                 </p>
               </div>
             </div>
@@ -2870,7 +3458,7 @@
               </div>
               <div>
                 <h2 class="text-base font-bold text-white">多源候选元数据预览与选择</h2>
-                <p class="text-xs text-slate-400">已综合 DLsite、Bangumi、Steam、VNDB 搜索结果，点击【应用此候选】将自动缓存封面并更新元数据</p>
+                <p class="text-xs text-slate-400">已综合 DLsite、Bangumi、Steam、VNDB 搜索结果，点击【应用此候选】将自动缓存封面、官方预览图并汉化标签</p>
               </div>
             </div>
             <button @click="showCandidateModal = false" class="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 cursor-pointer">
@@ -2944,7 +3532,7 @@
       </div>
     </transition>
 
-    <!-- ==================== FULLSCREEN WALKTHROUGH WORKSPACE (v2.2) ==================== -->
+    <!-- ==================== FULLSCREEN WALKTHROUGH WORKSPACE (v2.3) ==================== -->
     <transition name="fade">
       <div
         v-if="showNotesFullscreen && selectedGame"
@@ -2968,9 +3556,9 @@
                 </span>
               </div>
               <p class="text-[11px] text-slate-400 flex items-center space-x-2 truncate">
-                <span>沉浸式攻略工作台</span>
+                <span>全结局攻略沉浸工作台</span>
                 <span class="text-slate-600">·</span>
-                <span class="text-slate-400 font-mono text-[10px]">{{ (selectedGame.user_notes || '').length }} 字符</span>
+                <span class="text-slate-400 font-mono text-[10px]">{{ (selectedGame.walkthrough_md || '').length }} 字符</span>
               </p>
             </div>
 
@@ -2983,6 +3571,14 @@
               >
                 <i data-lucide="play" class="w-3.5 h-3.5 fill-white"></i>
                 <span>{{ isGameRunning(selectedGame.id) ? '运行中' : '启动游戏' }}</span>
+              </button>
+              <button
+                @click="openCompanionOverlayAction(selectedGame)"
+                class="px-2.5 py-1 rounded-lg bg-cyan-600/25 border border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white text-xs font-semibold flex items-center space-x-1 transition-all cursor-pointer"
+                title="切换为悬浮置顶伴侣小窗 (Alt+G)"
+              >
+                <i data-lucide="layers" class="w-3.5 h-3.5"></i>
+                <span>伴侣小窗</span>
               </button>
               <button
                 @click="openFolderAction(selectedGame)"
@@ -3049,7 +3645,7 @@
                 'px-2.5 py-1.5 rounded-xl text-xs font-medium border transition-all hidden md:flex items-center space-x-1 cursor-pointer',
                 syncScrollEnabled ? 'bg-indigo-950/60 border-indigo-500/40 text-indigo-300' : 'bg-slate-900 border-slate-800 text-slate-500'
               ]"
-              title="开启/关闭左右双栏同步滚动"
+              title="开启/关闭左右双栏基于章节锚点同步滚动"
             >
               <span>同步滚动</span>
             </button>
@@ -3084,7 +3680,7 @@
             <button
               @click="saveGameNotes(false)"
               class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1 shadow-md shadow-indigo-600/30 transition-all cursor-pointer"
-              title="保存攻略 (Ctrl+S)"
+              title="保存全结局攻略 (Ctrl+S)"
             >
               <i data-lucide="save" class="w-3.5 h-3.5"></i>
               <span class="hidden sm:inline">保存</span>
@@ -3197,10 +3793,10 @@
 
               <textarea
                 id="notes-editor-textarea"
-                v-model="selectedGame.user_notes"
+                v-model="selectedGame.walkthrough_md"
                 @input="onNotesInput(false)"
                 @scroll="onEditorScroll"
-                placeholder="在此编写详细攻略、结局分支路线、CG收集表、全成就指南与作弊备忘（支持完整 Markdown 语法）..."
+                placeholder="在此编写详细全结局攻略、结局分支路线、Mermaid 流程图、CG收集表与作弊备忘（支持完整 Markdown 语法）..."
                 class="flex-1 w-full p-6 bg-transparent text-slate-200 text-sm font-mono leading-relaxed resize-none focus:outline-none selection:bg-indigo-600/50"
                 spellcheck="false"
               ></textarea>
@@ -3226,9 +3822,9 @@
               <div class="px-4 py-2 border-b border-slate-800/70 bg-slate-900/60 flex items-center justify-between text-xs text-slate-400 shrink-0">
                 <span class="flex items-center space-x-1.5 font-semibold text-slate-300">
                   <i data-lucide="eye" class="w-3.5 h-3.5 text-indigo-400"></i>
-                  <span>实时排版预览 (可直接点击勾选任务复选框)</span>
+                  <span>实时排版预览 (支持 Mermaid 路线图渲染与复选框交互)</span>
                 </span>
-                <span class="text-[11px] text-slate-500">支持目录锚点定位与进度勾选自动保存</span>
+                <span class="text-[11px] text-slate-500">支持目录锚点精准定位与进度勾选自动保存</span>
               </div>
 
               <div
@@ -3255,7 +3851,7 @@
 
   </div>
 
-  <script src="/static/app.js?v=2.2"></script>
+  <script src="/static/app.js?v=2.3"></script>
   <!-- Watchdog: Check if Vue mounted correctly -->
   <script>
     setTimeout(function() {

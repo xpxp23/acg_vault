@@ -1,6 +1,6 @@
 /* ==========================================================================
-   ACG Vault 2.2 - Collector's Edition Glassmorphic & Ambient Dark UI
-   GPU-Optimized Compositing, Unobstructed Artwork Hover & Magazine Typography
+   ACG Vault 2.3 - Collector's Edition Glassmorphic & Ambient Dark UI
+   GPU-Optimized Compositing, Unobstructed Artwork Hover, Dual Notes & Flowcharts
    ========================================================================== */
 
 :root {
@@ -77,6 +77,15 @@ body {
     inset 0 1px 0 0 rgba(52, 211, 153, 0.25);
 }
 
+/* Unified Top-Left Status Pill on Cards */
+.card-unified-badge {
+  background: rgba(7, 10, 18, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+
 /* Keep top badges subtly visible in minimal mode, or fade in classic mode */
 .glass-card .card-top-badges {
   transition: opacity 0.2s ease, transform 0.2s ease;
@@ -146,15 +155,16 @@ body {
   transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Smart Fit Mode: GPU-Friendly Ambient Blurred Backdrop + Uncropped Foreground */
+/* Smart Fit Mode: Hardware-Promoted Ambient Blurred Backdrop (8px fast kernel) + Uncropped Foreground */
 .poster-blur-backdrop {
   position: absolute;
-  inset: -8%;
-  width: 116%;
-  height: 116%;
+  inset: -6%;
+  width: 112%;
+  height: 112%;
   object-fit: cover;
-  filter: blur(14px) saturate(155%) brightness(0.52);
-  transform: scale(1.06);
+  filter: blur(8px) saturate(145%) brightness(0.50);
+  transform: translateZ(0) scale(1.05);
+  will-change: transform;
   pointer-events: none;
   z-index: 1;
 }
@@ -262,10 +272,21 @@ body {
   background: rgba(30, 41, 59, 0.58);
 }
 
+/* Lightweight Personal Clearance Sticky Memo Card (v2.3) */
+.sticky-memo-card {
+  background: linear-gradient(145deg, rgba(6, 78, 59, 0.22) 0%, rgba(15, 23, 42, 0.75) 100%);
+  border: 1px solid rgba(16, 185, 129, 0.32);
+  box-shadow: inset 0 1px 0 0 rgba(52, 211, 153, 0.12);
+}
+.sticky-memo-card:focus-within {
+  border-color: rgba(52, 211, 153, 0.65);
+  box-shadow: 0 0 18px -4px rgba(16, 185, 129, 0.28);
+}
+
 /* Super-sampled Ambient Banner in Detail Drawer */
 .drawer-ambient-banner {
-  filter: blur(28px) saturate(175%) brightness(0.52);
-  transform: scale(1.18);
+  filter: blur(22px) saturate(165%) brightness(0.46);
+  transform: translateZ(0) scale(1.14);
 }
 
 /* Draggable Split Pane Divider in Walkthrough Workspace */
@@ -332,7 +353,7 @@ body {
 }
 
 /* ==========================================================================
-   Magazine-Grade Notes & Walkthrough Markdown Typography
+   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v2.3)
    ========================================================================== */
 .notes-markdown-body {
   line-height: 1.74;
@@ -530,6 +551,70 @@ body {
   border: none;
   padding: 0;
   color: #e2e8f0;
+}
+
+/* Native Offline Mermaid Flowchart Diagram Card (v2.3) */
+.mermaid-flow-container {
+  background: linear-gradient(145deg, rgba(15, 23, 42, 0.9) 0%, rgba(9, 13, 24, 0.95) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.32);
+  border-radius: 14px;
+  padding: 1rem 1.15rem;
+  margin: 0.95rem 0;
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.5);
+}
+
+.mermaid-flow-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #a5b4fc;
+  margin-bottom: 0.65rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  letter-spacing: 0.02em;
+}
+
+.mermaid-flow-steps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mermaid-edge-row {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  background: rgba(30, 41, 59, 0.45);
+  border: 1px solid rgba(71, 85, 105, 0.45);
+  border-radius: 10px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.mermaid-node-pill {
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.18);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  color: #e0e7ff;
+  font-weight: 600;
+}
+
+.mermaid-edge-label {
+  padding: 0.1rem 0.45rem;
+  border-radius: 9999px;
+  background: rgba(236, 72, 153, 0.18);
+  border: 1px solid rgba(244, 114, 182, 0.35);
+  color: #fbcfe8;
+  font-size: 0.7rem;
+}
+
+.mermaid-arrow {
+  color: #818cf8;
+  font-weight: 700;
+  font-family: monospace;
 }
 
 .notes-markdown-body blockquote {

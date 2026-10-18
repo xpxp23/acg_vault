@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-In-Game Screenshot Gallery & 100% Full CG Save Unlocker / Importer for ACG Vault v2.2.
+In-Game Screenshot Gallery & 100% Full CG Save Unlocker / Importer for ACG Vault v2.3.
 - Captures active game window screenshots via Win32 / PIL ImageGrab when hotkeys (e.g. F12) are pressed
 - Manages gallery images, thumbnails, captions, and deletions
 - Analyzes and unlocks 100% CG / Recall Gallery for RPG Maker MV/MZ and imports external full-CG save archives
@@ -217,7 +217,7 @@ CG_UNLOCKER_PLUGIN_CODE = """//=================================================
 //=============================================================================
 /*:
  * @target MZ
- * @plugindesc [v2.2.0] ACG Vault Full CG & Recall Gallery Unlocker (Press F8)
+ * @plugindesc [v2.3.0] ACG Vault Full CG & Recall Gallery Unlocker (Press F8)
  * @author ACG Vault
  */
 

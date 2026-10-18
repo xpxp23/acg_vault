@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-ACG Vault v2.2 Native Desktop Wrapper & System Tray Daemon.
+ACG Vault v2.3 Native Desktop Wrapper, In-Game Companion Overlay & System Tray Daemon.
 Provides:
 1. Standalone Native Desktop Window via PyWebView (with automatic Edge/Chrome --app mode fallback)
-2. Windows System Tray Icon & Context Menu (Minimize to tray, quick scan, restore window, clean exit)
-3. Global Boss/Summon Hotkey (e.g. Alt+Space or Ctrl+Alt+V) via Win32 RegisterHotKey
+2. Always-on-Top In-Game Companion Overlay Window (default Alt+G) for full-screen walkthroughs, checklists, F9 cheats & memos
+3. Windows System Tray Icon & Context Menu (Minimize to tray, companion overlay, quick scan, restore window, clean exit)
+4. Global Boss/Summon Hotkey (Alt+Space) & Global Overlay Hotkey (Alt+G) via Win32 RegisterHotKey
 """
 
 import os
@@ -23,11 +24,12 @@ from config import APP_VERSION, BASE_DIR, load_config
 IS_WINDOWS = sys.platform == "win32"
 
 _webview_window = None
+_overlay_window = None
 _server_should_exit = False
 
 
 def parse_hotkey_modifiers(hotkey_str: str):
-    """Parses hotkey string like 'Alt+Space' or 'Ctrl+Alt+V' into Win32 (fsModifiers, vk)."""
+    """Parses hotkey string like 'Alt+Space', 'Alt+G', or 'Ctrl+Alt+V' into Win32 (fsModifiers, vk)."""
     MOD_ALT = 0x0001
     MOD_CONTROL = 0x0002
     MOD_SHIFT = 0x0004
@@ -78,7 +80,7 @@ def wait_for_server_ready(port: int, timeout: float = 12.0) -> bool:
     return False
 
 
-def launch_chromium_app_window(url: str) -> bool:
+def launch_chromium_app_window(url: str, width: int = 1440, height: int = 900) -> bool:
     """Launches Microsoft Edge or Google Chrome in chromeless --app mode as a zero-dependency native window fallback."""
     if not IS_WINDOWS:
         return False
@@ -93,7 +95,7 @@ def launch_chromium_app_window(url: str) -> bool:
     for exe in candidates:
         if exe and os.path.exists(exe):
             try:
-                subprocess.Popen([exe, f"--app={url}", "--window-size=1440,900"])
+                subprocess.Popen([exe, f"--app={url}", f"--window-size={width},{height}"])
                 return True
             except Exception:
                 continue
@@ -101,7 +103,7 @@ def launch_chromium_app_window(url: str) -> bool:
 
 
 def show_or_toggle_desktop_window(port: int, toggle: bool = False):
-    """Restores or toggles the PyWebView window (or opens app window if none active)."""
+    """Restores or toggles the main PyWebView window (or opens app window if none active)."""
     global _webview_window
     url = f"http://127.0.0.1:{port}"
     if _webview_window is not None:
@@ -116,12 +118,37 @@ def show_or_toggle_desktop_window(port: int, toggle: bool = False):
             return
         except Exception:
             pass
-    if not launch_chromium_app_window(url):
+    if not launch_chromium_app_window(url, 1440, 900):
+        webbrowser.open(url)
+
+
+def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optional[int] = None):
+    """Restores or toggles the Always-on-Top In-Game Companion Overlay window (default Alt+G)."""
+    global _overlay_window
+    suffix = f"?game_id={game_id}" if game_id else ""
+    url = f"http://127.0.0.1:{port}/overlay{suffix}"
+
+    if _overlay_window is not None:
+        try:
+            if game_id:
+                _overlay_window.load_url(url)
+            if toggle and getattr(_overlay_window, "_is_visible", False):
+                _overlay_window.hide()
+                _overlay_window._is_visible = False
+            else:
+                _overlay_window.show()
+                _overlay_window.restore()
+                _overlay_window._is_visible = True
+            return
+        except Exception:
+            pass
+
+    if not launch_chromium_app_window(url, 460, 740):
         webbrowser.open(url)
 
 
 def start_global_hotkey_listener(port: int):
-    """Registers the configured global boss hotkey (e.g. Alt+Space) on Windows."""
+    """Registers both the global boss hotkey (Alt+Space) and companion overlay hotkey (Alt+G) on Windows."""
     if not IS_WINDOWS:
         return
 
@@ -130,21 +157,39 @@ def start_global_hotkey_listener(port: int):
             from ctypes import wintypes
             user32 = ctypes.windll.user32
             cfg = load_config()
-            hk_str = cfg.get("global_boss_hotkey", "Alt+Space")
-            if not hk_str or hk_str.lower() == "none":
+            boss_hk = (cfg.get("global_boss_hotkey") or "Alt+Space").strip()
+            overlay_hk = (cfg.get("global_overlay_hotkey") or "Alt+G").strip()
+
+            BOSS_ID = 1001
+            OVERLAY_ID = 1002
+            registered_any = False
+
+            if boss_hk and boss_hk.lower() != "none":
+                mods, vk = parse_hotkey_modifiers(boss_hk)
+                if user32.RegisterHotKey(None, BOSS_ID, mods, vk):
+                    registered_any = True
+
+            if overlay_hk and overlay_hk.lower() != "none":
+                mods2, vk2 = parse_hotkey_modifiers(overlay_hk)
+                if user32.RegisterHotKey(None, OVERLAY_ID, mods2, vk2):
+                    registered_any = True
+
+            if not registered_any:
                 return
-            mods, vk = parse_hotkey_modifiers(hk_str)
-            HOTKEY_ID = 1001
-            if not user32.RegisterHotKey(None, HOTKEY_ID, mods, vk):
-                return
+
             msg = wintypes.MSG()
             while not _server_should_exit:
                 res = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
                 if res <= 0:
                     break
-                if msg.message == 0x0312 and msg.wParam == HOTKEY_ID:
-                    show_or_toggle_desktop_window(port, toggle=True)
-            user32.UnregisterHotKey(None, HOTKEY_ID)
+                if msg.message == 0x0312:
+                    if msg.wParam == BOSS_ID:
+                        show_or_toggle_desktop_window(port, toggle=True)
+                    elif msg.wParam == OVERLAY_ID:
+                        show_or_toggle_overlay_window(port, toggle=True)
+
+            user32.UnregisterHotKey(None, BOSS_ID)
+            user32.UnregisterHotKey(None, OVERLAY_ID)
         except Exception as e:
             print(f"[Desktop] Hotkey listener exited: {e}")
 
@@ -168,6 +213,9 @@ def start_system_tray(port: int, on_exit_callback):
         def _on_show(icon, item):
             show_or_toggle_desktop_window(port, toggle=False)
 
+        def _on_overlay(icon, item):
+            show_or_toggle_overlay_window(port, toggle=False)
+
         def _on_browser(icon, item):
             webbrowser.open(f"http://127.0.0.1:{port}")
 
@@ -184,6 +232,7 @@ def start_system_tray(port: int, on_exit_callback):
 
         menu = pystray.Menu(
             pystray.MenuItem("打开 ACG Vault 主界面", _on_show, default=True),
+            pystray.MenuItem("呼出游戏内攻略伴侣窗 (Alt+G)", _on_overlay),
             pystray.MenuItem("立即扫描本地游戏库", _on_scan),
             pystray.MenuItem("在浏览器中打开", _on_browser),
             pystray.Menu.SEPARATOR,
@@ -197,7 +246,7 @@ def start_system_tray(port: int, on_exit_callback):
 
 
 def run_desktop_app():
-    global _webview_window, _server_should_exit
+    global _webview_window, _overlay_window, _server_should_exit
     import uvicorn
     from main import app
 
@@ -217,21 +266,24 @@ def run_desktop_app():
         global _server_should_exit
         _server_should_exit = True
         server.should_exit = True
-        if _webview_window is not None:
-            try:
-                _webview_window.destroy()
-            except Exception:
-                pass
+        for w in (_overlay_window, _webview_window):
+            if w is not None:
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
         os._exit(0)
 
     start_global_hotkey_listener(port)
     tray_icon = start_system_tray(port, _clean_shutdown)
     url = f"http://127.0.0.1:{port}"
+    overlay_url = f"http://127.0.0.1:{port}/overlay"
 
     print("====================================================")
     print(f"  ACG Game Vault v{APP_VERSION} Desktop Service Ready")
-    print(f"  Local URL   : {url}")
-    print(f"  Boss Hotkey : {cfg.get('global_boss_hotkey', 'Alt+Space')}")
+    print(f"  Local URL      : {url}")
+    print(f"  Boss Hotkey    : {cfg.get('global_boss_hotkey', 'Alt+Space')}")
+    print(f"  Overlay Hotkey : {cfg.get('global_overlay_hotkey', 'Alt+G')}")
     print("====================================================")
 
     if desktop_mode == "native":
@@ -250,6 +302,30 @@ def run_desktop_app():
             )
             window._is_visible = not start_minimized
             _webview_window = window
+
+            # Create hidden Always-on-Top In-Game Companion Overlay window ready for instant Alt+G summon
+            overlay_win = webview.create_window(
+                title=f"ACG Vault 游戏内攻略伴侣 (Alt+G)",
+                url=overlay_url,
+                width=460,
+                height=740,
+                min_size=(360, 480),
+                background_color="#070a12",
+                on_top=True,
+                text_select=True,
+                hidden=True
+            )
+            overlay_win._is_visible = False
+            _overlay_window = overlay_win
+
+            def on_overlay_closing():
+                if not _server_should_exit:
+                    overlay_win.hide()
+                    overlay_win._is_visible = False
+                    return False
+                return True
+
+            overlay_win.events.closing += on_overlay_closing
 
             def on_closing():
                 latest_cfg = load_config()

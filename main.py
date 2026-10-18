@@ -46,7 +46,14 @@ from db.database import (
     batch_update_games_status,
     batch_delete_games_by_ids,
     get_game_screenshots,
-    update_screenshot_caption
+    update_screenshot_caption,
+    normalize_and_localize_tags,
+    localize_all_existing_game_tags,
+    resolve_best_display_title,
+    get_all_collections,
+    save_collection,
+    delete_collection_by_id,
+    update_collection_games
 )
 from core.scanner import scan_directory
 from core.scraper import (
@@ -56,6 +63,7 @@ from core.scraper import (
     scrape_bangumi,
     scrape_vndb,
     download_and_cache_cover,
+    download_and_cache_samples,
     generate_cover_thumbnail,
     search_scraper_candidates,
     is_valid_image_bytes,
@@ -69,7 +77,7 @@ from core.ai_scraper import (
     find_internal_clues,
     test_llm_connection
 )
-from core.guide_generator import generate_game_walkthrough
+from core.guide_generator import generate_game_walkthrough, extract_f9_debug_cheats
 from core.gallery_cg import (
     get_game_gallery_dir,
     capture_game_window_screenshot,
@@ -91,7 +99,11 @@ from core.launcher import (
     backup_game_saves,
     restore_game_saves,
     delete_game_save_backup,
-    get_running_games_info
+    get_running_games_info,
+    set_last_active_game_id,
+    get_last_active_game_id,
+    test_webdav_connection,
+    sync_game_saves_with_webdav
 )
 from core.dedup import (
     compute_duplicates_and_update_db,
@@ -140,8 +152,8 @@ def send_to_recycle_bin(path_str: str) -> bool:
         return False
 
 
-def cleanup_old_custom_covers(game_id: int, keep_filename: Optional[str] = None):
-    """Deletes old custom uploaded covers and their thumbnails for a game to prevent disk bloat."""
+def cleanup_old_custom_covers(game_id: int, keep_filename: Optional[str] = None, cleanup_gallery: bool = False):
+    """Deletes old custom uploaded covers, their thumbnails, and optionally gallery folder for a deleted game."""
     try:
         for old_file in COVERS_DIR.glob(f"custom_{game_id}_*"):
             if keep_filename and old_file.name == keep_filename:
@@ -153,6 +165,10 @@ def cleanup_old_custom_covers(game_id: int, keep_filename: Optional[str] = None)
                 old_file.unlink()
             except Exception:
                 pass
+        if cleanup_gallery:
+            gal_dir = GALLERY_DIR / f"game_{game_id}"
+            if gal_dir.exists() and gal_dir.is_dir():
+                shutil.rmtree(gal_dir, ignore_errors=True)
     except Exception:
         pass
 
@@ -178,7 +194,7 @@ app.add_middleware(
 async def add_no_cache_header(request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.endswith((".html", ".js", ".css")):
+    if path in ("/", "/overlay") or path.endswith((".html", ".js", ".css")):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -222,6 +238,7 @@ class UpdateGameStateRequest(BaseModel):
     play_status: Optional[str] = None
     user_rating: Optional[int] = None
     user_notes: Optional[str] = None
+    walkthrough_md: Optional[str] = None
     user_tags: Optional[List[str]] = None
     is_favorite: Optional[int] = None
     display_title: Optional[str] = None
@@ -239,9 +256,11 @@ class ManualUpdateMetadataRequest(BaseModel):
     synopsis: Optional[str] = None
     rj_code: Optional[str] = None
     executable_path: Optional[str] = None
+    has_translation: Optional[int] = None
     tags: Optional[List[str]] = None
     user_tags: Optional[List[str]] = None
     voice_actors: Optional[List[str]] = None
+    sample_images: Optional[List[str]] = None
 
 
 class ScrapeGameRequest(BaseModel):
@@ -271,6 +290,12 @@ class TestLLMRequest(BaseModel):
     proxy: Optional[str] = None
 
 
+class TestWebDAVRequest(BaseModel):
+    webdav_url: Optional[str] = None
+    webdav_username: Optional[str] = None
+    webdav_password: Optional[str] = None
+
+
 class GenerateGuideRequest(BaseModel):
     use_llm: bool = True
     overwrite: bool = False
@@ -286,10 +311,26 @@ class SaveBackupActionRequest(BaseModel):
 
 
 class PickPathRequest(BaseModel):
-    mode: str = "folder"  # "folder" or "file"
+    mode: str = "folder"
     title: Optional[str] = None
     initial_dir: Optional[str] = None
-    filetypes: Optional[str] = None  # "exe", "image", "archive"
+    filetypes: Optional[str] = None
+
+
+class SaveCollectionRequest(BaseModel):
+    id: Optional[int] = None
+    name: str
+    icon: str = "folder-heart"
+    color: str = "indigo"
+    description: str = ""
+    is_smart: bool = False
+    rules: Optional[Dict[str, Any]] = None
+    game_ids: Optional[List[int]] = None
+
+
+class UpdateCollectionGamesRequest(BaseModel):
+    game_ids: List[int]
+    action: str = "add"  # "add", "remove", "set"
 
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -301,6 +342,74 @@ def serve_index():
     if index_file.exists():
         return FileResponse(str(index_file))
     return {"message": f"ACG Game Vault v{APP_VERSION} API is running."}
+
+
+@app.get("/overlay")
+def serve_overlay():
+    overlay_file = BASE_DIR / "static" / "overlay.html"
+    if overlay_file.exists():
+        return FileResponse(str(overlay_file))
+    raise HTTPException(status_code=404, detail="Overlay view not found")
+
+
+@app.get("/api/overlay/context")
+def get_overlay_context(game_id: Optional[int] = Query(None)):
+    """Returns active/running game walkthrough, personal memo, and F9 variable table for the Alt+G companion overlay."""
+    running_map = get_running_games_info()
+    target_id = game_id
+    if not target_id:
+        target_id = get_last_active_game_id()
+
+    all_games = get_all_games(status="all", is_tool=False, include_full_notes=False)
+    if not target_id and all_games:
+        with_guide = [g for g in all_games if g.get("has_walkthrough")]
+        target_id = with_guide[0]["id"] if with_guide else all_games[0]["id"]
+
+    active_game = get_game_by_id(target_id) if target_id else None
+    f9_cheats = extract_f9_debug_cheats(active_game["id"]) if active_game else {"supported": False, "variables": [], "switches": []}
+
+    # Build compact switcher list prioritizing running games and games with walkthroughs
+    sorted_for_switcher = sorted(
+        all_games,
+        key=lambda g: (
+            1 if g["id"] in running_map else 0,
+            1 if (active_game and g["id"] == active_game["id"]) else 0,
+            int(g.get("has_walkthrough") or 0),
+            g.get("last_played_at") or ""
+        ),
+        reverse=True
+    )[:40]
+
+    switcher_list = [{
+        "id": g["id"],
+        "display_title": g.get("display_title") or g.get("folder_name"),
+        "folder_name": g.get("folder_name"),
+        "has_walkthrough": bool(g.get("has_walkthrough")),
+        "is_running": g["id"] in running_map
+    } for g in sorted_for_switcher]
+
+    return {
+        "game": active_game,
+        "is_running": bool(active_game and active_game["id"] in running_map),
+        "running_info": running_map.get(active_game["id"]) if active_game else None,
+        "f9_cheats": f9_cheats,
+        "game_list": switcher_list
+    }
+
+
+@app.post("/api/overlay/summon")
+def summon_overlay_window_api(game_id: Optional[int] = Query(None)):
+    """Summons the native Always-on-Top Companion Overlay window (or opens popup fallback)."""
+    if game_id:
+        set_last_active_game_id(game_id)
+    try:
+        from desktop_app import show_or_toggle_overlay_window
+        cfg = load_config()
+        port = int(cfg.get("port", 8000))
+        threading.Thread(target=show_or_toggle_overlay_window, args=(port, False, game_id), daemon=True).start()
+        return {"success": True, "message": "已呼出游戏内攻略伴侣悬浮窗 (Alt+G)"}
+    except Exception:
+        return {"success": False, "message": "请在浏览器新窗口打开伴侣视图"}
 
 
 @app.get("/api/covers/thumb/{filename}")
@@ -391,12 +500,64 @@ def get_running_games_api():
     return {"running_games": get_running_games_info()}
 
 
+@app.post("/api/games/localize_tags")
+def localize_all_tags_api():
+    """One-click normalizes and localizes all JP/EN tags in the database into canonical Chinese tags."""
+    res = localize_all_existing_game_tags()
+    return {
+        "success": True,
+        "updated_games": res["updated_games"],
+        "total_games": res["total_games"],
+        "message": f"已完成全库多源标签汉化归一！共标准化更新了 {res['updated_games']} 部作品的标签。"
+    }
+
+
+# ---------------------------------------------------------
+# Smart & Custom Collections Endpoints (v2.3)
+# ---------------------------------------------------------
+@app.get("/api/collections")
+def list_collections_api():
+    return {"collections": get_all_collections()}
+
+
+@app.post("/api/collections")
+def save_collection_api(req: SaveCollectionRequest):
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=400, detail="合集名称不能为空")
+    col = save_collection(
+        name=req.name,
+        icon=req.icon,
+        color=req.color,
+        description=req.description,
+        is_smart=req.is_smart,
+        rules=req.rules,
+        game_ids=req.game_ids,
+        collection_id=req.id
+    )
+    return {"success": True, "collection": col, "collections": get_all_collections()}
+
+
+@app.delete("/api/collections/{collection_id}")
+def delete_collection_api(collection_id: int):
+    ok = delete_collection_by_id(collection_id)
+    return {"success": ok, "collections": get_all_collections()}
+
+
+@app.post("/api/collections/{collection_id}/games")
+def update_collection_games_api(collection_id: int, req: UpdateCollectionGamesRequest):
+    col = update_collection_games(collection_id, req.game_ids, action=req.action)
+    if not col:
+        raise HTTPException(status_code=404, detail="合集不存在")
+    return {"success": True, "collection": col, "collections": get_all_collections()}
+
+
 @app.get("/api/games/{game_id}")
 def get_game_detail(game_id: int):
     game = get_game_by_id(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
 
+    set_last_active_game_id(game_id)
     variants = []
     if game.get("duplicate_group_id"):
         all_dups = get_duplicate_groups()
@@ -416,6 +577,11 @@ def get_game_detail(game_id: int):
     }
 
 
+@app.get("/api/games/{game_id}/f9_cheats")
+def get_game_f9_cheats_api(game_id: int):
+    return extract_f9_debug_cheats(game_id)
+
+
 @app.post("/api/games/{game_id}/update")
 def update_game(game_id: int, req: UpdateGameStateRequest):
     success = update_game_user_state(
@@ -423,6 +589,7 @@ def update_game(game_id: int, req: UpdateGameStateRequest):
         play_status=req.play_status,
         user_rating=req.user_rating,
         user_notes=req.user_notes,
+        walkthrough_md=req.walkthrough_md,
         user_tags=req.user_tags,
         is_favorite=req.is_favorite,
         display_title=req.display_title,
@@ -471,7 +638,7 @@ async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
 
 @app.post("/api/games/{game_id}/manual_update")
 def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest, bg_tasks: BackgroundTasks):
-    """Allows manual editing/customization of all scraped fields, including clearing cover_url & banner_url."""
+    """Allows manual editing/customization of all scraped fields, including has_translation, cover_url & banner_url."""
     update_data = req.model_dump(exclude_unset=True)
 
     if "cover_url" in update_data:
@@ -514,7 +681,6 @@ def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest, bg_tasks:
     if not success:
         raise HTTPException(status_code=400, detail="Failed to update metadata")
 
-    # If title or RJ code changed, recalculate duplicate groups in background
     if any(k in update_data for k in ("display_title", "original_title", "rj_code")):
         bg_tasks.add_task(compute_duplicates_and_update_db)
 
@@ -581,19 +747,23 @@ def scrape_single_game(game_id: int, req: ScrapeGameRequest):
     if not meta:
         return {"success": False, "message": "未能刮削到匹配的元数据，您可以切换数据源(如Steam/Bangumi/DLsite)或点击【多源预览候选】"}
 
+    final_disp = resolve_best_display_title(game, meta.get("title"), fallback_title=game.get("clean_title") or game["folder_name"])
+    localized_tags = normalize_and_localize_tags((meta.get("tags") or []) + (game.get("tags") or []), localize=True)
+
     update_dict = {
         "folder_name": game["folder_name"],
         "folder_path": game["folder_path"],
         "rj_code": meta.get("rj_code") or rj_code or game.get("rj_code", ""),
-        "display_title": meta.get("title") or game.get("display_title") or game["clean_title"],
+        "display_title": final_disp,
         "original_title": meta.get("original_title") or game.get("original_title", ""),
         "cover_url": meta.get("cover_url") or game.get("cover_url", ""),
         "banner_url": meta.get("banner_url") or meta.get("cover_url") or game.get("banner_url", ""),
+        "sample_images": meta.get("sample_images") or game.get("sample_images") or [],
         "synopsis": meta.get("synopsis") or game.get("synopsis", ""),
         "circle_name": meta.get("circle_name") or game.get("circle_name", ""),
         "release_date": meta.get("release_date") or game.get("release_date", ""),
         "voice_actors": meta.get("voice_actors") or game.get("voice_actors") or [],
-        "tags": meta.get("tags") or game.get("tags") or [],
+        "tags": localized_tags,
         "source_url": meta.get("source_url") or game.get("source_url", ""),
         "source_type": meta.get("source_type") or preferred_source,
         "rating_score": meta.get("rating_score") or game.get("rating_score") or 0.0
@@ -616,7 +786,7 @@ def ai_parse_folder_api(game_id: int):
 
     update_fields: Dict[str, Any] = {}
     if parsed.get("clean_title"):
-        update_fields["display_title"] = parsed["clean_title"]
+        update_fields["display_title"] = resolve_best_display_title(game, parsed["clean_title"])
     if parsed.get("original_title") and not game.get("original_title"):
         update_fields["original_title"] = parsed["original_title"]
     if parsed.get("circle_name") and not game.get("circle_name"):
@@ -624,7 +794,7 @@ def ai_parse_folder_api(game_id: int):
     if parsed.get("rj_code") and not game.get("rj_code"):
         update_fields["rj_code"] = parsed["rj_code"]
     if parsed.get("tags"):
-        merged_tags = list(dict.fromkeys((game.get("tags") or []) + parsed["tags"]))
+        merged_tags = normalize_and_localize_tags((game.get("tags") or []) + parsed["tags"], localize=True)
         update_fields["tags"] = merged_tags
 
     if game.get("synopsis"):
@@ -639,7 +809,7 @@ def ai_parse_folder_api(game_id: int):
         "success": True,
         "parsed": parsed,
         "data": get_game_by_id(game_id),
-        "message": "AI 语义提取与简介润色完成！" if parsed.get("used_llm") else "已完成文件夹智能语义清洗与提取！"
+        "message": "AI 语义提取与简介润色完成！" if parsed.get("used_llm") else "已完成文件夹智能语义清洗与标签汉化归一！"
     }
 
 
@@ -739,6 +909,11 @@ def backup_save_api(game_id: int, req: Optional[SaveBackupActionRequest] = None)
     return backup_game_saves(game_id, label=label)
 
 
+@app.post("/api/games/{game_id}/webdav_sync")
+def webdav_sync_save_api(game_id: int):
+    return sync_game_saves_with_webdav(game_id)
+
+
 @app.post("/api/games/{game_id}/restore_save")
 def restore_save_api(game_id: int, req: SaveBackupActionRequest):
     if not req.filename:
@@ -798,7 +973,7 @@ def delete_game_api(game_id: int, req: Optional[DeleteGameRequest] = None, bg_ta
         success = send_to_recycle_bin(game["folder_path"])
         if not success:
             raise HTTPException(status_code=500, detail="移入系统回收站失败，文件可能正被游戏进程或资源管理器占用")
-    cleanup_old_custom_covers(game_id)
+    cleanup_old_custom_covers(game_id, cleanup_gallery=True)
     delete_game_by_id(game_id)
     if bg_tasks:
         bg_tasks.add_task(compute_duplicates_and_update_db)
@@ -808,10 +983,12 @@ def delete_game_api(game_id: int, req: Optional[DeleteGameRequest] = None, bg_ta
 
 
 @app.post("/api/games/cleanup_missing")
-def cleanup_missing_api():
-    cleaned_count = cleanup_all_missing_games()
-    compute_duplicates_and_update_db()
-    return {"success": True, "count": cleaned_count, "message": f"已清理 {cleaned_count} 部缺失游戏记录"}
+def cleanup_missing_api(bg_tasks: BackgroundTasks):
+    cleaned_count, cleaned_ids = cleanup_all_missing_games()
+    for gid in cleaned_ids:
+        cleanup_old_custom_covers(gid, cleanup_gallery=True)
+    bg_tasks.add_task(compute_duplicates_and_update_db)
+    return {"success": True, "count": cleaned_count, "message": f"已清理 {cleaned_count} 部缺失游戏记录及关联画廊缓存"}
 
 
 class BatchUpdateStatusRequest(BaseModel):
@@ -831,7 +1008,7 @@ class BatchDeleteRequest(BaseModel):
 
 
 @app.post("/api/games/batch_delete")
-def batch_delete_api(req: BatchDeleteRequest):
+def batch_delete_api(req: BatchDeleteRequest, bg_tasks: BackgroundTasks):
     failed_paths = []
     deletable_ids = []
     for gid in req.game_ids:
@@ -841,11 +1018,11 @@ def batch_delete_api(req: BatchDeleteRequest):
                 if not send_to_recycle_bin(g["folder_path"]):
                     failed_paths.append(g.get("folder_name") or str(gid))
                     continue
-        cleanup_old_custom_covers(gid)
+        cleanup_old_custom_covers(gid, cleanup_gallery=True)
         deletable_ids.append(gid)
 
     count = batch_delete_games_by_ids(deletable_ids)
-    compute_duplicates_and_update_db()
+    bg_tasks.add_task(compute_duplicates_and_update_db)
     if failed_paths:
         return {
             "success": count > 0,
@@ -896,24 +1073,32 @@ def apply_candidate_api(game_id: int, req: ApplyCandidateRequest):
         cached_b = download_and_cache_cover(raw_banner, f"cand_banner_{game_id}_{int(time.time())}", proxy=proxy, force=True)
         raw_banner = cached_b or raw_cover
 
+    raw_samples = c.get("sample_images") or game.get("sample_images", [])
+    if raw_samples and any(str(u).startswith("http") for u in raw_samples):
+        raw_samples = download_and_cache_samples(raw_samples, f"cand_{game_id}", proxy=proxy, force=True, max_count=4)
+
     circle_val = c.get("circle_name") or c.get("circle") or game.get("circle_name", "")
     synopsis_val = c.get("synopsis") or game.get("synopsis", "")
     if synopsis_val and c.get("source") in ("dlsite", "vndb"):
         synopsis_val = translate_japanese_to_chinese(synopsis_val, proxy=proxy)
 
+    final_disp = resolve_best_display_title(game, c.get("title"), fallback_title=game.get("display_title") or game["folder_name"])
+    localized_tags = normalize_and_localize_tags((c.get("tags") or []) + (game.get("tags") or []), localize=True)
+
     update_dict = {
         "folder_path": game["folder_path"],
         "folder_name": game["folder_name"],
-        "display_title": c.get("title") or game.get("display_title", ""),
+        "display_title": final_disp,
         "original_title": c.get("original_title") or game.get("original_title", ""),
         "rj_code": c.get("rj_code") or game.get("rj_code", ""),
         "circle_name": circle_val,
         "cover_url": raw_cover,
         "banner_url": raw_banner,
+        "sample_images": raw_samples,
         "synopsis": synopsis_val,
         "release_date": c.get("release_date") or game.get("release_date", ""),
         "voice_actors": c.get("voice_actors") or game.get("voice_actors", []),
-        "tags": c.get("tags") or game.get("tags", []),
+        "tags": localized_tags,
         "source_url": c.get("source_url") or game.get("source_url", ""),
         "source_type": c.get("source") or game.get("source_type", "auto"),
         "rating_score": c.get("rating_score") or game.get("rating_score", 0.0)
@@ -1137,6 +1322,12 @@ def test_proxy(req: TestProxyRequest):
 def test_llm_api(req: TestLLMRequest):
     custom = {k: v for k, v in req.model_dump().items() if v is not None}
     return test_llm_connection(custom)
+
+
+@app.post("/api/config/test_webdav")
+def test_webdav_api(req: TestWebDAVRequest):
+    custom = {k: v for k, v in req.model_dump().items() if v is not None}
+    return test_webdav_connection(custom)
 
 
 @app.post("/api/system/pick_path")

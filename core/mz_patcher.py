@@ -34,14 +34,14 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
 //=============================================================================
 /*:
  * @target MZ
- * @plugindesc [v2.2.0] Universal Runtime Translation Patch
+ * @plugindesc [v2.3.0] Universal Runtime Translation Patch
  * @author ACG Vault
  * @help Translates all text dynamically on display time.
  */
 
 (() => {
     'use strict';
-    console.log('[NativeTranslator] Initializing universal translation plugin v2.2...');
+    console.log('[NativeTranslator] Initializing universal translation plugin v2.3...');
 
     let transDict = {};
 
@@ -237,7 +237,7 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
         };
     }
 
-    console.log('[NativeTranslator] Universal translation plugin v2.2 active!');
+    console.log('[NativeTranslator] Universal translation plugin v2.3 active!');
 })();
 """
 
@@ -450,7 +450,7 @@ class MZPatcher:
             "success": True,
             "replaced_entries": stats['count'],
             "processed_files": stats['files'],
-            "message": f"静态固化汉化成功！已将 {stats['count']} 处文本固化到游戏本体并安装 v2.2 动态补丁。"
+            "message": f"静态固化汉化成功！已将 {stats['count']} 处文本固化到游戏本体并安装 v2.3 动态补丁。"
         }
 
     def unbake(self, game_folder: str) -> Dict[str, Any]:

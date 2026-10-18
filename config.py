@@ -3,7 +3,7 @@ import sys
 import json
 from pathlib import Path
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("ACG_VAULT_DATA_DIR", str(BASE_DIR / "data")))
@@ -17,6 +17,7 @@ GALLERY_DIR.mkdir(parents=True, exist_ok=True)
 
 CONFIG_FILE = DATA_DIR / "config.json"
 DB_PATH = DATA_DIR / "acg_vault.db"
+L10N_TAGS_FILE = DATA_DIR / "l10n_tags_zh.json"
 
 DEFAULT_CONFIG = {
     "game_directories": [r"E:\ACG"],
@@ -28,6 +29,7 @@ DEFAULT_CONFIG = {
     "auto_scrape": True,
     "scrape_source": "auto",  # "auto", "dlsite", "bangumi", "steam", "vndb"
     "incremental_scan": True,
+    "auto_localize_tags": True,
     # UI & Reading Customization
     "default_view_mode": "grid",  # "grid", "list", "analytics"
     "cover_fit_mode": "smart",  # "smart" (blur backdrop + contain), "portrait" (3:4), "landscape" (4:3)
@@ -40,13 +42,23 @@ DEFAULT_CONFIG = {
     "clear_batch_on_filter": True,
     "theme": "dark",
     "port": 8000,
-    # Desktop Native & Hotkey Settings
+    # Desktop Native, Companion Overlay & Hotkey Settings
     "desktop_mode": "native",  # "native" (PyWebView / App window) or "browser"
     "minimize_to_tray": True,
     "auto_start_windows": False,
     "global_boss_hotkey": "Alt+Space",
+    "global_overlay_hotkey": "Alt+G",
     "enable_ingame_screenshot": True,
     "screenshot_hotkey": "F12",
+    # Auto Incremental Save Snapshot & WebDAV Cloud Backup (v2.3)
+    "enable_auto_save_backup": True,
+    "auto_backup_min_minutes": 5,
+    "auto_backup_max_keep": 5,
+    "webdav_enabled": False,
+    "webdav_url": "",
+    "webdav_username": "",
+    "webdav_password": "",
+    "webdav_auto_sync": True,
     # LLM AI Scraper & Walkthrough Engine Settings
     "llm_enabled": False,
     "llm_api_base": "https://api.deepseek.com/v1",
@@ -123,10 +135,21 @@ def save_config(cfg: dict) -> dict:
     except Exception:
         merged["port"] = 8000
 
+    try:
+        merged["auto_backup_min_minutes"] = max(1, min(120, int(merged.get("auto_backup_min_minutes", 5))))
+    except Exception:
+        merged["auto_backup_min_minutes"] = 5
+
+    try:
+        merged["auto_backup_max_keep"] = max(1, min(30, int(merged.get("auto_backup_max_keep", 5))))
+    except Exception:
+        merged["auto_backup_max_keep"] = 5
+
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, indent=2)
 
-    if prev_auto_start != merged.get("auto_start_windows"):
+    # Always ensure Windows registry path stays accurate when enabled or toggled
+    if merged.get("auto_start_windows") or prev_auto_start != merged.get("auto_start_windows"):
         sync_windows_autostart(bool(merged.get("auto_start_windows")))
 
     return merged

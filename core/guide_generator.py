@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-RPG Maker MV/MZ Story & Branch AST Unpacker + AI Walkthrough Generator for ACG Vault v2.2.
+RPG Maker MV/MZ Story & Branch AST Unpacker + AI Walkthrough Generator for ACG Vault v2.3.
 - Automatically unpacks and inspects System.json, Actors.json, Items.json, CommonEvents.json, MapInfos.json, and Map*.json
 - Applies local translation dictionary (翻译文件.json / translation.json) so extracted Japanese switches/choices/dialogs are translated
-- Generates a structured, magazine-grade Markdown full-ending walkthrough via LLM (if enabled) or deterministic AST compilation
+- Generates a structured, magazine-grade Markdown full-ending walkthrough into `walkthrough_md` (preserving `user_notes` for personal memos)
+- Provides real-time F9 Variable & Switch cheat table inspection for the In-Game Companion Overlay (Alt+G)
 """
 
 import os
@@ -55,6 +56,94 @@ def _load_json_safe(path: Path) -> Any:
             return json.load(f)
     except Exception:
         return None
+
+
+def extract_f9_debug_cheats(game_id: int) -> Dict[str, Any]:
+    """
+    Extracts F9 variables and switches table from RPG Maker System.json (or parses from walkthrough_md)
+    for instant lookup inside the In-Game Companion Overlay (Alt+G).
+    """
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"supported": False, "variables": [], "switches": []}
+
+    folder_path = game.get("folder_path") or ""
+    data_dir = _find_data_dir(folder_path) if folder_path and os.path.exists(folder_path) else None
+
+    if data_dir:
+        trans_dict: Dict[str, str] = {}
+        trs_path = find_translation_dict_in_folder(folder_path)
+        if trs_path and os.path.exists(trs_path):
+            try:
+                trans_dict = MZPatcher.load_dict(trs_path)
+            except Exception:
+                trans_dict = {}
+
+        def tr(s: Optional[str]) -> str:
+            if not s or not isinstance(s, str):
+                return ""
+            s_clean = s.strip()
+            if not trans_dict:
+                return s_clean
+            res, _ = MZPatcher.translate_string(s_clean, trans_dict)
+            return res.strip()
+
+        sys_data = _load_json_safe(data_dir / "System.json") or {}
+        raw_switches = sys_data.get("switches") or []
+        raw_vars = sys_data.get("variables") or []
+
+        vars_list = []
+        for idx, name in enumerate(raw_vars):
+            if idx > 0 and name and str(name).strip():
+                t_name = tr(str(name))
+                is_key = bool(KEY_VAR_PAT.search(t_name) or KEY_VAR_PAT.search(str(name)))
+                vars_list.append({
+                    "id": idx,
+                    "code": f"Var #{idx:04d}",
+                    "name": t_name,
+                    "raw_name": str(name).strip(),
+                    "is_key": is_key
+                })
+
+        sw_list = []
+        for idx, name in enumerate(raw_switches):
+            if idx > 0 and name and str(name).strip():
+                t_name = tr(str(name))
+                is_key = bool(KEY_SWITCH_PAT.search(t_name) or KEY_SWITCH_PAT.search(str(name)))
+                sw_list.append({
+                    "id": idx,
+                    "code": f"Sw #{idx:04d}",
+                    "name": t_name,
+                    "raw_name": str(name).strip(),
+                    "is_key": is_key
+                })
+
+        vars_list.sort(key=lambda x: (not x["is_key"], x["id"]))
+        sw_list.sort(key=lambda x: (not x["is_key"], x["id"]))
+        return {
+            "supported": True,
+            "source": "system_json",
+            "variables": vars_list[:80],
+            "switches": sw_list[:80]
+        }
+
+    # Fallback: parse Var # / Sw # tables from walkthrough_md if game folder isn't RPG Maker or not present
+    wt_text = game.get("walkthrough_md") or ""
+    vars_fallback = []
+    sw_fallback = []
+    for m in re.finditer(r"`?Var\s*#?(\d+)`?\s*\|\s*\*\*([^*|]+)\*\*", wt_text, re.I):
+        vid = int(m.group(1))
+        vars_fallback.append({"id": vid, "code": f"Var #{vid:04d}", "name": m.group(2).strip(), "raw_name": "", "is_key": True})
+    for m in re.finditer(r"`?Sw\s*#?(\d+)`?\s*\|\s*\*\*([^*|]+)\*\*", wt_text, re.I):
+        sid = int(m.group(1))
+        sw_fallback.append({"id": sid, "code": f"Sw #{sid:04d}", "name": m.group(2).strip(), "raw_name": "", "is_key": True})
+
+    return {
+        "supported": bool(vars_fallback or sw_fallback),
+        "source": "walkthrough_md",
+        "variables": vars_fallback,
+        "switches": sw_fallback
+    }
 
 
 def inspect_rpgmaker_project(folder_path: str) -> Dict[str, Any]:
@@ -266,7 +355,7 @@ def _compile_static_markdown_guide(game: Dict[str, Any], blueprint: Dict[str, An
         f"# 《{title}》全流程分支、核心数值与全结局攻略",
         "",
         f"> **作品信息**：{f'`{rj}` · ' if rj else ''}开发商：**{circle}** · 驱动引擎：**{engine}**",
-        "> **攻略说明**：本攻略由 **ACG Vault v2.2 工程解包引擎** 自动逆向解析游戏内部 `System.json`、`CommonEvents.json` 与地图事件脚本生成，包含精确的内部开关/变量 ID 与分支触发条件。",
+        "> **攻略说明**：本攻略由 **ACG Vault v2.3 工程解包引擎** 自动逆向解析游戏内部 `System.json`、`CommonEvents.json` 与地图事件脚本生成，包含精确的内部开关/变量 ID 与分支触发条件。",
         "",
         "## 一、 核心角色与初期设定"
     ]
@@ -284,8 +373,8 @@ def _compile_static_markdown_guide(game: Dict[str, Any], blueprint: Dict[str, An
 
     lines.extend([
         "",
-        "## 二、 核心数值变量与阶段开关一览（支持 F9 / MTool 实时修改）",
-        "在游戏运行中按下 **`F9`**（RPG Maker 原生调试面板）、**`F8`**（ACG Vault 全回想插件）或使用 **MTool 修改器**，可直接定位以下关键变量与开关："
+        "## 二、 核心数值变量与阶段开关一览（支持 F9 / Alt+G 速查 / MTool 修改）",
+        "在游戏运行中按下 **`F9`**（RPG Maker 原生调试面板）、**`Alt+G`**（ACG Vault 游戏内悬浮攻略小窗）或 **`F8`**（全回想插件），可直接定位以下关键变量与开关："
     ])
 
     key_vars = blueprint.get("key_variables") or []
@@ -366,8 +455,8 @@ def _compile_static_markdown_guide(game: Dict[str, Any], blueprint: Dict[str, An
 
 def generate_game_walkthrough(game_id: int, use_llm: bool = True, overwrite: bool = False) -> Dict[str, Any]:
     """
-    Generates a comprehensive Markdown walkthrough for game_id by unpacking game data files
-    and combining with LLM (if enabled and configured) or the deterministic AST compiler.
+    Generates a comprehensive Markdown walkthrough for game_id into `walkthrough_md`
+    (keeping `user_notes` completely untouched for the user's personal clearance notes).
     """
     game = get_game_by_id(game_id)
     if not game:
@@ -447,13 +536,13 @@ def generate_game_walkthrough(game_id: int, use_llm: bool = True, overwrite: boo
             )
             used_engine = "smart_template"
 
-    existing_notes = (game.get("user_notes") or "").strip()
-    if existing_notes and not overwrite:
-        final_notes = f"{existing_notes}\n\n---\n\n{generated_md}"
+    existing_wt = (game.get("walkthrough_md") or "").strip()
+    if existing_wt and not overwrite:
+        final_walkthrough = f"{existing_wt}\n\n---\n\n{generated_md}"
     else:
-        final_notes = generated_md
+        final_walkthrough = generated_md
 
-    update_game_user_state(game_id=game_id, user_notes=final_notes)
+    update_game_user_state(game_id=game_id, walkthrough_md=final_walkthrough)
 
     engine_labels = {
         "llm_plus_ast": "AI 大模型 + 工程解包 AST 联合生成",
@@ -465,6 +554,7 @@ def generate_game_walkthrough(game_id: int, use_llm: bool = True, overwrite: boo
         "success": True,
         "engine_used": used_engine,
         "unpacked_supported": bool(blueprint.get("supported")),
-        "user_notes": final_notes,
-        "message": f"攻略生成成功（{engine_labels.get(used_engine, used_engine)}，共 {len(generated_md)} 字符）！"
+        "walkthrough_md": final_walkthrough,
+        "user_notes": game.get("user_notes") or "",
+        "message": f"全结局攻略生成成功（{engine_labels.get(used_engine, used_engine)}，共 {len(generated_md)} 字符）！"
     }

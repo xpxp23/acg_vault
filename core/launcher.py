@@ -7,9 +7,13 @@ import zipfile
 import subprocess
 import threading
 import ctypes
+import urllib.parse
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, List
+import httpx
+
 from db.database import get_game_by_id, record_game_launch
 from core.scanner import fast_inspect_folder, choose_best_executable, is_valid_translation_json, IGNORE_EXE_PATTERNS
 from config import load_config
@@ -227,6 +231,20 @@ def shell_launch(exe_path: str, parameters: Optional[str] = None, working_dir: O
 # Map of running game processes: game_id -> {pid, start_time, exe, mode, folder_path}
 RUNNING_GAMES: Dict[int, Dict[str, Any]] = {}
 RUNNING_LOCK = threading.Lock()
+LAST_ACTIVE_GAME_ID: Optional[int] = None
+
+
+def set_last_active_game_id(game_id: int):
+    global LAST_ACTIVE_GAME_ID
+    if game_id:
+        LAST_ACTIVE_GAME_ID = int(game_id)
+
+
+def get_last_active_game_id() -> Optional[int]:
+    running = get_running_games_info()
+    if running:
+        return next(iter(running.keys()))
+    return LAST_ACTIVE_GAME_ID
 
 
 def get_running_games_info() -> Dict[int, Dict[str, Any]]:
@@ -239,11 +257,11 @@ def get_running_games_info() -> Dict[int, Dict[str, Any]]:
             pid = info.get("pid")
             folder_path = info.get("folder_path")
             elapsed = int(now - info.get("start_time", now))
-            if elapsed > 8 and pid and not is_pid_alive(pid):
+            if pid and not is_pid_alive(pid):
                 new_pid = find_game_pid_in_folder(folder_path, info.get("exe")) if folder_path else None
                 if new_pid:
                     info["pid"] = new_pid
-                else:
+                elif elapsed > 8:
                     stale_ids.append(gid)
                     continue
             active[gid] = {
@@ -301,7 +319,10 @@ def monitor_game_pid(
     exe_name: Optional[str] = None,
     game_folder: Optional[str] = None
 ):
-    """Monitors the real game process until it closes, listens for screenshot hotkeys, and records play duration."""
+    """
+    Monitors the real game process until it closes, listens for screenshot hotkeys,
+    records play duration, and triggers automatic incremental save backup + WebDAV sync on exit.
+    """
     search_root = game_folder or working_dir
     last_shot = 0.0
     try:
@@ -311,8 +332,13 @@ def monitor_game_pid(
             _wait_handle_with_hotkey_poll(hProcess, game_id, target_pid, search_root)
             close_win32_handle(hProcess)
             hProcess = None
-            time.sleep(1.5)
-            child_pid = find_game_pid_in_folder(search_root, exe_name)
+            # Retry child process detection across a 6-second window for unpacked / NW.js / Unity launcher wrappers
+            child_pid = None
+            for _ in range(6):
+                time.sleep(1.0)
+                child_pid = find_game_pid_in_folder(search_root, exe_name)
+                if child_pid:
+                    break
             if child_pid:
                 with RUNNING_LOCK:
                     if game_id in RUNNING_GAMES:
@@ -332,7 +358,7 @@ def monitor_game_pid(
             active_pid = target_pid
             if not active_pid:
                 for _ in range(6):
-                    time.sleep(1.2)
+                    time.sleep(1.0)
                     active_pid = find_game_pid_in_folder(search_root, exe_name)
                     if active_pid:
                         with RUNNING_LOCK:
@@ -366,6 +392,23 @@ def monitor_game_pid(
         duration = int(time.time() - start_time)
         if duration >= 3:
             record_game_launch(game_id, duration_seconds=duration, increment_count=False)
+
+        # v2.3: Automatic incremental save snapshot + optional WebDAV cloud backup when session >= threshold
+        try:
+            cfg = load_config()
+            if cfg.get("enable_auto_save_backup", True):
+                min_minutes = max(1, int(cfg.get("auto_backup_min_minutes", 5)))
+                max_keep = max(1, int(cfg.get("auto_backup_max_keep", 5)))
+                if duration >= min_minutes * 60:
+                    backup_game_saves(
+                        game_id,
+                        label=f"自动快照_{duration // 60}m",
+                        is_auto=True,
+                        max_auto_keep=max_keep
+                    )
+        except Exception as e:
+            print(f"[AutoSaveBackup] Failed on exit for game {game_id}: {e}")
+
         with RUNNING_LOCK:
             RUNNING_GAMES.pop(game_id, None)
 
@@ -397,6 +440,7 @@ def resolve_leproc_path() -> Optional[str]:
 
 def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
     """Launches the primary executable for a game with normal interactive window and tracks play session."""
+    set_last_active_game_id(game_id)
     running = get_running_games_info()
     if game_id in running:
         return {
@@ -479,6 +523,7 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
 
 def launch_game_with_le(game_id: int) -> Dict[str, Any]:
     """Launches game via Locale Emulator (LEProc.exe) for Japanese Shift-JIS locale emulation."""
+    set_last_active_game_id(game_id)
     running = get_running_games_info()
     if game_id in running:
         return {
@@ -700,6 +745,7 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
 
 def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
     """Launches game with MTool injection attached and normal visible window."""
+    set_last_active_game_id(game_id)
     running = get_running_games_info()
     if game_id in running:
         return {
@@ -814,7 +860,7 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------
-# Save Data Detection, Snapshot Backup & One-Click Restore
+# Save Data Detection, Auto-Snapshot, Restore & WebDAV Cloud Sync (v2.3)
 # ---------------------------------------------------------
 SAVE_DIR_CANDIDATES = [
     "save",
@@ -896,10 +942,12 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
         prefix = f"game_{game_id}_"
         for bf in sorted(backup_root.glob(f"{prefix}*.zip"), key=lambda x: x.stat().st_mtime, reverse=True):
             st = bf.stat()
+            is_auto = "_auto_" in bf.name or "自动快照" in bf.name
             backups.append({
                 "filename": bf.name,
                 "path": str(bf),
                 "size_kb": round(st.st_size / 1024, 1),
+                "is_auto": is_auto,
                 "created_at": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
             })
 
@@ -915,9 +963,11 @@ def get_game_save_status(game_id: int) -> Dict[str, Any]:
         "save_count": len(save_files),
         "latest_save_at": latest_save_time,
         "backup_root": str(backup_root),
-        "backups": backups[:20],
+        "backups": backups[:25],
         "can_unlock_cg": can_unlock_cg,
-        "cg_unlocked": int(game.get("cg_unlocked") or 0)
+        "cg_unlocked": int(game.get("cg_unlocked") or 0),
+        "auto_backup_enabled": bool(cfg.get("enable_auto_save_backup", True)),
+        "webdav_enabled": bool(cfg.get("webdav_enabled", False) and (cfg.get("webdav_url") or "").strip())
     }
 
 
@@ -941,7 +991,30 @@ def open_save_backup_folder(game_id: int) -> Dict[str, Any]:
     return {"success": True, "message": "已打开存档快照备份目录"}
 
 
-def backup_game_saves(game_id: int, label: str = "") -> Dict[str, Any]:
+def _prune_old_auto_backups(backup_root: Path, game_id: int, max_keep: int = 5):
+    """Retains only the latest max_keep automatic snapshots for game_id, never touching manual snapshots."""
+    try:
+        prefix = f"game_{game_id}_"
+        auto_files = [
+            bf for bf in backup_root.glob(f"{prefix}*.zip")
+            if "_auto_" in bf.name or "自动快照" in bf.name
+        ]
+        auto_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        for old_bf in auto_files[max_keep:]:
+            try:
+                old_bf.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def backup_game_saves(
+    game_id: int,
+    label: str = "",
+    is_auto: bool = False,
+    max_auto_keep: Optional[int] = None
+) -> Dict[str, Any]:
     game = get_game_by_id(game_id)
     if not game:
         return {"success": False, "message": "游戏不存在"}
@@ -955,10 +1028,11 @@ def backup_game_saves(game_id: int, label: str = "") -> Dict[str, Any]:
     backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
     backup_root.mkdir(parents=True, exist_ok=True)
 
-    safe_title = re.sub(r'[\\/*?:"<>|\s]+', "_", (game.get("clean_title") or game.get("folder_name") or "game"))[:26]
+    safe_title = re.sub(r'[\\/*?:"<>|\s]+', "_", (game.get("clean_title") or game.get("folder_name") or "game"))[:24]
+    auto_tag = "_auto" if is_auto else ""
     safe_label = "_" + re.sub(r'[\\/*?:"<>|\s]+', "_", label.strip())[:14] if label and label.strip() else ""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_name = f"game_{game_id}_{safe_title}{safe_label}_{ts}.zip"
+    zip_name = f"game_{game_id}_{safe_title}{auto_tag}{safe_label}_{ts}.zip"
     zip_path = backup_root / zip_name
 
     try:
@@ -981,11 +1055,28 @@ def backup_game_saves(game_id: int, label: str = "") -> Dict[str, Any]:
             if zip_path.exists():
                 zip_path.unlink()
             return {"success": False, "message": "存档目录为空，暂无可备份的存档文件"}
+
+        if is_auto:
+            keep_n = max_auto_keep or int(cfg.get("auto_backup_max_keep", 5))
+            _prune_old_auto_backups(backup_root, game_id, max_keep=max(1, keep_n))
+
+        # Trigger non-blocking WebDAV cloud upload if enabled
+        webdav_synced = False
+        if cfg.get("webdav_enabled") and cfg.get("webdav_auto_sync", True) and (cfg.get("webdav_url") or "").strip():
+            threading.Thread(target=upload_backup_to_webdav, args=(zip_path, cfg), daemon=True).start()
+            webdav_synced = True
+
+        msg = f"已成功备份 {file_count} 个存档文件至 {zip_name}"
+        if webdav_synced:
+            msg += "（已触发 WebDAV 云端同步）"
+
         return {
             "success": True,
             "zip_path": str(zip_path),
+            "filename": zip_name,
             "file_count": file_count,
-            "message": f"已成功备份 {file_count} 个存档文件至 {zip_name}",
+            "webdav_triggered": webdav_synced,
+            "message": msg,
             "save_status": get_game_save_status(game_id)
         }
     except Exception as e:
@@ -1064,4 +1155,156 @@ def delete_game_save_backup(game_id: int, filename: str) -> Dict[str, Any]:
         "success": True,
         "message": f"已删除存档备份: {safe_name}",
         "save_status": get_game_save_status(game_id)
+    }
+
+
+# ---------------------------------------------------------
+# WebDAV Cloud Save Sync Engine (Nutstore / Alist / Nextcloud)
+# ---------------------------------------------------------
+def _get_webdav_client_and_url(custom_cfg: Optional[Dict[str, Any]] = None):
+    cfg = load_config()
+    if custom_cfg:
+        cfg.update(custom_cfg)
+    base_url = (cfg.get("webdav_url") or "").strip().rstrip("/")
+    username = (cfg.get("webdav_username") or "").strip()
+    password = (cfg.get("webdav_password") or "").strip()
+    auth = (username, password) if username or password else None
+    client = httpx.Client(auth=auth, timeout=15.0, follow_redirects=True)
+    return client, base_url
+
+
+def test_webdav_connection(custom_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Tests WebDAV server connectivity, credentials, and auto-creates target directory if needed."""
+    client, base_url = _get_webdav_client_and_url(custom_cfg)
+    if not base_url or not (base_url.startswith("http://") or base_url.startswith("https://")):
+        client.close()
+        return {"success": False, "message": "请填写合法的 WebDAV 目录 URL（以 http:// 或 https:// 开头）"}
+
+    t0 = time.time()
+    try:
+        with client:
+            r = client.request("PROPFIND", base_url + "/", headers={"Depth": "0"})
+            ms = int((time.time() - t0) * 1000)
+            if r.status_code in (200, 207):
+                return {"success": True, "latency_ms": ms, "message": f"WebDAV 连接成功 ({ms}ms) · 远端存档库已就绪"}
+            elif r.status_code == 404:
+                mk = client.request("MKCOL", base_url + "/")
+                if mk.status_code in (200, 201, 204):
+                    return {"success": True, "latency_ms": ms, "message": f"WebDAV 连接成功 ({ms}ms) · 已自动创建远端备份目录"}
+                return {"success": False, "message": f"远端目录不存在且自动创建失败 (HTTP {mk.status_code})"}
+            elif r.status_code in (401, 403):
+                return {"success": False, "message": f"WebDAV 认证失败 (HTTP {r.status_code})，请检查账号或应用专用密码"}
+            else:
+                return {"success": False, "message": f"WebDAV 响应异常: HTTP {r.status_code}"}
+    except Exception as e:
+        return {"success": False, "message": f"无法连接至 WebDAV 服务器: {str(e)[:80]}"}
+
+
+def upload_backup_to_webdav(zip_path: Path, custom_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Uploads a local save backup ZIP file to the configured WebDAV directory."""
+    if not zip_path.exists() or not zip_path.is_file():
+        return {"success": False, "message": "本地备份文件不存在"}
+
+    client, base_url = _get_webdav_client_and_url(custom_cfg)
+    if not base_url:
+        client.close()
+        return {"success": False, "message": "尚未配置 WebDAV 服务器地址"}
+
+    try:
+        with client:
+            # Ensure target folder exists on WebDAV
+            try:
+                chk = client.request("PROPFIND", base_url + "/", headers={"Depth": "0"})
+                if chk.status_code == 404:
+                    client.request("MKCOL", base_url + "/")
+            except Exception:
+                pass
+
+            encoded_name = urllib.parse.quote(zip_path.name)
+            target_url = f"{base_url}/{encoded_name}"
+            with open(zip_path, "rb") as f:
+                content = f.read()
+            r = client.put(target_url, content=content, headers={"Content-Type": "application/zip"})
+            if r.status_code in (200, 201, 204):
+                return {
+                    "success": True,
+                    "filename": zip_path.name,
+                    "remote_url": target_url,
+                    "message": f"已同步至 WebDAV 云端: {zip_path.name}"
+                }
+            return {"success": False, "message": f"WebDAV 上传失败 (HTTP {r.status_code})"}
+    except Exception as e:
+        return {"success": False, "message": f"WebDAV 上传异常: {str(e)[:80]}"}
+
+
+def sync_game_saves_with_webdav(game_id: int) -> Dict[str, Any]:
+    """
+    One-click WebDAV Save Sync for a game:
+    1. If local save directory has files and no recent backup exists, creates a fresh snapshot.
+    2. Uploads the latest local snapshot for game_id to WebDAV.
+    3. Also checks WebDAV via PROPFIND to pull any remote snapshots for game_id that are missing locally.
+    """
+    cfg = load_config()
+    if not (cfg.get("webdav_url") or "").strip():
+        return {"success": False, "message": "请先在【系统设置 -> 桌面与云同步】中配置 WebDAV 地址与账号"}
+
+    backup_root = Path(cfg.get("save_backup_directory", r"E:\ACG\_Save_Backups"))
+    backup_root.mkdir(parents=True, exist_ok=True)
+    prefix = f"game_{game_id}_"
+
+    local_zips = sorted(backup_root.glob(f"{prefix}*.zip"), key=lambda x: x.stat().st_mtime, reverse=True)
+    if not local_zips:
+        bak_res = backup_game_saves(game_id, label="云同步快照")
+        if bak_res.get("success"):
+            local_zips = sorted(backup_root.glob(f"{prefix}*.zip"), key=lambda x: x.stat().st_mtime, reverse=True)
+
+    uploaded_name = ""
+    if local_zips:
+        up_res = upload_backup_to_webdav(local_zips[0], cfg)
+        if up_res.get("success"):
+            uploaded_name = local_zips[0].name
+        else:
+            return {
+                "success": False,
+                "message": up_res.get("message", "WebDAV 云端上传失败"),
+                "save_status": get_game_save_status(game_id)
+            }
+
+    downloaded_count = 0
+    client, base_url = _get_webdav_client_and_url(cfg)
+    try:
+        with client:
+            r = client.request("PROPFIND", base_url + "/", headers={"Depth": "1"})
+            if r.status_code in (200, 207) and r.text:
+                root_el = ET.fromstring(r.text)
+                for elem in root_el.iter():
+                    if elem.tag.endswith("href") and elem.text:
+                        href_decoded = urllib.parse.unquote(elem.text.strip())
+                        fname = Path(href_decoded.rstrip("/")).name
+                        if fname.startswith(prefix) and fname.endswith(".zip"):
+                            local_target = backup_root / fname
+                            if not local_target.exists():
+                                dl_url = f"{base_url}/{urllib.parse.quote(fname)}"
+                                dl_resp = client.get(dl_url)
+                                if dl_resp.status_code == 200 and dl_resp.content.startswith(b"PK\x03\x04"):
+                                    with open(local_target, "wb") as f:
+                                        f.write(dl_resp.content)
+                                    downloaded_count += 1
+    except Exception:
+        pass
+
+    parts = []
+    if uploaded_name:
+        parts.append(f"已上传最新快照 ({uploaded_name})")
+    if downloaded_count > 0:
+        parts.append(f"从云端拉取了 {downloaded_count} 份历史快照")
+    if not parts:
+        parts.append("WebDAV 云端存档已是最新状态")
+
+    return {
+        "success": True,
+        "uploaded": uploaded_name,
+        "downloaded_count": downloaded_count,
+        "save_status": get_game_save_status(game_id),
+        "message": "WebDAV 同步完成：" + "，".join(parts)
     }

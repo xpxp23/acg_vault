@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ACG Vault 伴侣悬浮窗 (Alt+G)</title>
+  <script src="/static/vendor/tailwindcss.js?v=2.3"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=2.3"></script>
+  <script src="/static/vendor/marked.min.js?v=2.3"></script>
+  <link rel="stylesheet" href="/static/style.css?v=2.3">
+  <style>
+    body {
+      background: transparent;
+      overflow: hidden;
+      user-select: text;
+    }
+    .overlay-shell {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: rgba(7, 10, 18, var(--overlay-alpha, 0.94));
+      border: 1px solid rgba(99, 102, 241, 0.35);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
+    }
+  </style>
+</head>
+<body class="text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
+  <div id="overlay-app" class="overlay-shell" :style="{ '--overlay-alpha': panelOpacity }">
+
+    <!-- Top Compact Header Bar -->
+    <header class="px-3.5 py-2.5 bg-slate-950/90 border-b border-slate-800/90 flex items-center justify-between gap-2 shrink-0">
+      <div class="flex items-center space-x-2 min-w-0 flex-1">
+        <span class="w-2 h-2 rounded-full shrink-0" :class="isRunning ? 'bg-emerald-400 animate-ping' : 'bg-indigo-400'"></span>
+        <select
+          v-model="selectedGameId"
+          @change="loadOverlayContext(selectedGameId)"
+          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-xs font-bold text-slate-100 focus:outline-none focus:border-indigo-500 truncate max-w-[230px] cursor-pointer"
+        >
+          <option v-for="g in gameList" :key="g.id" :value="g.id">
+            {{ g.is_running ? '▶ ' : (g.has_walkthrough ? '📖 ' : '') }}{{ g.display_title || g.folder_name }}
+          </option>
+        </select>
+      </div>
+
+      <!-- Opacity Slider & Quick Actions -->
+      <div class="flex items-center space-x-1.5 shrink-0">
+        <div class="flex items-center space-x-1 bg-slate-900/90 border border-slate-800 rounded-lg px-2 py-1" title="调节悬浮窗背景不透明度">
+          <span class="text-[10px] text-slate-400 font-mono">透明度</span>
+          <input
+            type="range"
+            min="0.65"
+            max="1.0"
+            step="0.05"
+            v-model.number="panelOpacity"
+            @input="saveOpacity"
+            class="w-12 accent-indigo-500 cursor-pointer h-1"
+          />
+        </div>
+        <button
+          @click="captureShot"
+          :disabled="isCapturing || !game"
+          class="px-2 py-1 rounded-lg bg-pink-600/25 border border-pink-500/40 hover:bg-pink-600 text-pink-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
+          title="立即截取当前游戏窗口画面 (F12)"
+        >
+          📸 抓拍
+        </button>
+        <button
+          @click="quickBackupSave"
+          :disabled="isBackingUp || !game"
+          class="px-2 py-1 rounded-lg bg-emerald-600/25 border border-emerald-500/40 hover:bg-emerald-600 text-emerald-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
+          title="一键备份当前游戏存档快照"
+        >
+          💾 存快照
+        </button>
+      </div>
+    </header>
+
+    <!-- Toast Mini Banner -->
+    <div v-if="toastMsg" class="px-3 py-1.5 bg-indigo-950/95 border-b border-indigo-500/40 text-[11px] text-indigo-200 flex items-center justify-between">
+      <span>{{ toastMsg }}</span>
+      <button @click="toastMsg = ''" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="px-3 py-2 bg-slate-900/80 border-b border-slate-800/80 flex items-center justify-between gap-2 shrink-0">
+      <div class="flex items-center space-x-1 bg-slate-950 p-0.5 rounded-xl border border-slate-800 text-xs">
+        <button
+          @click="activeTab = 'walkthrough'"
+          :class="['px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer', activeTab === 'walkthrough' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
+        >
+          📖 全结局攻略
+        </button>
+        <button
+          @click="activeTab = 'f9'"
+          :class="['px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center space-x-1', activeTab === 'f9' ? 'bg-purple-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
+        >
+          <span>⚡ F9 变量表</span>
+          <span v-if="f9Count > 0" class="px-1 rounded bg-white/15 text-[10px] font-mono">{{ f9Count }}</span>
+        </button>
+        <button
+          @click="activeTab = 'memo'"
+          :class="['px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center space-x-1', activeTab === 'memo' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
+        >
+          <span>📝 随手记</span>
+          <span v-if="game && game.user_notes && game.user_notes.trim()" class="w-1.5 h-1.5 rounded-full bg-emerald-300"></span>
+        </button>
+      </div>
+
+      <span v-if="saveState !== 'idle'" class="text-[10px] font-mono" :class="saveState === 'saved' ? 'text-emerald-400' : 'text-amber-300'">
+        {{ saveState === 'saved' ? '✓ 已同步' : '保存中...' }}
+      </span>
+    </div>
+
+    <!-- Main Body -->
+    <div v-if="!game" class="flex-1 flex items-center justify-center p-6 text-center text-xs text-slate-400">
+      正在加载游戏伴侣数据...
+    </div>
+
+    <!-- TAB 1: Full-Ending Walkthrough & Interactive Checklist -->
+    <div v-else-if="activeTab === 'walkthrough'" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <!-- Filter & Chapter Jump Bar -->
+      <div class="px-3 py-2 border-b border-slate-800/70 bg-slate-950/50 flex flex-wrap items-center gap-1.5 shrink-0">
+        <input
+          type="text"
+          v-model="guideSearch"
+          placeholder="搜索攻略关键词 / 结局 / 选项..."
+          class="flex-1 min-w-[140px] bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+        />
+        <button
+          @click="checklistOnly = !checklistOnly"
+          :class="['px-2.5 py-1 rounded-lg text-[11px] font-medium border cursor-pointer transition-colors', checklistOnly ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200' : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200']"
+          title="仅显示攻略中的结局与全收集复选框清单"
+        >
+          ☑️ 仅看清单 ({{ checklistItems.length }})
+        </button>
+        <select
+          v-if="!checklistOnly && tocList.length > 0"
+          @change="jumpToHeading($event.target.value); $event.target.value = ''"
+          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-[11px] text-indigo-300 max-w-[130px] cursor-pointer"
+        >
+          <option value="">📑 章节跳转...</option>
+          <option v-for="(h, idx) in tocList" :key="idx" :value="idx">
+            {{ '　'.repeat(Math.max(0, h.level - 1)) }}{{ h.title }}
+          </option>
+        </select>
+      </div>
+
+      <!-- Checklist-Only Filtered View -->
+      <div v-if="checklistOnly" class="flex-1 overflow-y-auto p-3.5 space-y-2 text-xs">
+        <div v-if="checklistItems.length === 0" class="text-center py-12 text-slate-500">
+          当前攻略中未检测到 `- [ ]` 任务复选框。
+        </div>
+        <div
+          v-for="item in checklistItems"
+          :key="item.idx"
+          @click="toggleChecklistByIndex(item.idx)"
+          :class="['p-2.5 rounded-xl border flex items-start space-x-2.5 cursor-pointer transition-colors', item.checked ? 'bg-emerald-950/30 border-emerald-500/30 text-slate-400 line-through' : 'bg-slate-900/80 border-slate-800 hover:border-indigo-500/50 text-slate-200']"
+        >
+          <input type="checkbox" :checked="item.checked" class="mt-0.5 accent-indigo-500 pointer-events-none" />
+          <span class="leading-relaxed">{{ item.text }}</span>
+        </div>
+      </div>
+
+      <!-- Full Markdown Reader View -->
+      <div
+        v-else
+        id="overlay-guide-container"
+        class="flex-1 overflow-y-auto p-4 notes-markdown-body notes-size-sm"
+        @click="handleMarkdownClick"
+      >
+        <div v-if="!game.walkthrough_md || !game.walkthrough_md.trim()" class="text-center py-12 space-y-3">
+          <p class="text-xs text-slate-400">该游戏尚未收录全结局攻略</p>
+          <button
+            @click="generateWalkthrough"
+            :disabled="isGenerating"
+            class="px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-pink-600 text-white text-xs font-bold shadow-lg cursor-pointer disabled:opacity-50"
+          >
+            {{ isGenerating ? '正在逆向解包生成...' : '✨ 一键 AI 逆向解包生成全结局攻略' }}
+          </button>
+        </div>
+        <div v-else v-html="renderedWalkthrough"></div>
+      </div>
+    </div>
+
+    <!-- TAB 2: F9 Variables & Switches Quick Lookup -->
+    <div v-else-if="activeTab === 'f9'" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <div class="px-3 py-2 border-b border-slate-800/70 bg-slate-950/50 flex items-center gap-2 shrink-0">
+        <input
+          type="text"
+          v-model="f9Query"
+          placeholder="搜索变量/开关名或编号 (如: 好感 / 堕落 / 回想 / 0015)..."
+          class="flex-1 bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-purple-500"
+        />
+        <button
+          @click="f9KeyOnly = !f9KeyOnly"
+          :class="['px-2.5 py-1 rounded-lg text-[11px] font-medium border cursor-pointer shrink-0', f9KeyOnly ? 'bg-purple-600/30 border-purple-400 text-purple-200' : 'bg-slate-900 border-slate-700 text-slate-400']"
+        >
+          ★ 核心优先
+        </button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+        <div v-if="filteredVars.length === 0 && filteredSwitches.length === 0" class="text-center py-12 text-slate-500 space-y-2">
+          <div>未检测到匹配的 RPG Maker 内部变量或开关数据</div>
+          <div class="text-[11px] text-slate-600">（仅支持包含 System.json 的 RPG Maker MV/MZ 游戏或已生成变量表的攻略）</div>
+        </div>
+
+        <div v-if="filteredVars.length > 0" class="space-y-1.5">
+          <div class="text-[11px] font-bold text-amber-300 px-1 flex items-center justify-between">
+            <span>🔢 关键数值变量 (Variables - 游戏内按 F9 修改)</span>
+            <span class="font-mono text-[10px] text-slate-500">{{ filteredVars.length }} 项</span>
+          </div>
+          <div
+            v-for="v in filteredVars"
+            :key="'v-' + v.id"
+            @click="copyText(v.code + ' ' + v.name)"
+            class="px-3 py-1.5 rounded-xl bg-slate-900/85 border border-slate-800 hover:border-amber-500/50 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+            title="点击复制变量编号"
+          >
+            <div class="flex items-center space-x-2 min-w-0">
+              <span class="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono text-[11px] font-bold shrink-0">{{ v.code }}</span>
+              <span class="text-slate-100 font-medium truncate">{{ v.name }}</span>
+            </div>
+            <span v-if="v.is_key" class="text-[10px] text-pink-400 shrink-0">核心</span>
+          </div>
+        </div>
+
+        <div v-if="filteredSwitches.length > 0" class="space-y-1.5 pt-1">
+          <div class="text-[11px] font-bold text-indigo-300 px-1 flex items-center justify-between">
+            <span>🔘 剧情/回想开关 (Switches - 按 F8 全开或 F9 切换)</span>
+            <span class="font-mono text-[10px] text-slate-500">{{ filteredSwitches.length }} 项</span>
+          </div>
+          <div
+            v-for="s in filteredSwitches"
+            :key="'s-' + s.id"
+            @click="copyText(s.code + ' ' + s.name)"
+            class="px-3 py-1.5 rounded-xl bg-slate-900/85 border border-slate-800 hover:border-indigo-500/50 flex items-center justify-between gap-2 cursor-pointer transition-colors"
+            title="点击复制开关编号"
+          >
+            <div class="flex items-center space-x-2 min-w-0">
+              <span class="px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-mono text-[11px] font-bold shrink-0">{{ s.code }}</span>
+              <span class="text-slate-100 font-medium truncate">{{ s.name }}</span>
+            </div>
+            <span v-if="s.is_key" class="text-[10px] text-emerald-400 shrink-0">关键</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Personal Clearance Sticky Memo (user_notes) -->
+    <div v-else-if="activeTab === 'memo'" class="flex-1 flex flex-col p-3.5 space-y-2.5 min-h-0">
+      <div class="flex items-center justify-between text-xs text-slate-400">
+        <span>💡 个人通关随手记（自动保存，独立于全结局攻略，适合记密码/存档槽位/吐槽）</span>
+      </div>
+      <textarea
+        v-model="game.user_notes"
+        @input="debounceSaveMemo"
+        placeholder="随便打一打：例如 3号存档是分支点、保险箱密码 1024、二周目继承提示..."
+        class="flex-1 w-full rounded-2xl bg-slate-900/90 border border-emerald-500/35 focus:border-emerald-400 p-3.5 text-xs text-slate-100 leading-relaxed resize-none focus:outline-none font-mono"
+      ></textarea>
+    </div>
+
+    <!-- Footer Status Bar -->
+    <footer class="px-3.5 py-1.5 bg-slate-950/95 border-t border-slate-800/90 flex items-center justify-between text-[10px] text-slate-500 font-mono shrink-0">
+      <span>快捷键: Alt+G 呼出/隐藏 · F8 全CG · F12 截图</span>
+      <span v-if="game">{{ game.engine_type }} · {{ game.rj_code || 'LOCAL' }}</span>
+    </footer>
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+    createApp({
+      setup() {
+        const game = ref(null);
+        const gameList = ref([]);
+        const selectedGameId = ref(null);
+        const isRunning = ref(false);
+        const activeTab = ref('walkthrough');
+        const panelOpacity = ref(parseFloat(localStorage.getItem('acg_overlay_opacity') || '0.94'));
+        const guideSearch = ref('');
+        const checklistOnly = ref(false);
+        const f9Data = ref({ variables: [], switches: [] });
+        const f9Query = ref('');
+        const f9KeyOnly = ref(false);
+        const saveState = ref('idle');
+        const toastMsg = ref('');
+        const isCapturing = ref(false);
+        const isBackingUp = ref(false);
+        const isGenerating = ref(false);
+        let saveTimer = null;
+
+        const showToast = (msg) => {
+          toastMsg.value = msg;
+          setTimeout(() => { if (toastMsg.value === msg) toastMsg.value = ''; }, 2600);
+        };
+
+        const saveOpacity = () => {
+          localStorage.setItem('acg_overlay_opacity', String(panelOpacity.value));
+        };
+
+        const f9Count = computed(() => {
+          return (f9Data.value.variables?.length || 0) + (f9Data.value.switches?.length || 0);
+        });
+
+        const filteredVars = computed(() => {
+          const q = f9Query.value.trim().toLowerCase();
+          return (f9Data.value.variables || []).filter(v => {
+            if (f9KeyOnly.value && !v.is_key) return false;
+            if (!q) return true;
+            return v.name.toLowerCase().includes(q) || v.code.toLowerCase().includes(q) || String(v.id).includes(q);
+          });
+        });
+
+        const filteredSwitches = computed(() => {
+          const q = f9Query.value.trim().toLowerCase();
+          return (f9Data.value.switches || []).filter(s => {
+            if (f9KeyOnly.value && !s.is_key) return false;
+            if (!q) return true;
+            return s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q) || String(s.id).includes(q);
+          });
+        });
+
+        const checklistItems = computed(() => {
+          const md = game.value?.walkthrough_md || '';
+          if (!md) return [];
+          const lines = md.split('\n');
+          const res = [];
+          let inFence = false;
+          let idx = 0;
+          const q = guideSearch.value.trim().toLowerCase();
+          for (const line of lines) {
+            if (/^\s*(```|~~~)/.test(line)) {
+              inFence = !inFence;
+              continue;
+            }
+            if (inFence) continue;
+            const m = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/);
+            if (m) {
+              const textClean = m[2].replace(/\*\*/g, '').replace(/`/g, '').trim();
+              if (!q || textClean.toLowerCase().includes(q)) {
+                res.push({ idx, checked: m[1].toLowerCase() === 'x', text: textClean });
+              }
+              idx++;
+            }
+          }
+          return res;
+        });
+
+        const tocList = computed(() => {
+          const md = game.value?.walkthrough_md || '';
+          if (!md) return [];
+          const lines = md.split('\n');
+          const toc = [];
+          let inFence = false;
+          for (const line of lines) {
+            if (/^\s*(```|~~~)/.test(line)) { inFence = !inFence; continue; }
+            if (inFence) continue;
+            const m = line.match(/^(#{1,3})\s+(.+)$/);
+            if (m) toc.push({ level: m[1].length, title: m[2].trim() });
+          }
+          return toc;
+        });
+
+        const renderedWalkthrough = computed(() => {
+          let md = game.value?.walkthrough_md || '';
+          if (!md.trim()) return '';
+          const q = guideSearch.value.trim();
+          if (q) {
+            const blocks = md.split(/\n(?=##?\s)/);
+            const matched = blocks.filter(b => b.toLowerCase().includes(q.toLowerCase()));
+            if (matched.length > 0) md = matched.join('\n\n');
+          }
+          if (typeof marked !== 'undefined' && marked.parse) {
+            let html = marked.parse(md);
+            let boxIdx = 0;
+            html = html.replace(/<input([^>]*?)type="checkbox"([^>]*?)>/gi, (m) => {
+              const isChecked = /checked/i.test(m);
+              const idx = boxIdx++;
+              return `<input type="checkbox" data-checkbox-idx="${idx}" ${isChecked ? 'checked' : ''} class="notes-interactive-checkbox" />`;
+            });
+            return html;
+          }
+          return md;
+        });
+
+        const jumpToHeading = (tocIdxStr) => {
+          const idx = parseInt(tocIdxStr, 10);
+          if (isNaN(idx)) return;
+          const container = document.getElementById('overlay-guide-container');
+          if (!container) return;
+          const headings = container.querySelectorAll('h1, h2, h3');
+          if (headings[idx]) {
+            headings[idx].scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        };
+
+        const toggleChecklistByIndex = (targetIdx) => {
+          if (!game.value || !game.value.walkthrough_md) return;
+          const lines = game.value.walkthrough_md.split('\n');
+          let inFence = false;
+          let curr = 0;
+          for (let i = 0; i < lines.length; i++) {
+            if (/^\s*(```|~~~)/.test(lines[i])) { inFence = !inFence; continue; }
+            if (inFence) continue;
+            if (/^\s*[-*+]\s+\[([ xX])\]/.test(lines[i])) {
+              if (curr === targetIdx) {
+                lines[i] = lines[i].replace(/^(\s*[-*+]\s+\[)([ xX])(\])/, (m, p1, st, p3) => `${p1}${st === ' ' ? 'x' : ' '}${p3}`);
+                break;
+              }
+              curr++;
+            }
+          }
+          game.value.walkthrough_md = lines.join('\n');
+          savePayload({ walkthrough_md: game.value.walkthrough_md });
+        };
+
+        const handleMarkdownClick = (e) => {
+          const cb = e.target.closest('input.notes-interactive-checkbox');
+          if (cb) {
+            const idx = parseInt(cb.getAttribute('data-checkbox-idx'), 10);
+            if (!isNaN(idx)) toggleChecklistByIndex(idx);
+          }
+        };
+
+        const savePayload = async (payload) => {
+          if (!game.value) return;
+          saveState.value = 'saving';
+          try {
+            await fetch(`/api/games/${game.value.id}/update`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            saveState.value = 'saved';
+          } catch (e) {
+            saveState.value = 'idle';
+          }
+        };
+
+        const debounceSaveMemo = () => {
+          saveState.value = 'saving';
+          if (saveTimer) clearTimeout(saveTimer);
+          saveTimer = setTimeout(() => {
+            if (game.value) savePayload({ user_notes: game.value.user_notes || '' });
+          }, 600);
+        };
+
+        const copyText = async (txt) => {
+          try {
+            await navigator.clipboard.writeText(txt);
+            showToast(`已复制: ${txt}`);
+          } catch (e) {}
+        };
+
+        const captureShot = async () => {
+          if (!game.value) return;
+          isCapturing.value = true;
+          try {
+            const r = await fetch(`/api/games/${game.value.id}/screenshots/capture`, { method: 'POST' });
+            const d = await r.json();
+            showToast(d.message || '截图完成');
+          } catch (e) {
+            showToast('截图失败');
+          } finally {
+            isCapturing.value = false;
+          }
+        };
+
+        const quickBackupSave = async () => {
+          if (!game.value) return;
+          isBackingUp.value = true;
+          try {
+            const r = await fetch(`/api/games/${game.value.id}/backup_save`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ label: '伴侣窗手动快照' })
+            });
+            const d = await r.json();
+            showToast(d.message || '存档已备份');
+          } catch (e) {
+            showToast('备份失败');
+          } finally {
+            isBackingUp.value = false;
+          }
+        };
+
+        const generateWalkthrough = async () => {
+          if (!game.value) return;
+          isGenerating.value = true;
+          try {
+            const r = await fetch(`/api/games/${game.value.id}/generate_guide`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ use_llm: true, overwrite: true })
+            });
+            const d = await r.json();
+            if (d.success) {
+              game.value.walkthrough_md = d.walkthrough_md;
+              showToast('全结局攻略生成完成！');
+              loadOverlayContext(game.value.id);
+            } else {
+              showToast(d.message || '生成失败');
+            }
+          } catch (e) {
+            showToast('生成异常');
+          } finally {
+            isGenerating.value = false;
+          }
+        };
+
+        const loadOverlayContext = async (targetId = null) => {
+          try {
+            const q = targetId ? `?game_id=${targetId}` : window.location.search;
+            const r = await fetch(`/api/overlay/context${q}`);
+            const d = await r.json();
+            if (d.game) {
+              game.value = d.game;
+              selectedGameId.value = d.game.id;
+              isRunning.value = Boolean(d.is_running);
+              f9Data.value = d.f9_cheats || { variables: [], switches: [] };
+            }
+            if (d.game_list) {
+              gameList.value = d.game_list;
+            }
+          } catch (e) {}
+        };
+
+        onMounted(() => {
+          loadOverlayContext();
+          setInterval(() => {
+            if (!document.hidden && activeTab.value !== 'memo') {
+              loadOverlayContext(selectedGameId.value);
+            }
+          }, 8000);
+        });
+
+        return {
+          game, gameList, selectedGameId, isRunning, activeTab, panelOpacity, saveOpacity,
+          guideSearch, checklistOnly, checklistItems, tocList, renderedWalkthrough,
+          jumpToHeading, toggleChecklistByIndex, handleMarkdownClick,
+          f9Data, f9Query, f9KeyOnly, f9Count, filteredVars, filteredSwitches,
+          saveState, toastMsg, isCapturing, isBackingUp, isGenerating,
+          debounceSaveMemo, copyText, captureShot, quickBackupSave, generateWalkthrough, loadOverlayContext
+        };
+      }
+    }).mount('#overlay-app');
+  </script>
+</body>
+</html>

@@ -3,6 +3,8 @@ const { createApp, ref, shallowRef, reactive, computed, watch, onMounted, nextTi
 createApp({
   setup() {
     const games = shallowRef([]);
+    const visibleLimit = ref(72);
+
     const stats = ref({
       total: 0,
       unplayed: 0,
@@ -14,6 +16,8 @@ createApp({
       duplicates: 0,
       missing: 0,
       has_notes: 0,
+      has_walkthrough: 0,
+      has_user_notes: 0,
       translated: 0,
       unscraped: 0,
       tools_count: 0,
@@ -28,9 +32,37 @@ createApp({
     const runningGames = ref({}); // game_id -> { pid, exe, mode, elapsed_seconds }
     let runningPollTimer = null;
 
+    // Smart & Custom Collections State (v2.3)
+    const collections = ref([]);
+    const activeCollectionId = ref(null);
+    const showCollectionModal = ref(false);
+    const collectionForm = reactive({
+      id: null,
+      name: '',
+      icon: 'folder-heart',
+      color: 'indigo',
+      description: '',
+      is_smart: true,
+      rules: {
+        engine: 'all',
+        translated_only: false,
+        favorite_only: false,
+        has_walkthrough: false,
+        cg_unlocked_only: false,
+        min_rating: 0,
+        min_played_hours: 0,
+        min_size_gb: 0,
+        play_status: 'all',
+        tag: '',
+        keyword: ''
+      },
+      game_ids: []
+    });
+
     // Analytics & Timeline State
     const analyticsData = ref(null);
     const isLoadingAnalytics = ref(false);
+    const isExportingPoster = ref(false);
 
     // Toast Notifications System
     const toasts = ref([]);
@@ -61,9 +93,32 @@ createApp({
       });
     };
 
-    // Helper to trigger shallowRef array reactivity after in-place item mutation
     const triggerGamesRef = () => {
       games.value = [...games.value];
+    };
+
+    // Strip heavy walkthrough_md before putting a full game object back into the list cache
+    const toLightweightListGame = (existingItem, fullData) => {
+      const merged = { ...(existingItem || {}), ...(fullData || {}) };
+      const wt = merged.walkthrough_md || '';
+      const un = merged.user_notes || '';
+      merged.has_walkthrough = wt.replace(/[\r\n\u3000\s]+/g, '').length > 0 ? 1 : (merged.has_walkthrough ? 1 : 0);
+      merged.has_user_notes = un.replace(/[\r\n\u3000\s]+/g, '').length > 0 ? 1 : (merged.has_user_notes ? 1 : 0);
+      merged.has_notes = (merged.has_walkthrough || merged.has_user_notes) ? 1 : 0;
+      merged.walkthrough_length = wt.trim().length || merged.walkthrough_length || 0;
+      merged.user_notes_length = un.trim().length || merged.user_notes_length || 0;
+      merged.user_notes = un.slice(0, 300);
+      delete merged.walkthrough_md;
+      return merged;
+    };
+
+    const updateGameInList = (fullData) => {
+      if (!fullData || !fullData.id) return;
+      const idx = games.value.findIndex(g => g.id === fullData.id);
+      if (idx !== -1) {
+        games.value[idx] = toLightweightListGame(games.value[idx], fullData);
+        triggerGamesRef();
+      }
     };
 
     // Convert full cover URL to lightweight WebP thumbnail URL for grid/list views
@@ -83,7 +138,7 @@ createApp({
       message: '',
       confirmText: '确认执行',
       cancelText: '取消',
-      variant: 'primary', // 'primary' | 'danger' | 'warning'
+      variant: 'primary',
       resolveFn: null
     });
 
@@ -135,6 +190,28 @@ createApp({
     const sortBy = ref(localStorage.getItem('acg_sort_by') || 'downloaded_at');
     const sortOrder = ref(localStorage.getItem('acg_sort_order') || 'desc');
 
+    const activeCollection = computed(() => {
+      if (!activeCollectionId.value) return null;
+      return collections.value.find(c => c.id === activeCollectionId.value) || null;
+    });
+
+    const filteredGames = computed(() => {
+      if (!activeCollection.value) return games.value;
+      const idSet = new Set(activeCollection.value.game_ids || []);
+      return games.value.filter(g => idSet.has(g.id));
+    });
+
+    const displayedGames = computed(() => {
+      return filteredGames.value.slice(0, visibleLimit.value);
+    });
+
+    const loadMoreGames = () => {
+      if (visibleLimit.value < filteredGames.value.length) {
+        visibleLimit.value += 72;
+        refreshIcons();
+      }
+    };
+
     const hasActiveSubFilters = computed(() => {
       return Boolean(
         searchKeyword.value.trim() ||
@@ -143,16 +220,18 @@ createApp({
         showToolsOnly.value ||
         hasNotesOnly.value ||
         unscrapedOnly.value ||
+        activeCollectionId.value !== null ||
         engineFilter.value !== 'all' ||
         transFilter.value !== 'all'
       );
     });
 
-    // Fullscreen Notes & Walkthrough Workspace states
+    // Fullscreen Walkthrough Workspace states (v2.3: exclusively targets walkthrough_md)
     const showNotesFullscreen = ref(false);
     const notesFullscreenLayout = ref('split'); // 'split' | 'reader' | 'editor'
     const showNotesToc = ref(true);
     const notesSaveStatus = ref('saved'); // 'saved' | 'saving' | 'dirty'
+    const personalMemoSaveStatus = ref('saved'); // 'saved' | 'saving' | 'dirty'
     const notesTocList = ref([]);
     const debouncedNotesHtml = ref('');
     const tocSearchQuery = ref('');
@@ -162,9 +241,10 @@ createApp({
     const splitLeftWidthPct = ref(50);
     const isDraggingSplit = ref(false);
     let notesAutoSaveTimer = null;
+    let personalMemoTimer = null;
     let notesRenderTimer = null;
-    let isSyncingLeft = false;
-    let isSyncingRight = false;
+    let activeScrollPane = null;
+    let scrollLockTimer = null;
 
     const filteredTocList = computed(() => {
       const q = tocSearchQuery.value.trim().toLowerCase();
@@ -172,8 +252,9 @@ createApp({
       return notesTocList.value.filter(item => item.title.toLowerCase().includes(q));
     });
 
-    // Selected game & details
+    // Selected game & Detail Drawer 3-Tab state
     const selectedGame = ref(null);
+    const drawerActiveTab = ref('overview'); // 'overview' | 'walkthrough' | 'engineering'
     const selectedGameVariants = ref([]);
     const selectedGameMTool = ref(null);
     const selectedGameSave = ref(null);
@@ -185,10 +266,12 @@ createApp({
     const isUnlockingCG = ref(false);
     const isGeneratingGuide = ref(false);
     const isParsingFolderAI = ref(false);
+    const isLocalizingTags = ref(false);
 
     const showSaveBackupsList = ref(false);
     const isBackingUpSave = ref(false);
     const isRestoringSave = ref(false);
+    const isSyncingWebDAV = ref(false);
     const showRescrapePanel = ref(false);
     const showDangerMenu = ref(false);
     const isScrapingSingle = ref(false);
@@ -201,8 +284,8 @@ createApp({
     const newUserTagInput = ref('');
 
     const currentGameIndex = computed(() => {
-      if (!selectedGame.value || !games.value.length) return -1;
-      return games.value.findIndex(g => g.id === selectedGame.value.id);
+      if (!selectedGame.value || !filteredGames.value.length) return -1;
+      return filteredGames.value.findIndex(g => g.id === selectedGame.value.id);
     });
 
     const navigateAdjacentGame = (delta) => {
@@ -210,8 +293,8 @@ createApp({
       const idx = currentGameIndex.value;
       if (idx === -1) return;
       const targetIdx = idx + delta;
-      if (targetIdx >= 0 && targetIdx < games.value.length) {
-        openGameDetail(games.value[targetIdx]);
+      if (targetIdx >= 0 && targetIdx < filteredGames.value.length) {
+        openGameDetail(filteredGames.value[targetIdx]);
       }
     };
 
@@ -230,7 +313,8 @@ createApp({
       cover_url: '',
       executable_path: '',
       synopsis: '',
-      rj_code: ''
+      rj_code: '',
+      has_translation: 0
     });
     const editTagsList = ref([]);
     const editUserTagsList = ref([]);
@@ -258,6 +342,7 @@ createApp({
     const isTestingProxy = ref(false);
     const proxyTestResults = ref([]);
     const isTestingLLM = ref(false);
+    const isTestingWebDAV = ref(false);
 
     const configData = ref({
       game_directories: ['E:\\ACG'],
@@ -269,6 +354,7 @@ createApp({
       auto_scrape: true,
       scrape_source: 'auto',
       incremental_scan: true,
+      auto_localize_tags: true,
       default_view_mode: 'grid',
       cover_fit_mode: 'smart',
       grid_density: 'standard',
@@ -283,8 +369,17 @@ createApp({
       minimize_to_tray: true,
       auto_start_windows: false,
       global_boss_hotkey: 'Alt+Space',
+      global_overlay_hotkey: 'Alt+G',
       enable_ingame_screenshot: true,
       screenshot_hotkey: 'F12',
+      enable_auto_save_backup: true,
+      auto_backup_min_minutes: 5,
+      auto_backup_max_keep: 5,
+      webdav_enabled: false,
+      webdav_url: '',
+      webdav_username: '',
+      webdav_password: '',
+      webdav_auto_sync: true,
       llm_enabled: false,
       llm_api_base: 'https://api.deepseek.com/v1',
       llm_api_key: '',
@@ -407,7 +502,14 @@ createApp({
 
     const hasGameWalkthrough = (game) => {
       if (!game) return false;
-      if (game.has_notes !== undefined) return Boolean(game.has_notes);
+      if (game.has_walkthrough !== undefined) return Boolean(game.has_walkthrough);
+      if (game.walkthrough_md !== undefined) return Boolean(game.walkthrough_md && game.walkthrough_md.replace(/[\r\n\u3000\s]+/g, '').length > 0);
+      return Boolean(game.has_notes);
+    };
+
+    const hasPersonalMemo = (game) => {
+      if (!game) return false;
+      if (game.has_user_notes !== undefined) return Boolean(game.has_user_notes);
       return Boolean(game.user_notes && game.user_notes.replace(/[\r\n\u3000\s]+/g, '').length > 0);
     };
 
@@ -428,7 +530,7 @@ createApp({
             if (selectedGame.value) {
               openGameDetail(selectedGame.value, true);
             }
-            showToast('游戏已退出，本次游玩时长与截图已自动同步', 'info', 2600);
+            showToast('游戏已退出，游玩时长与自动存档快照已同步', 'info', 2800);
           }
           if (nextCount === 0) {
             clearInterval(runningPollTimer);
@@ -483,7 +585,8 @@ createApp({
     };
 
     const fetchGames = async (silent = false) => {
-      if (!silent) isLoading.value = true;
+      if (!silent && games.value.length === 0) isLoading.value = true;
+      visibleLimit.value = 72;
       localStorage.setItem('acg_sort_by', sortBy.value);
       localStorage.setItem('acg_sort_order', sortOrder.value);
       try {
@@ -505,7 +608,6 @@ createApp({
         const loadedGames = data.data || [];
         games.value = loadedGames;
 
-        // Prevent accidental batch deletion of invisible items when filters change
         if (isBatchMode.value && selectedGameIds.value.length > 0 && configData.value.clear_batch_on_filter !== false) {
           const visibleSet = new Set(loadedGames.map(g => g.id));
           const filteredSelected = selectedGameIds.value.filter(id => visibleSet.has(id));
@@ -527,7 +629,7 @@ createApp({
         console.error('Failed to load games:', err);
         if (!silent) showToast('加载游戏库失败: ' + err, 'error');
       } finally {
-        if (!silent) isLoading.value = false;
+        isLoading.value = false;
         refreshIcons();
       }
     };
@@ -548,6 +650,179 @@ createApp({
       }
     };
 
+    const fetchCollections = async () => {
+      try {
+        const res = await fetch('/api/collections');
+        const data = await res.json();
+        collections.value = data.collections || [];
+      } catch (err) {
+        console.error('Failed to load collections:', err);
+      }
+    };
+
+    const selectCollectionFilter = (col) => {
+      if (!col) {
+        activeCollectionId.value = null;
+        return;
+      }
+      if (activeCollectionId.value === col.id) {
+        activeCollectionId.value = null;
+      } else {
+        activeCollectionId.value = col.id;
+        if (viewMode.value === 'analytics') {
+          viewMode.value = 'grid';
+        }
+      }
+      visibleLimit.value = 72;
+      refreshIcons();
+    };
+
+    const openCreateCollectionModal = () => {
+      collectionForm.id = null;
+      collectionForm.name = '';
+      collectionForm.icon = 'folder-heart';
+      collectionForm.color = 'indigo';
+      collectionForm.description = '';
+      collectionForm.is_smart = true;
+      collectionForm.rules = {
+        engine: 'all',
+        translated_only: false,
+        favorite_only: false,
+        has_walkthrough: false,
+        cg_unlocked_only: false,
+        min_rating: 0,
+        min_played_hours: 0,
+        min_size_gb: 0,
+        play_status: 'all',
+        tag: '',
+        keyword: ''
+      };
+      collectionForm.game_ids = [];
+      showCollectionModal.value = true;
+      refreshIcons();
+    };
+
+    const openEditCollectionModal = (col) => {
+      if (!col) return;
+      collectionForm.id = col.id;
+      collectionForm.name = col.name || '';
+      collectionForm.icon = col.icon || 'folder-heart';
+      collectionForm.color = col.color || 'indigo';
+      collectionForm.description = col.description || '';
+      collectionForm.is_smart = Boolean(col.is_smart);
+      collectionForm.rules = {
+        engine: col.rules?.engine || 'all',
+        translated_only: Boolean(col.rules?.translated_only),
+        favorite_only: Boolean(col.rules?.favorite_only),
+        has_walkthrough: Boolean(col.rules?.has_walkthrough),
+        cg_unlocked_only: Boolean(col.rules?.cg_unlocked_only),
+        min_rating: parseInt(col.rules?.min_rating || 0, 10),
+        min_played_hours: parseFloat(col.rules?.min_played_hours || 0),
+        min_size_gb: parseFloat(col.rules?.min_size_gb || 0),
+        play_status: col.rules?.play_status || 'all',
+        tag: col.rules?.tag || '',
+        keyword: col.rules?.keyword || ''
+      };
+      collectionForm.game_ids = [...(col.manual_game_ids || [])];
+      showCollectionModal.value = true;
+      refreshIcons();
+    };
+
+    const saveCollectionAction = async () => {
+      if (!collectionForm.name.trim()) {
+        showToast('请输入合集名称', 'warning');
+        return;
+      }
+      try {
+        const res = await fetch('/api/collections', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: collectionForm.id,
+            name: collectionForm.name.trim(),
+            icon: collectionForm.icon,
+            color: collectionForm.color,
+            description: collectionForm.description,
+            is_smart: collectionForm.is_smart,
+            rules: collectionForm.rules,
+            game_ids: collectionForm.game_ids
+          })
+        });
+        const data = await res.json();
+        if (data.success) {
+          collections.value = data.collections || [];
+          showCollectionModal.value = false;
+          showToast(`合集「${collectionForm.name}」已保存！`, 'success');
+        }
+      } catch (err) {
+        showToast('保存合集失败: ' + err, 'error');
+      }
+    };
+
+    const deleteCollectionAction = async (col) => {
+      if (!col) return;
+      const ok = await askConfirm({
+        title: '删除馆藏合集',
+        message: `确定要删除合集「${col.name}」吗？（不会影响合集内的任何游戏记录）`,
+        confirmText: '确认删除',
+        cancelText: '取消',
+        variant: 'danger'
+      });
+      if (!ok) return;
+      try {
+        const res = await fetch(`/api/collections/${col.id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.success) {
+          collections.value = data.collections || [];
+          if (activeCollectionId.value === col.id) {
+            activeCollectionId.value = null;
+          }
+          showCollectionModal.value = false;
+          showToast('合集已删除', 'info');
+        }
+      } catch (err) {
+        showToast('删除合集失败: ' + err, 'error');
+      }
+    };
+
+    const toggleGameInManualCollection = async (col, gameId) => {
+      if (!col || col.is_smart || !gameId) return;
+      const isPresent = (col.game_ids || []).includes(gameId);
+      const action = isPresent ? 'remove' : 'add';
+      try {
+        const res = await fetch(`/api/collections/${col.id}/games`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ game_ids: [gameId], action })
+        });
+        const data = await res.json();
+        if (data.success) {
+          collections.value = data.collections || [];
+          showToast(isPresent ? `已从「${col.name}」移除` : `已加入合集「${col.name}」`, 'info', 1600);
+        }
+      } catch (err) {
+        showToast('更新合集失败', 'error');
+      }
+    };
+
+    const batchAddToCollectionAction = async (colId) => {
+      if (!colId || selectedGameIds.value.length === 0) return;
+      try {
+        const res = await fetch(`/api/collections/${colId}/games`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ game_ids: selectedGameIds.value, action: 'add' })
+        });
+        const data = await res.json();
+        if (data.success) {
+          collections.value = data.collections || [];
+          showToast(`已将 ${selectedGameIds.value.length} 部游戏加入合集！`, 'success');
+        }
+      } catch (err) {
+        showToast('批量加入合集失败', 'error');
+      }
+    };
+
     const fetchAnalytics = async () => {
       isLoadingAnalytics.value = true;
       try {
@@ -559,6 +834,239 @@ createApp({
       } finally {
         isLoadingAnalytics.value = false;
         refreshIcons();
+      }
+    };
+
+    // High-DPI HTML5 Canvas Poster Exporter for Analytics & Timeline (v2.3)
+    const exportAnalyticsPosterAction = async () => {
+      if (!analyticsData.value) return;
+      isExportingPoster.value = true;
+      try {
+        const d = analyticsData.value;
+        const ov = d.overview || {};
+        const scale = 2;
+        const width = 1280;
+        const height = 1660;
+        const canvas = document.createElement('canvas');
+        canvas.width = width * scale;
+        canvas.height = height * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(scale, scale);
+
+        const drawRoundRect = (x, y, w, h, r, fill, stroke) => {
+          ctx.beginPath();
+          ctx.moveTo(x + r, y);
+          ctx.arcTo(x + w, y, x + w, y + h, r);
+          ctx.arcTo(x + w, y + h, x, y + h, r);
+          ctx.arcTo(x, y + h, x, y, r);
+          ctx.arcTo(x, y, x + w, y, r);
+          ctx.closePath();
+          if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+          if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+        };
+
+        // Background Gradient
+        const bgGrad = ctx.createLinearGradient(0, 0, 0, height);
+        bgGrad.addColorStop(0, '#070a14');
+        bgGrad.addColorStop(0.5, '#0c1326');
+        bgGrad.addColorStop(1, '#070a14');
+        ctx.fillStyle = bgGrad;
+        ctx.fillRect(0, 0, width, height);
+
+        // Ambient Top Glows
+        const rad1 = ctx.createRadialGradient(200, 80, 10, 200, 80, 480);
+        rad1.addColorStop(0, 'rgba(99, 102, 241, 0.24)');
+        rad1.addColorStop(1, 'transparent');
+        ctx.fillStyle = rad1;
+        ctx.fillRect(0, 0, width, 600);
+
+        const rad2 = ctx.createRadialGradient(1080, 120, 10, 1080, 120, 450);
+        rad2.addColorStop(0, 'rgba(236, 72, 153, 0.18)');
+        rad2.addColorStop(1, 'transparent');
+        ctx.fillStyle = rad2;
+        ctx.fillRect(0, 0, width, 600);
+
+        // Header Banner
+        drawRoundRect(48, 42, width - 96, 110, 22, 'rgba(19, 27, 46, 0.92)', 'rgba(99, 102, 241, 0.4)');
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
+        ctx.fillText('🎮 ACG Vault v2.3 · 个人游戏馆藏与通关总结长图', 80, 92);
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '15px "Microsoft YaHei", sans-serif';
+        const nowStr = new Date().toISOString().slice(0, 10);
+        ctx.fillText(`生成日期: ${nowStr}   |   本地 ACG 游戏资产、AI 全结局攻略与数据馆藏中心`, 80, 125);
+
+        // 6 KPI Cards
+        const kpis = [
+          { label: '馆藏游戏总数', val: `${ov.total || 0} 部`, sub: `精选收藏 ${ov.favorites || 0} 部`, color: '#818cf8' },
+          { label: '总资产占用空间', val: ov.total_size_str || '0 GB', sub: '本地高速存储', color: '#22d3ee' },
+          { label: '累计游玩时长', val: `${ov.total_played_hours || 0} h`, sub: `珍藏截图 ${ov.total_screenshots || 0} 张`, color: '#fbbf24' },
+          { label: '通关达成率', val: `${ov.completion_rate || 0}%`, sub: `已通关 ${ov.completed || 0} 部`, color: '#34d399' },
+          { label: '汉化覆盖率', val: `${ov.translation_rate || 0}%`, sub: `已汉化 ${ov.translated || 0} 部`, color: '#2dd4bf' },
+          { label: '全结局攻略 & 全CG', val: `${ov.has_walkthrough || ov.has_notes || 0} 篇`, sub: `全CG解锁 ${ov.cg_unlocked_count || 0} 部`, color: '#f472b6' }
+        ];
+        const kpiW = (width - 96 - 50) / 6;
+        kpis.forEach((k, idx) => {
+          const kx = 48 + idx * (kpiW + 10);
+          const ky = 176;
+          drawRoundRect(kx, ky, kpiW, 108, 16, 'rgba(15, 23, 42, 0.9)', 'rgba(71, 85, 105, 0.5)');
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '13px "Microsoft YaHei", sans-serif';
+          ctx.fillText(k.label, kx + 16, ky + 30);
+          ctx.fillStyle = k.color;
+          ctx.font = 'bold 24px monospace, "Microsoft YaHei"';
+          ctx.fillText(k.val, kx + 16, ky + 66);
+          ctx.fillStyle = '#64748b';
+          ctx.font = '12px "Microsoft YaHei", sans-serif';
+          ctx.fillText(k.sub, kx + 16, ky + 92);
+        });
+
+        // Row 1 Left: Play Time Distribution & Engine Breakdown
+        drawRoundRect(48, 308, 576, 460, 20, 'rgba(15, 23, 42, 0.88)', 'rgba(51, 65, 85, 0.65)');
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 18px "Microsoft YaHei", sans-serif';
+        ctx.fillText('🔥 游玩深度分布 & 驱动引擎占比', 74, 346);
+
+        (d.play_time_buckets || []).forEach((b, i) => {
+          const by = 376 + i * 38;
+          ctx.fillStyle = '#cbd5e1';
+          ctx.font = '13px "Microsoft YaHei", sans-serif';
+          ctx.fillText(b.label, 74, by);
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillText(`${b.count} 部 (${b.percentage}%)`, 480, by);
+          drawRoundRect(74, by + 8, 520, 8, 4, '#1e293b', null);
+          const fillW = Math.max(8, (b.percentage / 100) * 520);
+          drawRoundRect(74, by + 8, fillW, 8, 4, b.color || '#6366f1', null);
+        });
+
+        ctx.fillStyle = '#a5b4fc';
+        ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
+        ctx.fillText('⚙️ 主流游戏引擎分布 Top 5', 74, 592);
+        (d.engine_breakdown || []).slice(0, 5).forEach((eng, i) => {
+          const ey = 622 + i * 28;
+          ctx.fillStyle = '#e2e8f0';
+          ctx.font = '13px "Microsoft YaHei", sans-serif';
+          ctx.fillText(`${eng.engine}`, 74, ey);
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillText(`${eng.count} 部 · ${eng.size_str} · 汉化 ${eng.translated_pct}%`, 340, ey);
+        });
+
+        // Row 1 Right: Hall of Fame Top Played Games
+        drawRoundRect(648, 308, 584, 460, 20, 'rgba(15, 23, 42, 0.88)', 'rgba(51, 65, 85, 0.65)');
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 18px "Microsoft YaHei", sans-serif';
+        ctx.fillText('👑 殿堂级最长游玩排行 Top 8', 674, 346);
+
+        const topPlayed = (d.top_played_games || []).slice(0, 8);
+        if (topPlayed.length === 0) {
+          ctx.fillStyle = '#64748b';
+          ctx.font = '14px "Microsoft YaHei", sans-serif';
+          ctx.fillText('暂无游玩时长记录，启动任意游戏即可自动统计', 674, 420);
+        } else {
+          topPlayed.forEach((g, idx) => {
+            const gy = 374 + idx * 46;
+            drawRoundRect(674, gy, 532, 38, 10, 'rgba(30, 41, 59, 0.55)', null);
+            ctx.fillStyle = idx < 3 ? '#fbbf24' : '#64748b';
+            ctx.font = 'bold 14px monospace';
+            ctx.fillText(`#${idx + 1}`, 688, gy + 24);
+            ctx.fillStyle = '#f1f5f9';
+            ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
+            const titleShort = (g.display_title || '').slice(0, 24);
+            ctx.fillText(titleShort, 724, gy + 24);
+            ctx.fillStyle = '#fbbf24';
+            ctx.font = 'bold 13px monospace';
+            ctx.fillText(`${g.played_hours}h (${g.play_count}次)`, 1080, gy + 24);
+          });
+        }
+
+        // Row 2 Left: Top Circles & Popular Tags
+        drawRoundRect(48, 792, 576, 420, 20, 'rgba(15, 23, 42, 0.88)', 'rgba(51, 65, 85, 0.65)');
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 18px "Microsoft YaHei", sans-serif';
+        ctx.fillText('🏢 最爱同人社团 / 开发商 Top 8', 74, 830);
+
+        (d.top_circles || []).slice(0, 8).forEach((cir, idx) => {
+          const cy = 862 + idx * 38;
+          ctx.fillStyle = '#e2e8f0';
+          ctx.font = '13px "Microsoft YaHei", sans-serif';
+          ctx.fillText(`${idx + 1}. ${(cir.name || '').slice(0, 22)}`, 74, cy);
+          ctx.fillStyle = '#818cf8';
+          ctx.font = 'bold 13px monospace';
+          ctx.fillText(`${cir.count} 部 (汉化 ${cir.translated_count} 部)`, 420, cy);
+        });
+
+        // Row 2 Right: 12-Month Trend & Popular Tags Cloud
+        drawRoundRect(648, 792, 584, 420, 20, 'rgba(15, 23, 42, 0.88)', 'rgba(51, 65, 85, 0.65)');
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 18px "Microsoft YaHei", sans-serif';
+        ctx.fillText('📅 近 12 个月入库与游玩活跃趋势', 674, 830);
+
+        const months = d.monthly_activity || [];
+        const chartBaseY = 995;
+        const chartMaxH = 120;
+        const colStep = 520 / Math.max(1, months.length);
+        months.forEach((m, idx) => {
+          const mx = 682 + idx * colStep;
+          const addH = m.added_count > 0 ? Math.max(6, (m.added_pct / 100) * chartMaxH) : 2;
+          const playH = m.played_count > 0 ? Math.max(6, (m.played_pct / 100) * chartMaxH) : 2;
+          drawRoundRect(mx, chartBaseY - addH, 10, addH, 3, m.added_count > 0 ? '#6366f1' : '#334155', null);
+          drawRoundRect(mx + 12, chartBaseY - playH, 10, playH, 3, m.played_count > 0 ? '#10b981' : '#334155', null);
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '11px monospace';
+          ctx.fillText(m.month.slice(5) + '月', mx - 2, chartBaseY + 18);
+        });
+
+        ctx.fillStyle = '#f472b6';
+        ctx.font = 'bold 15px "Microsoft YaHei", sans-serif';
+        ctx.fillText('🏷️ 核心偏好标签 Top 12', 674, 1055);
+        const tagStr = (d.top_tags || []).slice(0, 12).map(t => `#${t.name}(${t.count})`).join('   ');
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = '13px "Microsoft YaHei", sans-serif';
+        ctx.fillText(tagStr.slice(0, 48), 674, 1090);
+        if (tagStr.length > 48) {
+          ctx.fillText(tagStr.slice(48, 96), 674, 1118);
+        }
+        if (tagStr.length > 96) {
+          ctx.fillText(tagStr.slice(96, 144), 674, 1146);
+        }
+
+        // Row 3: Recent Activity & Walkthrough Timeline
+        drawRoundRect(48, 1236, width - 96, 360, 20, 'rgba(15, 23, 42, 0.88)', 'rgba(51, 65, 85, 0.65)');
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 18px "Microsoft YaHei", sans-serif';
+        ctx.fillText('⏱️ 最近馆藏动态与攻略修撰时间轴', 74, 1274);
+
+        (d.timeline || []).slice(0, 6).forEach((ev, idx) => {
+          const ty = 1306 + idx * 44;
+          const badgeColor = ev.type === 'played' ? '#fbbf24' : (ev.type === 'guide' ? '#818cf8' : '#34d399');
+          const typeLabel = ev.type === 'played' ? '最近游玩' : (ev.type === 'guide' ? '全结局攻略' : (ev.type === 'note' ? '通关随手记' : '扫描入库'));
+          drawRoundRect(74, ty - 16, 1132, 34, 8, 'rgba(30, 41, 59, 0.45)', null);
+          ctx.fillStyle = badgeColor;
+          ctx.font = 'bold 12px "Microsoft YaHei", sans-serif';
+          ctx.fillText(`[${typeLabel}]`, 88, ty + 5);
+          ctx.fillStyle = '#f8fafc';
+          ctx.font = 'bold 13px "Microsoft YaHei", sans-serif';
+          ctx.fillText((ev.title || '').slice(0, 28), 180, ty + 5);
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '12px "Microsoft YaHei", sans-serif';
+          ctx.fillText(ev.detail || '', 620, ty + 5);
+          ctx.fillStyle = '#64748b';
+          ctx.font = '12px monospace';
+          ctx.fillText(ev.timestamp || '', 1060, ty + 5);
+        });
+
+        const dataUrl = canvas.toDataURL('image/png');
+        const link = document.createElement('a');
+        link.download = `ACG_Vault_馆藏数据总结报告_${nowStr.replace(/-/g, '')}.png`;
+        link.href = dataUrl;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        showToast('已生成并导出高清馆藏总结长图 (PNG)！', 'success');
+      } catch (err) {
+        showToast('导出总结长图失败: ' + err, 'error');
+      } finally {
+        isExportingPoster.value = false;
       }
     };
 
@@ -578,6 +1086,16 @@ createApp({
           }
         }
       } catch (e) {}
+    };
+
+    const openCompanionOverlayAction = async (game = null) => {
+      const gid = game?.id || selectedGame.value?.id || '';
+      try {
+        const q = gid ? `?game_id=${gid}` : '';
+        await fetch(`/api/overlay/summon${q}`, { method: 'POST' });
+      } catch (e) {}
+      const popupUrl = `/overlay${gid ? '?game_id=' + gid : ''}`;
+      window.open(popupUrl, 'ACGVaultCompanionOverlay', 'width=460,height=740,menubar=no,toolbar=no,location=no,status=no');
     };
 
     const fetchConfig = async () => {
@@ -684,6 +1202,47 @@ createApp({
       }
     };
 
+    const testWebDAVAction = async () => {
+      isTestingWebDAV.value = true;
+      try {
+        const res = await fetch('/api/config/test_webdav', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            webdav_url: configData.value.webdav_url,
+            webdav_username: configData.value.webdav_username,
+            webdav_password: configData.value.webdav_password
+          })
+        });
+        const data = await res.json();
+        showToast(data.message || 'WebDAV 测试完成', data.success ? 'success' : 'warning', 3500);
+      } catch (err) {
+        showToast('测试 WebDAV 异常: ' + err, 'error');
+      } finally {
+        isTestingWebDAV.value = false;
+      }
+    };
+
+    const localizeAllTagsAction = async () => {
+      isLocalizingTags.value = true;
+      try {
+        const res = await fetch('/api/games/localize_tags', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+          await fetchGames(true);
+          await fetchCollections();
+          if (selectedGame.value) {
+            await openGameDetail(selectedGame.value, true);
+          }
+          showToast(data.message || '标签汉化归一完成！', 'success', 3200);
+        }
+      } catch (err) {
+        showToast('标签汉化归一失败: ' + err, 'error');
+      } finally {
+        isLocalizingTags.value = false;
+      }
+    };
+
     const pickLocalPathAction = async (targetType, index = -1) => {
       let mode = 'folder';
       let filetypes = null;
@@ -775,6 +1334,7 @@ createApp({
           body: JSON.stringify({ is_favorite: newFav })
         });
         fetchStats();
+        fetchCollections();
         showToast(newFav ? '已添加至收藏' : '已取消收藏', 'info', 1600);
       } catch (err) {
         console.error('Update favorite error:', err);
@@ -805,6 +1365,7 @@ createApp({
       showToolsOnly.value = false;
       hasNotesOnly.value = false;
       unscrapedOnly.value = false;
+      activeCollectionId.value = null;
       engineFilter.value = 'all';
       transFilter.value = 'all';
       if (viewMode.value === 'analytics') {
@@ -818,7 +1379,7 @@ createApp({
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         fetchGames();
-      }, 240);
+      }, 220);
     };
 
     const populateEditForm = (game) => {
@@ -831,6 +1392,7 @@ createApp({
       editForm.executable_path = game.executable_path || '';
       editForm.synopsis = game.synopsis || '';
       editForm.rj_code = game.rj_code || '';
+      editForm.has_translation = game.has_translation ? 1 : 0;
       editTagsList.value = [...(game.tags || [])];
       editUserTagsList.value = [...(game.user_tags || [])];
       editTagsString.value = (game.tags || []).join(', ');
@@ -846,6 +1408,7 @@ createApp({
         executable_path: editForm.executable_path,
         synopsis: editForm.synopsis,
         rj_code: editForm.rj_code,
+        has_translation: editForm.has_translation,
         tags: editTagsList.value,
         user_tags: editUserTagsList.value,
         va: editVoiceActorsString.value
@@ -863,6 +1426,7 @@ createApp({
         executable_path: editForm.executable_path,
         synopsis: editForm.synopsis,
         rj_code: editForm.rj_code,
+        has_translation: editForm.has_translation,
         tags: editTagsList.value,
         user_tags: editUserTagsList.value,
         va: editVoiceActorsString.value
@@ -891,48 +1455,56 @@ createApp({
       else editTagsList.value.splice(idx, 1);
     };
 
-    // Quick User Tag addition/removal directly in Detail Drawer View Mode
+    // Quick User Tag addition/removal directly in Detail Drawer View Mode (Supports comma batching)
     const addQuickUserTag = async () => {
       if (!selectedGame.value) return;
-      const val = newUserTagInput.value.trim();
-      if (!val) {
+      const rawVal = newUserTagInput.value.trim();
+      if (!rawVal) {
         showAddUserTag.value = false;
         return;
       }
+      const parts = rawVal.split(/[,，]/).map(s => s.trim().replace(/^[#★\s]+/, '')).filter(Boolean);
       const curr = [...(selectedGame.value.user_tags || [])];
-      if (!curr.includes(val)) {
-        curr.push(val);
+      let addedCount = 0;
+      for (const p of parts) {
+        if (!curr.includes(p)) {
+          curr.push(p);
+          addedCount++;
+        }
+      }
+      if (addedCount > 0) {
         selectedGame.value.user_tags = curr;
-        await fetch(`/api/games/${selectedGame.value.id}/update`, {
+        const res = await fetch(`/api/games/${selectedGame.value.id}/update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_tags: curr })
         });
-        const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-        if (idx !== -1) {
-          games.value[idx].user_tags = curr;
-          triggerGamesRef();
+        const data = await res.json();
+        if (data.data) {
+          selectedGame.value.tags = data.data.tags || selectedGame.value.tags;
+          selectedGame.value.user_tags = data.data.user_tags || curr;
+          updateGameInList(data.data);
         }
-        showToast(`已添加个人标签: ${val}`, 'success', 1500);
+        fetchCollections();
+        showToast(`已添加个人标签: ${parts.join(', ')}`, 'success', 1600);
       }
       newUserTagInput.value = '';
-      showAddUserTag.value = false;
     };
 
     const removeQuickUserTag = async (tagToRemove) => {
       if (!selectedGame.value) return;
       const curr = (selectedGame.value.user_tags || []).filter(t => t !== tagToRemove);
       selectedGame.value.user_tags = curr;
-      await fetch(`/api/games/${selectedGame.value.id}/update`, {
+      const res = await fetch(`/api/games/${selectedGame.value.id}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_tags: curr })
       });
-      const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-      if (idx !== -1) {
-        games.value[idx].user_tags = curr;
-        triggerGamesRef();
+      const data = await res.json();
+      if (data.data) {
+        updateGameInList(data.data);
       }
+      fetchCollections();
     };
 
     const closeGameDetail = async (fromBackdrop = false) => {
@@ -954,17 +1526,23 @@ createApp({
         }
         isEditMode.value = false;
       }
+      if (personalMemoTimer) {
+        clearTimeout(personalMemoTimer);
+        personalMemoTimer = null;
+        await savePersonalNoteNow(true);
+      }
       if (notesAutoSaveTimer) {
         clearTimeout(notesAutoSaveTimer);
         notesAutoSaveTimer = null;
-        saveGameNotes(true);
+        await saveGameNotes(true);
       }
       selectedGame.value = null;
     };
 
-    const openGameDetail = async (game, silentRefresh = false) => {
+    const openGameDetail = async (game, silentRefresh = false, targetTab = null) => {
       if (!silentRefresh) {
-        selectedGame.value = { ...game };
+        selectedGame.value = { walkthrough_md: '', user_notes: '', sample_images: [], ...game };
+        drawerActiveTab.value = targetTab || 'overview';
         selectedGameVariants.value = [];
         selectedGameMTool.value = null;
         selectedGameSave.value = null;
@@ -973,12 +1551,14 @@ createApp({
         isEditMode.value = false;
         showDangerMenu.value = false;
         showAddUserTag.value = false;
+        personalMemoSaveStatus.value = 'saved';
+        notesSaveStatus.value = 'saved';
         showRescrapePanel.value = !game.cover_url || !game.synopsis;
         scrapeInputRJ.value = game.rj_code || '';
         scrapeInputKeyword.value = game.clean_title || game.folder_name || '';
         scrapePreferredSource.value = configData.value.scrape_source || 'auto';
         populateEditForm(game);
-        syncNotesPreviewNow(game.user_notes || '');
+        syncNotesPreviewNow(game.walkthrough_md || '');
       }
 
       try {
@@ -993,12 +1573,8 @@ createApp({
           if (!isEditMode.value) {
             populateEditForm(data.data);
           }
-          syncNotesPreviewNow(data.data.user_notes || '');
-          const idx = games.value.findIndex(g => g.id === game.id);
-          if (idx !== -1) {
-            games.value[idx] = { ...games.value[idx], ...data.data, user_notes: (data.data.user_notes || '').slice(0, 180) };
-            triggerGamesRef();
-          }
+          syncNotesPreviewNow(data.data.walkthrough_md || '');
+          updateGameInList(data.data);
         }
       } catch (err) {
         console.error('Failed to get game detail:', err);
@@ -1013,6 +1589,7 @@ createApp({
       currentStatus.value = 'all';
       favoriteOnly.value = false;
       missingOnly.value = false;
+      activeCollectionId.value = null;
       if (viewMode.value === 'analytics') {
         viewMode.value = 'grid';
       }
@@ -1045,12 +1622,7 @@ createApp({
           editForm.cover_url = result.cover_url;
           selectedGame.value.cover_url = result.cover_url;
           selectedGame.value.banner_url = result.cover_url;
-          const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-          if (idx !== -1) {
-            games.value[idx].cover_url = result.cover_url;
-            games.value[idx].banner_url = result.cover_url;
-            triggerGamesRef();
-          }
+          updateGameInList(result.data || selectedGame.value);
           fetchStats();
           showToast('封面图片上传并生成缩略图成功！', 'success');
         } else {
@@ -1108,8 +1680,19 @@ createApp({
     };
 
     // ---------------------------------------------------------
-    // In-Game Screenshot Gallery & 100% Full CG Save Unlocker
+    // Official Sample Previews & In-Game Screenshot Gallery
     // ---------------------------------------------------------
+    const openSampleLightbox = (imgUrl, index = 0) => {
+      if (!imgUrl) return;
+      lightboxShot.value = {
+        id: null,
+        url: imgUrl,
+        caption: `官方商店预览图 #${index + 1}`,
+        created_at: 'Official Sample CG',
+        isSample: true
+      };
+    };
+
     const captureGameScreenshotAction = async (game) => {
       if (!game) return;
       isCapturingScreenshot.value = true;
@@ -1164,7 +1747,7 @@ createApp({
     };
 
     const saveScreenshotCaptionAction = async (shot) => {
-      if (!selectedGame.value || !shot) return;
+      if (!selectedGame.value || !shot || shot.isSample) return;
       try {
         const res = await fetch(`/api/games/${selectedGame.value.id}/screenshots/${shot.id}/caption`, {
           method: 'POST',
@@ -1181,7 +1764,7 @@ createApp({
     };
 
     const deleteScreenshotAction = async (shot) => {
-      if (!selectedGame.value || !shot) return;
+      if (!selectedGame.value || !shot || shot.isSample) return;
       const ok = await askConfirm({
         title: '删除画廊截图',
         message: '确定要从游戏画廊中删除这张截图吗？',
@@ -1225,7 +1808,9 @@ createApp({
         if (data.success) {
           selectedGame.value.cg_unlocked = 1;
           if (data.save_status) selectedGameSave.value = data.save_status;
+          updateGameInList(selectedGame.value);
           fetchStats();
+          fetchCollections();
           showToast(data.message, 'success', 4200);
         } else {
           showToast(data.message || '解锁失败', 'warning', 3500);
@@ -1258,7 +1843,9 @@ createApp({
         if (data.success) {
           selectedGame.value.cg_unlocked = 1;
           if (data.save_status) selectedGameSave.value = data.save_status;
+          updateGameInList(selectedGame.value);
           fetchStats();
+          fetchCollections();
           showToast(data.message || '全 CG 存档包已成功合入！', 'success', 3500);
         } else {
           showToast(data.message || '导入全CG存档失败', 'error');
@@ -1285,11 +1872,7 @@ createApp({
           populateEditForm(data.data);
           scrapeInputRJ.value = data.data.rj_code || scrapeInputRJ.value;
           scrapeInputKeyword.value = data.parsed?.clean_title || data.data.display_title || scrapeInputKeyword.value;
-          const idx = games.value.findIndex(g => g.id === game.id);
-          if (idx !== -1) {
-            games.value[idx] = { ...games.value[idx], ...data.data };
-            triggerGamesRef();
-          }
+          updateGameInList(data.data);
           showToast(data.message || 'AI 语义解析完成！', 'success');
         } else {
           showToast(data.message || '解析未发现新字段', 'warning');
@@ -1303,12 +1886,12 @@ createApp({
 
     const generateAIWalkthroughAction = async (game) => {
       if (!game) return;
-      const hasExisting = Boolean(game.user_notes && game.user_notes.trim().length > 20);
+      const hasExisting = Boolean(game.walkthrough_md && game.walkthrough_md.trim().length > 20);
       let overwrite = true;
       if (hasExisting) {
         const ok = await askConfirm({
           title: '✨ AI 逆向解包生成全结局攻略',
-          message: '检测到当前游戏已有攻略笔记。系统将自动解包游戏内部 System.json / CommonEvents.json / Map*.json 的开关、变量与分支条件并生成结构化全结局攻略。\n\n点击【追加到末尾】将保留现有笔记并附在下方；若需覆盖请先清空旧笔记。',
+          message: '检测到当前游戏已有全结局攻略内容（您的「个人通关笔记」随手记完全独立不受影响）。\n\n点击【生成并追加】将保留现有攻略并附在下方；若需重新生成覆盖请先清空旧攻略。',
           confirmText: '生成并追加',
           cancelText: '取消',
           variant: 'primary'
@@ -1326,16 +1909,14 @@ createApp({
         });
         const data = await res.json();
         if (data.success) {
-          selectedGame.value.user_notes = data.user_notes;
+          selectedGame.value.walkthrough_md = data.walkthrough_md;
+          selectedGame.value.has_walkthrough = 1;
           selectedGame.value.has_notes = 1;
-          syncNotesPreviewNow(data.user_notes);
-          const idx = games.value.findIndex(g => g.id === game.id);
-          if (idx !== -1) {
-            games.value[idx].has_notes = 1;
-            games.value[idx].user_notes = (data.user_notes || '').slice(0, 180);
-            triggerGamesRef();
-          }
+          syncNotesPreviewNow(data.walkthrough_md);
+          updateGameInList(data.data || selectedGame.value);
+          drawerActiveTab.value = 'walkthrough';
           fetchStats();
+          fetchCollections();
           showToast(data.message || '全结局攻略生成成功！', 'success', 3500);
         } else {
           showToast(data.message || '生成攻略失败', 'error');
@@ -1389,6 +1970,7 @@ createApp({
         executable_path: editForm.executable_path,
         synopsis: editForm.synopsis,
         rj_code: editForm.rj_code,
+        has_translation: editForm.has_translation ? 1 : 0,
         tags: editTagsList.value,
         user_tags: editUserTagsList.value,
         voice_actors: vaList
@@ -1404,13 +1986,10 @@ createApp({
         if (res.ok && result.success) {
           selectedGame.value = result.data;
           populateEditForm(result.data);
-          const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-          if (idx !== -1) {
-            games.value[idx] = result.data;
-            triggerGamesRef();
-          }
+          updateGameInList(result.data);
           isEditMode.value = false;
           fetchStats();
+          fetchCollections();
           showToast('元数据修改已保存！', 'success');
         } else {
           showToast(result.detail || '保存失败', 'error');
@@ -1424,11 +2003,7 @@ createApp({
     const updateGameStatus = async (status) => {
       if (!selectedGame.value) return;
       selectedGame.value.play_status = status;
-      const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-      if (idx !== -1) {
-        games.value[idx].play_status = status;
-        triggerGamesRef();
-      }
+      updateGameInList(selectedGame.value);
 
       try {
         await fetch(`/api/games/${selectedGame.value.id}/update`, {
@@ -1437,6 +2012,7 @@ createApp({
           body: JSON.stringify({ play_status: status })
         });
         fetchStats();
+        fetchCollections();
         showToast(`状态已设为: ${getStatusLabel(status)}`, 'info', 1600);
       } catch (err) {
         console.error('Update status error:', err);
@@ -1448,11 +2024,7 @@ createApp({
       if (!selectedGame.value) return;
       const newRating = selectedGame.value.user_rating === rating ? 0 : rating;
       selectedGame.value.user_rating = newRating;
-      const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-      if (idx !== -1) {
-        games.value[idx].user_rating = newRating;
-        triggerGamesRef();
-      }
+      updateGameInList(selectedGame.value);
 
       try {
         await fetch(`/api/games/${selectedGame.value.id}/update`, {
@@ -1460,6 +2032,7 @@ createApp({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ user_rating: newRating })
         });
+        fetchCollections();
         showToast(newRating ? `已评分: ${newRating} 星` : '已清除个人评分', 'info', 1600);
       } catch (err) {
         console.error('Update rating error:', err);
@@ -1467,6 +2040,57 @@ createApp({
       }
     };
 
+    // ---------------------------------------------------------
+    // 1. Personal Clearance Sticky Memo (user_notes)
+    // ---------------------------------------------------------
+    const savePersonalNoteNow = async (silent = true) => {
+      if (!selectedGame.value) return;
+      if (personalMemoTimer) {
+        clearTimeout(personalMemoTimer);
+        personalMemoTimer = null;
+      }
+      personalMemoSaveStatus.value = 'saving';
+      try {
+        const memoText = selectedGame.value.user_notes || '';
+        const res = await fetch(`/api/games/${selectedGame.value.id}/update`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_notes: memoText })
+        });
+        const data = await res.json();
+        if (data.data) {
+          selectedGame.value.has_user_notes = data.data.has_user_notes;
+          selectedGame.value.has_notes = data.data.has_notes;
+          updateGameInList(data.data);
+        }
+        personalMemoSaveStatus.value = 'saved';
+        fetchStats();
+        if (!silent) {
+          showToast('个人通关笔记已保存', 'success', 1500);
+        }
+      } catch (err) {
+        personalMemoSaveStatus.value = 'dirty';
+      }
+    };
+
+    const onPersonalNoteInput = () => {
+      personalMemoSaveStatus.value = 'dirty';
+      if (personalMemoTimer) clearTimeout(personalMemoTimer);
+      personalMemoTimer = setTimeout(() => {
+        savePersonalNoteNow(true);
+      }, 650);
+    };
+
+    const appendPersonalMemoSnippet = (snippetText) => {
+      if (!selectedGame.value) return;
+      const curr = (selectedGame.value.user_notes || '').trim();
+      selectedGame.value.user_notes = curr ? `${curr}\n${snippetText}` : snippetText;
+      onPersonalNoteInput();
+    };
+
+    // ---------------------------------------------------------
+    // 2. Full-Ending Walkthrough Engine (walkthrough_md) + Offline Mermaid Renderer
+    // ---------------------------------------------------------
     const notesEditMode = ref(false);
     let markedConfigured = false;
     let headingCounterMap = {};
@@ -1479,7 +2103,59 @@ createApp({
         .replace(/>/g, '&gt;');
     };
 
-    // DOMParser-based strict HTML Sanitizer (Eliminates regex bypasses)
+    // Offline Zero-Dependency Mermaid Flowchart Parser -> Visual Step Diagram HTML
+    const compileMermaidToVisualHtml = (code) => {
+      const lines = String(code || '').split('\n').map(l => l.trim()).filter(Boolean);
+      let subgraphTitle = '剧情分支与路线流程图';
+      const nodeLabels = {};
+      const edges = [];
+
+      const parseNodeToken = (tok) => {
+        if (!tok) return '';
+        const m = tok.match(/^([A-Za-z0-9_]+)\s*(?:\[([^\]]+)\]|\(([^)]+)\)|\{([^}]+)\})?$/);
+        if (m) {
+          const id = m[1];
+          const label = (m[2] || m[3] || m[4] || '').trim();
+          if (label) nodeLabels[id] = label;
+          return nodeLabels[id] || id;
+        }
+        return tok.replace(/[\[\]{}()]/g, '').trim();
+      };
+
+      for (const line of lines) {
+        if (/^(flowchart|graph)\b/i.test(line) || line === 'end') continue;
+        const subMatch = line.match(/^subgraph\s+(.+)$/i);
+        if (subMatch) {
+          subgraphTitle = subMatch[1].trim();
+          continue;
+        }
+        const edgeMatch = line.match(/^(.+?)\s*(?:-->|---|==>)\s*(?:\|([^|]+)\|\s*)?(.+)$/);
+        if (edgeMatch) {
+          const leftRaw = edgeMatch[1].trim();
+          const cond = (edgeMatch[2] || '').trim();
+          const rightRaw = edgeMatch[3].trim();
+          const leftParts = leftRaw.split(/\s*&\s*/).map(parseNodeToken);
+          const rightParts = rightRaw.split(/\s*&\s*/).map(parseNodeToken);
+          edges.push({
+            from: leftParts.join(' + '),
+            cond,
+            to: rightParts.join(' / ')
+          });
+        }
+      }
+
+      if (edges.length === 0) {
+        return `<pre><code>${escapeHtmlAttr(code)}</code></pre>`;
+      }
+
+      const edgeHtml = edges.map(e => {
+        const condBadge = e.cond ? `<span class="mermaid-edge-label">${escapeHtmlAttr(e.cond)}</span><span class="mermaid-arrow">→</span>` : `<span class="mermaid-arrow">⟶</span>`;
+        return `<div class="mermaid-edge-row"><span class="mermaid-node-pill">${escapeHtmlAttr(e.from)}</span>${condBadge}<span class="mermaid-node-pill">${escapeHtmlAttr(e.to)}</span></div>`;
+      }).join('');
+
+      return `<div class="mermaid-flow-container"><div class="mermaid-flow-title"><span>🗺️ ${escapeHtmlAttr(subgraphTitle)}</span></div><div class="mermaid-flow-steps">${edgeHtml}</div></div>`;
+    };
+
     const sanitizeRenderedHtml = (html) => {
       if (!html) return '';
       try {
@@ -1546,6 +2222,14 @@ createApp({
           return `<h${depth} id="${escapeHtmlAttr(slug)}" data-norm-key="${escapeHtmlAttr(normKey)}" data-toc-title="${escapeHtmlAttr(rawText)}" class="notes-heading notes-heading-${depth}">${parsedText}</h${depth}>\n`;
         };
 
+        renderer.code = function({ text, lang }) {
+          const language = (lang || '').trim().toLowerCase();
+          if (language === 'mermaid') {
+            return compileMermaidToVisualHtml(text);
+          }
+          return `<pre><code class="language-${escapeHtmlAttr(language)}">${escapeHtmlAttr(text)}</code></pre>\n`;
+        };
+
         renderer.link = function({ href, title, tokens }) {
           const parsedText = this.parser.parseInline(tokens);
           const safeHref = String(href || '').trim();
@@ -1569,7 +2253,7 @@ createApp({
 
     const renderNotesMarkdown = (text) => {
       if (!text || !text.trim()) {
-        return '<span class="text-slate-500 italic">暂无通关笔记或攻略，点击上方【✨ AI 解析生成攻略】、【插入攻略模板】或【全屏攻略工作台】即可编写...</span>';
+        return '<span class="text-slate-500 italic">暂无全结局攻略内容，点击上方【✨ AI 解包生成攻略】、【插入攻略模板】或【全屏攻略工作台】即可编写...</span>';
       }
       setupMarkedRenderer();
       if (typeof marked !== 'undefined' && marked.parse) {
@@ -1620,6 +2304,7 @@ createApp({
             title: rawTitle,
             id: slug,
             normKey,
+            lineIdx,
             lineRatio: lines.length > 1 ? lineIdx / (lines.length - 1) : 0
           });
         }
@@ -1706,13 +2391,13 @@ createApp({
       }
     };
 
-    // Code-Block-Aware Interactive Checkbox Toggle
+    // Code-Block-Aware Interactive Checkbox Toggle in walkthrough_md
     const handleNotesContentClick = (event) => {
       const checkbox = event.target.closest('input.notes-interactive-checkbox');
-      if (checkbox && selectedGame.value && selectedGame.value.user_notes) {
+      if (checkbox && selectedGame.value && selectedGame.value.walkthrough_md) {
         const targetIdx = parseInt(checkbox.getAttribute('data-checkbox-idx'), 10);
         if (!isNaN(targetIdx)) {
-          const lines = selectedGame.value.user_notes.split('\n');
+          const lines = selectedGame.value.walkthrough_md.split('\n');
           let inFence = false;
           let currentMatch = 0;
           for (let i = 0; i < lines.length; i++) {
@@ -1731,8 +2416,8 @@ createApp({
               currentMatch++;
             }
           }
-          selectedGame.value.user_notes = lines.join('\n');
-          syncNotesPreviewNow(selectedGame.value.user_notes);
+          selectedGame.value.walkthrough_md = lines.join('\n');
+          syncNotesPreviewNow(selectedGame.value.walkthrough_md);
           onNotesInput(true);
           return;
         }
@@ -1750,21 +2435,53 @@ createApp({
       }
     };
 
-    // Heading-Anchor Interpolated Scroll Synchronization
+    // Piecewise Heading-Anchor Interpolated Scroll Synchronization (Anti-Jitter)
+    const _lockScrollSource = (sourceName) => {
+      activeScrollPane = sourceName;
+      if (scrollLockTimer) clearTimeout(scrollLockTimer);
+      scrollLockTimer = setTimeout(() => {
+        activeScrollPane = null;
+      }, 150);
+    };
+
     const onEditorScroll = (e) => {
-      if (!syncScrollEnabled.value || notesFullscreenLayout.value !== 'split' || isSyncingLeft) return;
+      if (!syncScrollEnabled.value || notesFullscreenLayout.value !== 'split') return;
+      if (activeScrollPane && activeScrollPane !== 'editor') return;
+      _lockScrollSource('editor');
+
       const editor = e.target;
       const preview = document.getElementById('notes-preview-scroll-container');
       if (!editor || !preview) return;
 
-      isSyncingRight = true;
       const maxEditor = editor.scrollHeight - editor.clientHeight;
       const maxPreview = preview.scrollHeight - preview.clientHeight;
-      if (maxEditor > 0 && maxPreview > 0) {
-        const ratio = editor.scrollTop / maxEditor;
-        preview.scrollTop = ratio * maxPreview;
+      if (maxEditor <= 0 || maxPreview <= 0) return;
+
+      const editorRatio = editor.scrollTop / maxEditor;
+      const toc = notesTocList.value;
+      const headingEls = Array.from(preview.querySelectorAll('h1, h2, h3, h4'));
+
+      if (toc.length >= 2 && headingEls.length === toc.length) {
+        const previewRectTop = preview.getBoundingClientRect().top;
+        const points = [{ r: 0, y: 0 }];
+        for (let i = 0; i < toc.length; i++) {
+          const y = Math.max(0, headingEls[i].getBoundingClientRect().top - previewRectTop + preview.scrollTop - 32);
+          points.push({ r: toc[i].lineRatio, y });
+        }
+        points.push({ r: 1, y: maxPreview });
+
+        for (let i = 0; i < points.length - 1; i++) {
+          const p0 = points[i];
+          const p1 = points[i + 1];
+          if (editorRatio >= p0.r && editorRatio <= p1.r) {
+            const span = Math.max(0.0001, p1.r - p0.r);
+            const localT = (editorRatio - p0.r) / span;
+            preview.scrollTop = p0.y + localT * (p1.y - p0.y);
+            return;
+          }
+        }
       }
-      setTimeout(() => { isSyncingRight = false; }, 40);
+      preview.scrollTop = editorRatio * maxPreview;
     };
 
     const onPreviewScroll = (e) => {
@@ -1788,21 +2505,21 @@ createApp({
         activeHeadingId.value = headings[0].id;
       }
 
-      if (!syncScrollEnabled.value || notesFullscreenLayout.value !== 'split' || isSyncingRight) return;
+      if (!syncScrollEnabled.value || notesFullscreenLayout.value !== 'split') return;
+      if (activeScrollPane && activeScrollPane !== 'preview') return;
+      _lockScrollSource('preview');
+
       const editor = document.getElementById('notes-editor-textarea');
       if (!editor) return;
 
-      isSyncingLeft = true;
       const maxPreview = preview.scrollHeight - preview.clientHeight;
       const maxEditor = editor.scrollHeight - editor.clientHeight;
       if (maxPreview > 0 && maxEditor > 0) {
         const ratio = preview.scrollTop / maxPreview;
         editor.scrollTop = ratio * maxEditor;
       }
-      setTimeout(() => { isSyncingLeft = false; }, 40);
     };
 
-    // Draggable Split Pane Resizer
     const startSplitDrag = (e) => {
       e.preventDefault();
       isDraggingSplit.value = true;
@@ -1842,19 +2559,19 @@ createApp({
       if (!textToInsert) return;
 
       const ta = document.getElementById('notes-editor-textarea') || document.getElementById('drawer-notes-textarea');
-      const currentVal = selectedGame.value.user_notes || '';
+      const currentVal = selectedGame.value.walkthrough_md || '';
       if (ta) {
         const start = ta.selectionStart ?? currentVal.length;
         const end = ta.selectionEnd ?? currentVal.length;
-        selectedGame.value.user_notes = currentVal.slice(0, start) + textToInsert + currentVal.slice(end);
+        selectedGame.value.walkthrough_md = currentVal.slice(0, start) + textToInsert + currentVal.slice(end);
         nextTick(() => {
           ta.focus();
           ta.selectionStart = ta.selectionEnd = start + textToInsert.length;
         });
       } else {
-        selectedGame.value.user_notes = currentVal ? (currentVal + '\n' + textToInsert) : textToInsert;
+        selectedGame.value.walkthrough_md = currentVal ? (currentVal + '\n' + textToInsert) : textToInsert;
       }
-      syncNotesPreviewNow(selectedGame.value.user_notes);
+      syncNotesPreviewNow(selectedGame.value.walkthrough_md);
       onNotesInput(true);
     };
 
@@ -1866,30 +2583,33 @@ createApp({
       }
       notesSaveStatus.value = 'saving';
       try {
-        const notesContent = selectedGame.value.user_notes || '';
-        const hasClean = notesContent.replace(/[\r\n\u3000\s]+/g, '').length > 0 ? 1 : 0;
-        await fetch(`/api/games/${selectedGame.value.id}/update`, {
+        const walkthroughContent = selectedGame.value.walkthrough_md || '';
+        const memoContent = selectedGame.value.user_notes || '';
+        const res = await fetch(`/api/games/${selectedGame.value.id}/update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ user_notes: notesContent })
+          body: JSON.stringify({
+            walkthrough_md: walkthroughContent,
+            user_notes: memoContent
+          })
         });
-
-        selectedGame.value.has_notes = hasClean;
-        const target = games.value.find(g => g.id === selectedGame.value.id);
-        if (target) {
-          target.has_notes = hasClean;
-          target.user_notes = notesContent.slice(0, 180);
-          triggerGamesRef();
+        const data = await res.json();
+        if (data.data) {
+          selectedGame.value.has_walkthrough = data.data.has_walkthrough;
+          selectedGame.value.has_user_notes = data.data.has_user_notes;
+          selectedGame.value.has_notes = data.data.has_notes;
+          updateGameInList(data.data);
         }
 
         notesSaveStatus.value = 'saved';
         fetchStats();
+        fetchCollections();
         if (!silent) {
-          showToast('攻略笔记已保存', 'success');
+          showToast('全结局攻略已保存', 'success');
         }
       } catch (err) {
         notesSaveStatus.value = 'dirty';
-        showToast('保存笔记失败: ' + err, 'error');
+        showToast('保存攻略失败: ' + err, 'error');
       }
     };
 
@@ -1898,7 +2618,7 @@ createApp({
       if (!skipRenderDebounce) {
         if (notesRenderTimer) clearTimeout(notesRenderTimer);
         notesRenderTimer = setTimeout(() => {
-          const txt = selectedGame.value?.user_notes || '';
+          const txt = selectedGame.value?.walkthrough_md || '';
           debouncedNotesHtml.value = renderNotesMarkdown(txt);
           notesTocList.value = extractNotesToc(txt);
         }, 150);
@@ -1910,15 +2630,14 @@ createApp({
     };
 
     const openNotesFullscreen = async (game = null) => {
-      // Apply user's configured default layout & TOC preference when opening workspace
       notesFullscreenLayout.value = configData.value.notes_default_layout || 'split';
       showNotesToc.value = configData.value.notes_default_toc !== false;
       syncScrollEnabled.value = configData.value.notes_sync_scroll !== false;
 
       if (game && (!selectedGame.value || selectedGame.value.id !== game.id)) {
-        selectedGame.value = { ...game };
+        selectedGame.value = { walkthrough_md: '', user_notes: '', sample_images: [], ...game };
         populateEditForm(game);
-        syncNotesPreviewNow(game.user_notes || '');
+        syncNotesPreviewNow(game.walkthrough_md || '');
       }
       if (!selectedGame.value) return;
 
@@ -1926,7 +2645,6 @@ createApp({
       tocSearchQuery.value = '';
       notesSaveStatus.value = 'saved';
 
-      // Always fetch full game detail to guarantee 100% complete user_notes
       try {
         const r = await fetch(`/api/games/${selectedGame.value.id}`);
         const data = await r.json();
@@ -1936,7 +2654,7 @@ createApp({
           selectedGameMTool.value = data.mtool_status || null;
           selectedGameSave.value = data.save_status || null;
           selectedGameScreenshots.value = data.screenshots || [];
-          syncNotesPreviewNow(selectedGame.value.user_notes || '');
+          syncNotesPreviewNow(selectedGame.value.walkthrough_md || '');
         }
       } catch (e) {}
       refreshIcons();
@@ -2179,6 +2897,25 @@ createApp({
       }
     };
 
+    const syncGameWebDAVAction = async (game) => {
+      if (!game) return;
+      isSyncingWebDAV.value = true;
+      try {
+        const res = await fetch(`/api/games/${game.id}/webdav_sync`, { method: 'POST' });
+        const data = await res.json();
+        if (data.save_status) {
+          selectedGameSave.value = data.save_status;
+          showSaveBackupsList.value = true;
+        }
+        showToast(data.message || 'WebDAV 云同步完成', data.success ? 'success' : 'warning', 3200);
+      } catch (err) {
+        showToast('WebDAV 同步异常: ' + err, 'error');
+      } finally {
+        isSyncingWebDAV.value = false;
+        refreshIcons();
+      }
+    };
+
     const restoreSaveBackupAction = async (game, backupItem) => {
       if (!game || !backupItem) return;
       const ok = await askConfirm({
@@ -2289,6 +3026,7 @@ createApp({
           }
           games.value = games.value.filter(g => g.id !== game.id);
           fetchStats();
+          fetchCollections();
         } else {
           showToast(result.detail || '删除失败', 'error');
         }
@@ -2315,6 +3053,7 @@ createApp({
           missingOnly.value = false;
           fetchGames();
           fetchStats();
+          fetchCollections();
         } else {
           showToast('清理失败: ' + result.detail, 'error');
         }
@@ -2339,10 +3078,10 @@ createApp({
     const isGameSelected = (id) => selectedGameIds.value.includes(id);
 
     const selectAllCurrentGames = () => {
-      if (selectedGameIds.value.length === games.value.length) {
+      if (selectedGameIds.value.length === filteredGames.value.length) {
         selectedGameIds.value = [];
       } else {
-        selectedGameIds.value = games.value.map(g => g.id);
+        selectedGameIds.value = filteredGames.value.map(g => g.id);
       }
     };
 
@@ -2363,6 +3102,7 @@ createApp({
           });
           triggerGamesRef();
           fetchStats();
+          fetchCollections();
         } else {
           showToast('批量更新失败', 'error');
         }
@@ -2397,6 +3137,7 @@ createApp({
           selectedGameIds.value = [];
           fetchGames();
           fetchStats();
+          fetchCollections();
         } else {
           showToast(result.message || '批量删除失败', 'error');
         }
@@ -2444,13 +3185,10 @@ createApp({
         if (result.success) {
           selectedGame.value = result.data;
           populateEditForm(result.data);
-          const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-          if (idx !== -1) {
-            games.value[idx] = result.data;
-            triggerGamesRef();
-          }
+          updateGameInList(result.data);
           showCandidateModal.value = false;
           fetchStats();
+          fetchCollections();
           showToast(`已采纳来自【${candidate.source_name}】的元数据！`, 'success');
         } else {
           showToast('应用候选数据失败', 'error');
@@ -2477,12 +3215,9 @@ createApp({
         if (result.success) {
           selectedGame.value = result.data;
           populateEditForm(result.data);
-          const idx = games.value.findIndex(g => g.id === selectedGame.value.id);
-          if (idx !== -1) {
-            games.value[idx] = result.data;
-            triggerGamesRef();
-          }
+          updateGameInList(result.data);
           fetchStats();
+          fetchCollections();
           showToast('元数据抓取并更新成功！', 'success');
         } else {
           showToast(result.message || '未抓取到匹配信息', 'warning');
@@ -2517,6 +3252,7 @@ createApp({
             clearInterval(timer);
             fetchGames();
             fetchStats();
+            fetchCollections();
             if (viewMode.value === 'analytics') fetchAnalytics();
             refreshIcons();
             showToast(data.status_message || '扫描完成！', 'success');
@@ -2557,6 +3293,7 @@ createApp({
             clearInterval(timer);
             fetchGames();
             fetchStats();
+            fetchCollections();
             if (viewMode.value === 'analytics') fetchAnalytics();
             refreshIcons();
             showToast(data.status_message || '批量刮削已完成！', 'success');
@@ -2612,6 +3349,7 @@ createApp({
         showToast(data.message || '归档成功', data.success ? 'success' : 'error');
         fetchGames();
         fetchStats();
+        fetchCollections();
         if (showDuplicateModal.value) openDuplicateModal(focusedDuplicateGroupId.value);
         if (selectedGame.value && selectedGame.value.id === variant.id) {
           selectedGame.value = null;
@@ -2653,10 +3391,10 @@ createApp({
       }
     };
 
-    // Only watch structural UI toggles for Lucide icon rendering (removed runningGames & stats polling jitter)
     watch(
       [
         selectedGame,
+        drawerActiveTab,
         isEditMode,
         showSaveBackupsList,
         notesEditMode,
@@ -2667,6 +3405,7 @@ createApp({
         settingsActiveTab,
         showShortcutModal,
         showCandidateModal,
+        showCollectionModal,
         showNotesFullscreen,
         notesFullscreenLayout,
         showNotesToc,
@@ -2699,11 +3438,17 @@ createApp({
         return;
       }
 
+      if (e.altKey && e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        openCompanionOverlayAction();
+        return;
+      }
+
       const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
       const isInputFocused = activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select';
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        if (showNotesFullscreen.value || (selectedGame.value && notesEditMode.value)) {
+        if (showNotesFullscreen.value || (selectedGame.value && (notesEditMode.value || drawerActiveTab.value === 'walkthrough'))) {
           e.preventDefault();
           saveGameNotes(false);
           return;
@@ -2742,6 +3487,11 @@ createApp({
           closeNotesFullscreen();
           return;
         }
+        if (showCollectionModal.value) {
+          e.preventDefault();
+          showCollectionModal.value = false;
+          return;
+        }
         if (showCandidateModal.value) {
           e.preventDefault();
           showCandidateModal.value = false;
@@ -2774,6 +3524,7 @@ createApp({
       fetchConfig();
       fetchGames();
       fetchStats();
+      fetchCollections();
       if (viewMode.value === 'analytics') {
         fetchAnalytics();
       }
@@ -2786,13 +3537,33 @@ createApp({
 
     return {
       games,
+      filteredGames,
+      displayedGames,
+      visibleLimit,
+      loadMoreGames,
       stats,
+      collections,
+      activeCollectionId,
+      activeCollection,
+      showCollectionModal,
+      collectionForm,
+      selectCollectionFilter,
+      openCreateCollectionModal,
+      openEditCollectionModal,
+      saveCollectionAction,
+      deleteCollectionAction,
+      toggleGameInManualCollection,
+      batchAddToCollectionAction,
       analyticsData,
       isLoadingAnalytics,
+      isExportingPoster,
       fetchAnalytics,
+      exportAnalyticsPosterAction,
       openGameById,
+      openCompanionOverlayAction,
       getThumbUrl,
       hasGameWalkthrough,
+      hasPersonalMemo,
       runningGames,
       isGameRunning,
       getGameRunningInfo,
@@ -2829,6 +3600,7 @@ createApp({
       sortByColumn,
       statusTabs,
       selectedGame,
+      drawerActiveTab,
       currentGameIndex,
       navigateAdjacentGame,
       selectedGameVariants,
@@ -2836,12 +3608,15 @@ createApp({
       selectedGameSave,
       selectedGameScreenshots,
       lightboxShot,
+      openSampleLightbox,
       isCapturingScreenshot,
       screenshotFileInput,
       cgSaveFileInput,
       isUnlockingCG,
       isGeneratingGuide,
       isParsingFolderAI,
+      isLocalizingTags,
+      localizeAllTagsAction,
       captureGameScreenshotAction,
       triggerScreenshotUpload,
       handleScreenshotUpload,
@@ -2855,9 +3630,11 @@ createApp({
       showSaveBackupsList,
       isBackingUpSave,
       isRestoringSave,
+      isSyncingWebDAV,
       openSaveFolderAction,
       openSaveBackupsFolderAction,
       backupSaveAction,
+      syncGameWebDAVAction,
       restoreSaveBackupAction,
       deleteSaveBackupAction,
       showRescrapePanel,
@@ -2898,8 +3675,10 @@ createApp({
       isTestingProxy,
       proxyTestResults,
       isTestingLLM,
+      isTestingWebDAV,
       applyLLMPreset,
       testLLMConnectionAction,
+      testWebDAVAction,
       configData,
       pickLocalPathAction,
       scanState,
@@ -2940,6 +3719,10 @@ createApp({
       updateGameRating,
       deleteGameAction,
       cleanupMissingAction,
+      personalMemoSaveStatus,
+      onPersonalNoteInput,
+      savePersonalNoteNow,
+      appendPersonalMemoSnippet,
       notesEditMode,
       debouncedNotesHtml,
       renderNotesMarkdown,

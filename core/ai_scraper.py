@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
 from config import COVERS_DIR, load_config
-from db.database import get_all_games, upsert_game, manual_update_game_metadata
+from db.database import (
+    get_all_games,
+    upsert_game,
+    manual_update_game_metadata,
+    normalize_and_localize_tags,
+    resolve_best_display_title
+)
 from core.scraper import (
     scrape_dlsite,
     scrape_bangumi,
@@ -21,10 +27,6 @@ from core.scraper import (
 from core.scanner import clean_title_from_folder, extract_rj_code
 
 
-# ---------------------------------------------------------
-# OpenAI-Compatible Local / Cloud LLM Engine (v2.2)
-# Supports DeepSeek, Qwen, OpenAI, SiliconFlow, and Ollama
-# ---------------------------------------------------------
 def call_llm_chat(
     messages: List[Dict[str, str]],
     cfg: Optional[Dict[str, Any]] = None,
@@ -69,7 +71,6 @@ def call_llm_chat(
                 if choices:
                     content = (choices[0].get("message") or {}).get("content", "")
                     if content:
-                        # Strip <think>...</think> reasoning blocks if returned by reasoning models
                         content = re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
                         return content
             else:
@@ -122,7 +123,7 @@ def test_llm_connection(custom_cfg: Optional[Dict[str, Any]] = None) -> Dict[str
 def llm_parse_folder_metadata(folder_name: str, clues: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Uses LLM (with deterministic regex fallback) to extract structured metadata from messy
-    folk-translated folder names like '[240815][RJ01234567][社团名] 作品名 ver1.02 巴比伦汉化版'.
+    folk-translated folder names.
     """
     clues = clues or {}
     fallback = _regex_parse_folder_metadata(folder_name, clues)
@@ -161,7 +162,10 @@ def llm_parse_folder_metadata(folder_name: str, clues: Optional[Dict[str, Any]] 
                         if parsed.get(k):
                             merged[k] = str(parsed[k]).strip()
                     if isinstance(parsed.get("tags"), list) and parsed["tags"]:
-                        merged["tags"] = list(dict.fromkeys(fallback.get("tags", []) + [str(t).strip() for t in parsed["tags"] if str(t).strip()]))
+                        merged["tags"] = normalize_and_localize_tags(
+                            fallback.get("tags", []) + [str(t).strip() for t in parsed["tags"] if str(t).strip()],
+                            localize=True
+                        )
                     merged["used_llm"] = True
                     return merged
         except Exception:
@@ -176,12 +180,10 @@ def _regex_parse_folder_metadata(folder_name: str, clues: Dict[str, Any]) -> Dic
     translator = ""
     version = ""
 
-    # Extract version
     m_ver = re.search(r"\b(v(?:er)?\.?\s*\d+(?:\.\d+)*[a-zA-Z]?)\b", folder_name, re.I)
     if m_ver:
         version = m_ver.group(1).strip()
 
-    # Extract bracketed tokens
     brackets = re.findall(r"[\[\【\(（]([^\]\】\)）]+)[\]\】\)）]", folder_name)
     for b in brackets:
         b_clean = b.strip()
@@ -221,7 +223,7 @@ def _regex_parse_folder_metadata(folder_name: str, clues: Dict[str, Any]) -> Dic
         "rj_code": rj,
         "version": version,
         "translator_group": translator,
-        "tags": list(dict.fromkeys(tags)),
+        "tags": normalize_and_localize_tags(tags, localize=True),
         "used_llm": False
     }
 
@@ -249,11 +251,7 @@ def _split_text_chunks(text: str, max_len: int = 1100) -> List[str]:
 
 
 def translate_japanese_to_chinese(text: str, proxy: Optional[str] = None) -> str:
-    """
-    Translates Japanese or English game synopses into Simplified Chinese:
-    1. If LLM is enabled + llm_auto_translate is True, uses LLM for literary ACG synopsis translation.
-    2. Otherwise, performs multi-chunk translation via Google GTX (sl=auto) with MyMemory fallback so long descriptions are never truncated.
-    """
+    """Translates Japanese or English game synopses into Simplified Chinese."""
     if not text or len(text.strip()) < 5:
         return text
 
@@ -261,7 +259,6 @@ def translate_japanese_to_chinese(text: str, proxy: Optional[str] = None) -> str
     has_kana = bool(re.search(r"[\u3040-\u30ff]", cleaned_text))
     cjk_count = len(re.findall(r"[\u4e00-\u9fff]", cleaned_text))
     ascii_letters = len(re.findall(r"[a-zA-Z]", cleaned_text))
-    # Skip only if already predominantly Chinese (no kana and high CJK ratio)
     if not has_kana and cjk_count > 10 and ascii_letters < cjk_count * 2:
         return cleaned_text
 
@@ -283,7 +280,6 @@ def translate_japanese_to_chinese(text: str, proxy: Optional[str] = None) -> str
         if llm_res and len(llm_res) > 5:
             return llm_res
 
-    # Multi-chunk Google Translate GTX (no 1500-char loss!)
     source_lang = "ja" if has_kana else "auto"
     chunks = _split_text_chunks(cleaned_text, max_len=1100)
     translated_chunks: List[str] = []
@@ -316,7 +312,6 @@ def translate_japanese_to_chinese(text: str, proxy: Optional[str] = None) -> str
     except Exception:
         pass
 
-    # Fallback: MyMemory API
     try:
         sample_text = cleaned_text[:480]
         enc = urllib.parse.quote(sample_text)
@@ -433,7 +428,6 @@ def process_single_game_ai_scrape(
     clean_t = game.get("clean_title") or clean_title_from_folder(fname)
     rj_code = (explicit_rj or game.get("rj_code") or extract_rj_code(fname) or "").strip()
 
-    # 1. Discover internal clues & optional LLM semantic folder parsing
     clues = find_internal_clues(fpath) if fpath else {}
     if not rj_code and clues.get("rj_code"):
         rj_code = clues["rj_code"]
@@ -459,7 +453,6 @@ def process_single_game_ai_scrape(
     meta = None
     target_rj = rj_code
 
-    # If user explicitly prefers Steam, Bangumi, or VNDB first
     if pref == "steam":
         if clues.get("steam_appid"):
             meta = scrape_steam(clues["steam_appid"], proxy=proxy, force=force)
@@ -487,7 +480,6 @@ def process_single_game_ai_scrape(
                         meta["synopsis"] = translate_japanese_to_chinese(meta["synopsis"], proxy=proxy)
                     break
 
-    # 2. DLsite lookup by RJ code or keyword search
     if not meta:
         if not target_rj and pref in ("auto", "dlsite"):
             for t in candidate_titles:
@@ -505,11 +497,7 @@ def process_single_game_ai_scrape(
                 if jp_synopsis:
                     zh_synopsis = translate_japanese_to_chinese(jp_synopsis, proxy=proxy)
                     meta["synopsis"] = zh_synopsis
-                # Protect Chinese display_title if folder already had a Chinese title
-                if clean_t and clean_t != meta["title"] and not re.search(r"[\u3040-\u30ff]", clean_t):
-                    meta["display_title"] = clean_t
 
-    # 3. Fallback across Bangumi -> Steam -> VNDB
     if not meta:
         if clues.get("steam_appid"):
             meta = scrape_steam(clues["steam_appid"], proxy=proxy, force=force)
@@ -536,18 +524,12 @@ def process_single_game_ai_scrape(
     if not meta:
         return False, None
 
-    # Merge tags cleanly without wiping existing tags when scrape returns empty
-    merged_tags = list(dict.fromkeys((meta.get("tags") or []) + (parsed_info.get("tags") or [])))
+    merged_tags = normalize_and_localize_tags((meta.get("tags") or []) + (parsed_info.get("tags") or []), localize=True)
     if not merged_tags and game.get("tags"):
-        merged_tags = game["tags"]
+        merged_tags = normalize_and_localize_tags(game["tags"], localize=True)
 
-    # Preserve existing Chinese display_title if user customized it
-    existing_disp = (game.get("display_title") or "").strip()
     scraped_disp = meta.get("display_title") or meta.get("title") or clean_t or game["folder_name"]
-    if existing_disp and existing_disp != fname and not re.search(r"[\u3040-\u30ff]", existing_disp) and re.search(r"[\u3040-\u30ff]", scraped_disp):
-        final_display_title = existing_disp
-    else:
-        final_display_title = scraped_disp
+    final_display_title = resolve_best_display_title(game, scraped_disp, fallback_title=clean_t or game["folder_name"])
 
     update_dict = {
         "folder_name": game["folder_name"],
@@ -557,6 +539,7 @@ def process_single_game_ai_scrape(
         "original_title": meta.get("original_title") or parsed_info.get("original_title") or game.get("original_title", ""),
         "cover_url": meta.get("cover_url") or game.get("cover_url", ""),
         "banner_url": meta.get("banner_url") or meta.get("cover_url") or game.get("banner_url", ""),
+        "sample_images": meta.get("sample_images") or game.get("sample_images") or [],
         "synopsis": meta.get("synopsis") or game.get("synopsis", ""),
         "circle_name": meta.get("circle_name") or parsed_info.get("circle_name") or game.get("circle_name", ""),
         "release_date": meta.get("release_date") or game.get("release_date", ""),
