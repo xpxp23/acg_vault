@@ -1,10 +1,23 @@
-# 🎮 ACG Vault v2.4 (本地 ACG 游戏资产、AI 攻略、游戏内穿透悬浮伴侣、可视化改档与数据馆藏中心)
+# 🎮 ACG Vault v2.5 (本地 ACG 游戏资产、AI 攻略、游戏内穿透悬浮伴侣、可视化改档、手柄化 RPG Maker 与数据馆藏中心)
 
 一款专为本地 ACG / Galgame / 同人游戏爱好者打造的殿堂级全功能游戏库管理系统。基于 **FastAPI + SQLite (WAL) + Vue 3 + PyWebView 原生桌面封装** 架构，提供本地游戏目录增量极速扫描、DLsite / Bangumi / Steam / VNDB 四源元数据与竖版海报智能刮削、多源日/英标签自动汉化归一、OpenAI 兼容大模型（DeepSeek / Qwen / Ollama）智能语义清洗与工程解包全结局攻略生成、`Alt+G` 游戏内无边框毛玻璃 + `Alt+T` 鼠标穿透锁定伴侣小窗、`F12` 实机截图 + 官方商店预览图双画廊、RPG Maker 可视化在线改档器（Save Editor）、跨引擎 AppData 存档自动映射 + WebDAV 云端同步、动态智能合集以及一键导出年度/月度馆藏长图的数据馆藏看板。
 
 ---
 
-## ✨ v2.4 重磅升级与深度优化亮点
+## ✨ v2.5 升级亮点
+
+1. 🎮 **手柄支持（XInput → 键盘桥接，RPG Maker 专项优化）** (`core/gamepad.py`)：
+   - RPG Maker MV/MZ 基于 NW.js/Chromium，只监听键盘、完全不认 Gamepad API；XP/VX/VX Ace 的 RGSS 同样只读键盘。本版内置零依赖 XInput 桥接：按引擎自动切换键位（MV/MZ 用 `Z/X/Shift`，RGSS 用 `C/B/Shift`，WOLF 用 `Z/X`），左摇杆带死区、按住即持续移动。
+   - **只喂给游戏**：仅当通过本库启动的游戏窗口在前台时才转发按键，切出、退出游戏或关闭开关都会立即松开所有按键，不会在浏览器/聊天窗里乱按方向键。
+   - 设置页提供实时输入自检（按键点亮 + 摇杆数值）、死区调节、可视化改键，并可为运行中的单个游戏单独指定方案。
+2. 🔧 **MTool 联动启动修复：按位数选 hook + 托管「与工具一同启动.bat」** (`core/mtool_link.py`, `core/launcher.py`)：
+   - 旧实现固定注入 `mzHook.dll`（64 位），而 RPG Maker MV 默认 `Game.exe` 是 32 位（本库 81 个 MV 中 76 个），64 位 DLL 注入 32 位进程会**静默失败**——游戏与 MTool 各自启动、互不关联。本版改为读 PE 头判定 32/64 位，再按引擎选 `mzHook32.dll` / `mzHook.dll` / `RGSSHook.dll` / `RGSSHook64.dll` / `wolfHook.dll`。
+   - 优先复用 MTool 生成的 `与工具一同启动.bat`；缺失或不一致（旧 MTool 路径、位数不符）时自动重建并保留 `.bak`；同时维护 `Tool/gameLaunchs/<md5(小写完整路径)>` 记录，让 MTool 面板一侧也认得该游戏。
+   - 启动后枚举游戏进程模块，校验 hook DLL 是否真的载入，把「已关联 / 未关联」直接回报到界面提示；新增只读诊断接口 `GET /api/games/{id}/mtool_diagnose`。
+
+---
+
+## ✨ v2.4 重大升级与深度优化亮点
 
 1. 🎨 **Collector's UI 2.4 视觉降噪与卡片底部「智能信息槽」** (`static/style.css`, `static/index.html`, `static/app.js`)：
    - **左上角一体式毛玻璃胶囊**：彻底重塑卡片左上角徽章，采用圆角毛玻璃胶囊 + 引擎语义色彩编码，并将「攻略 (`📖`) / 随手记 (`📝`)」整合为胶囊内轻量微图标，把封面下半部分 100% 留给角色立绘。

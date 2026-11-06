@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>ACG Game Vault v2.4 - 本地游戏资产、AI攻略与数据馆藏中心</title>
+  <title>ACG Game Vault v2.5 - 本地游戏资产、AI攻略与数据馆藏中心</title>
 
   <!-- Global Diagnostic & Error Interceptor -->
   <script>
@@ -3087,7 +3087,7 @@
           <div class="flex items-center justify-between border-b border-slate-800 pb-3">
             <h2 class="text-base font-bold text-white flex items-center space-x-2">
               <i data-lucide="settings" class="w-5 h-5 text-indigo-400"></i>
-              <span>ACG Vault v2.4 系统与个性化定制中心</span>
+              <span>ACG Vault v2.5 系统与个性化定制中心</span>
             </h2>
             <button @click="showSettingsModal = false" class="text-slate-400 hover:text-white cursor-pointer">
               <i data-lucide="x" class="w-5 h-5"></i>
@@ -3102,7 +3102,8 @@
                 { id: 'ui', label: '🎨 界面与阅读' },
                 { id: 'ai', label: '🤖 AI 与标签归一' },
                 { id: 'cloud', label: '☁️ 自动快照与 WebDAV' },
-                { id: 'desktop', label: '🖥️ 桌面端与伴侣热键' }
+                { id: 'desktop', label: '🖥️ 桌面端与伴侣热键' },
+                { id: 'gamepad', label: '🎮 手柄' }
               ]"
               :key="tab.id"
               @click="settingsActiveTab = tab.id"
@@ -3568,6 +3569,111 @@
                 <div class="text-[11px] text-slate-500">自动写入当前用户注册表 Run 项 (`pythonw desktop_app.py --minimized`)，零黑框打扰</div>
               </div>
               <input type="checkbox" v-model="configData.auto_start_windows" class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer">
+            </div>
+          </div>
+
+          <!-- Tab: Gamepad (v2.5) -->
+          <div v-if="settingsActiveTab === 'gamepad'" class="space-y-4 text-xs max-h-[62vh] overflow-y-auto pr-1">
+            <div class="rounded-xl border p-3.5 flex items-center gap-3"
+                 :class="gamepadStatus.connected ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-slate-700 bg-slate-800/40'">
+              <div class="w-9 h-9 rounded-lg flex items-center justify-center text-lg shrink-0"
+                   :class="gamepadStatus.connected ? 'bg-emerald-500/15' : 'bg-slate-700/40'">🎮</div>
+              <div class="flex-1 min-w-0">
+                <div class="font-semibold text-slate-100 flex items-center gap-2 flex-wrap">
+                  <span>{{ gamepadStatus.connected ? '手柄已连接 · 槽位 ' + gamepadStatus.slot : '未检测到手柄' }}</span>
+                  <span v-if="gamepadStatus.active" class="px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">
+                    正在转发 · {{ (gamepadStatus.target_game && gamepadStatus.target_game.title) || '游戏' }}
+                  </span>
+                </div>
+                <div class="text-[11px] text-slate-400 mt-0.5 truncate">{{ gamepadStatus.message }}</div>
+                <div class="text-[10px] text-slate-500 mt-0.5">后端 {{ gamepadStatus.backend || 'XInput' }} · 当前方案 {{ gamepadStatus.profile_label || '—' }}</div>
+              </div>
+            </div>
+
+            <div>
+              <label class="font-semibold text-slate-300 block mb-1.5">实时输入自检（按下手柄按键即点亮）</label>
+              <div class="grid grid-cols-5 gap-1.5">
+                <div v-for="(label, name) in PAD_BUTTON_LABELS" :key="name"
+                     class="py-2 rounded-lg text-center font-mono font-semibold border transition-all"
+                     :class="isPadPressed(name) ? 'bg-indigo-600 border-indigo-400 text-white shadow-lg shadow-indigo-600/30' : 'bg-slate-800/60 border-slate-700 text-slate-400'">
+                  {{ label }}
+                </div>
+              </div>
+              <div class="grid grid-cols-4 gap-1.5 mt-1.5 text-[10px] font-mono text-slate-400">
+                <div class="bg-slate-900/60 border border-slate-800 rounded-lg px-2 py-1">LX {{ (gamepadStatus.axes && gamepadStatus.axes.lx) || 0 }}</div>
+                <div class="bg-slate-900/60 border border-slate-800 rounded-lg px-2 py-1">LY {{ (gamepadStatus.axes && gamepadStatus.axes.ly) || 0 }}</div>
+                <div class="bg-slate-900/60 border border-slate-800 rounded-lg px-2 py-1">LT {{ (gamepadStatus.axes && gamepadStatus.axes.lt) || 0 }}</div>
+                <div class="bg-slate-900/60 border border-slate-800 rounded-lg px-2 py-1">RT {{ (gamepadStatus.axes && gamepadStatus.axes.rt) || 0 }}</div>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-1">
+              <div>
+                <label class="font-semibold text-slate-300 block mb-1.5">按键方案</label>
+                <select v-model="configData.gamepad_profile" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+                  <option v-for="p in PAD_PROFILE_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="font-semibold text-slate-300 block mb-1.5">
+                  左摇杆死区 <span class="text-indigo-300 font-mono">{{ Number(configData.gamepad_deadzone || 0.35).toFixed(2) }}</span>
+                </label>
+                <input type="range" min="0.05" max="0.8" step="0.05" v-model.number="configData.gamepad_deadzone"
+                       class="w-full accent-indigo-500 cursor-pointer">
+                <div class="text-[10px] text-slate-500 mt-0.5">数值越大越不易误触；RPG Maker 走格子推荐 0.35</div>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between py-2 border-t border-slate-800">
+              <div>
+                <div class="text-slate-200 font-semibold">启用手柄支持（XInput → 键盘桥接）</div>
+                <div class="text-[11px] text-slate-500">仅当通过本库启动的游戏窗口在前台时转发按键；切出或退出游戏会立即松开所有按键</div>
+              </div>
+              <input type="checkbox" v-model="configData.gamepad_enabled" class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer">
+            </div>
+
+            <div class="flex items-center justify-between py-2 border-t border-slate-800">
+              <div>
+                <div class="text-slate-200 font-semibold">Back 键触发游戏截图（{{ configData.screenshot_hotkey || 'F12' }}）</div>
+                <div class="text-[11px] text-slate-500">复用「桌面端与伴侣热键」里的截图热键；若与 MTool 快捷键冲突可关闭</div>
+              </div>
+              <input type="checkbox" v-model="configData.gamepad_back_screenshot" class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer">
+            </div>
+
+            <div class="pt-2 border-t border-slate-800">
+              <label class="font-semibold text-slate-300 block mb-1.5">按键映射（默认已按 RPG Maker 习惯配好）</label>
+              <div class="grid grid-cols-2 gap-x-3 gap-y-2">
+                <div v-for="(label, name) in PAD_BUTTON_LABELS" :key="'map-' + name" class="flex items-center gap-2">
+                  <span class="w-10 shrink-0 text-center font-mono font-semibold text-slate-300 bg-slate-800/70 border border-slate-700 rounded-md py-1">{{ label }}</span>
+                  <select v-model="configData.gamepad_bindings[name]" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 min-w-0">
+                    <option v-for="opt in PAD_ACTION_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                  </select>
+                </div>
+              </div>
+              <div class="text-[10px] text-slate-500 mt-1.5">方向键与左摇杆始终对应方向键；映射留空表示该键不发送任何按键。</div>
+            </div>
+
+            <div v-if="runningGameList.length" class="pt-2 border-t border-slate-800">
+              <label class="font-semibold text-slate-300 block mb-1.5">运行中的游戏（单独指定方案，不影响其它游戏）</label>
+              <div class="space-y-2">
+                <div v-for="g in runningGameList" :key="'pad-' + g.game_id" class="flex items-center gap-2">
+                  <span class="flex-1 truncate text-slate-300" :title="g.title">{{ g.title }}</span>
+                  <select :value="perGameProfile(g.game_id)" @change="setPerGameProfile(g.game_id, $event.target.value)"
+                          class="w-48 shrink-0 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-slate-200">
+                    <option v-for="p in PAD_PROFILE_OPTIONS" :key="'pg-' + p.value" :value="p.value">{{ p.label }}</option>
+                  </select>
+                  <label class="flex items-center gap-1 shrink-0 text-[11px] text-slate-400 cursor-pointer">
+                    <input type="checkbox" :checked="perGameEnabled(g.game_id)" @change="setPerGameEnabled(g.game_id, $event.target.checked)"
+                           class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer">
+                    启用
+                  </label>
+                </div>
+              </div>
+              <div class="text-[10px] text-slate-500 mt-1.5">修改后需点下方「保存所有设置」生效。</div>
+            </div>
+
+            <div class="rounded-xl bg-slate-950/60 border border-slate-800 p-3 text-[11px] text-slate-400 leading-relaxed">
+              <span class="text-slate-200 font-semibold">为什么需要桥接：</span>RPG Maker MV/MZ 基于 NW.js/Chromium，只监听键盘事件，完全不识别 Gamepad API；XP/VX/VX Ace 的 RGSS 同样只读键盘。所以这里把手柄翻译成对应引擎的键位：MV/MZ 用 <span class="font-mono text-indigo-300">Z / X / Shift</span>，RGSS 用 <span class="font-mono text-indigo-300">C / B / Shift</span>。按住方向即持续移动（走格子手感），松开立即停止。
             </div>
           </div>
 

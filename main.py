@@ -26,6 +26,9 @@ from config import (
 )
 import ctypes
 
+from core import gamepad as gamepad_bridge
+from core import mtool_link
+
 from db.database import (
     init_db,
     get_all_games,
@@ -187,7 +190,15 @@ def cleanup_old_custom_covers(game_id: int, keep_filename: Optional[str] = None,
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    try:
+        gamepad_bridge.start(load_config())
+    except Exception as e:
+        print(f"[Gamepad] 启动失败: {e}")
     yield
+    try:
+        gamepad_bridge.stop()
+    except Exception:
+        pass
 
 
 app = FastAPI(title="ACG Game Vault", version=APP_VERSION, lifespan=lifespan)
@@ -1417,7 +1428,88 @@ def update_system_config(cfg: dict):
         reload_global_hotkeys()
     except Exception:
         pass
+    try:
+        gamepad_bridge.reload_config(saved)
+    except Exception as e:
+        print(f"[Gamepad] 配置应用失败: {e}")
     return {"success": True, "data": saved}
+
+
+@app.get("/api/gamepad/status")
+def gamepad_status_api():
+    """实时手柄状态：连接、按键、摇杆、当前是否在为某个游戏转发。"""
+    return gamepad_bridge.get_status()
+
+
+@app.post("/api/gamepad/game/{game_id}")
+def gamepad_set_game_override(game_id: int, req: dict):
+    """
+    为单个游戏覆盖手柄设置：{"profile": "rm_rgss" | "auto" | ..., "enabled": true/false}
+    传 null 表示清除该游戏的覆盖。
+    """
+    cfg = load_config()
+    per_game = cfg.get("gamepad_per_game") or {}
+    if not isinstance(per_game, dict):
+        per_game = {}
+    key = str(game_id)
+
+    if req is None or req.get("reset"):
+        per_game.pop(key, None)
+    else:
+        entry = per_game.get(key) or {}
+        if "profile" in req:
+            p = str(req.get("profile") or "auto")
+            if p not in ("auto", "rm_mv_mz", "rm_rgss", "wolf", "generic"):
+                p = "auto"
+            entry["profile"] = p
+        if "enabled" in req:
+            entry["enabled"] = bool(req.get("enabled"))
+        if entry:
+            per_game[key] = entry
+        else:
+            per_game.pop(key, None)
+
+    cfg["gamepad_per_game"] = per_game
+    saved = save_config(cfg)
+    gamepad_bridge.reload_config(saved)
+    return {"success": True, "data": saved.get("gamepad_per_game", {})}
+
+
+@app.get("/api/games/{game_id}/mtool_diagnose")
+def mtool_diagnose_api(game_id: int):
+    """只读诊断：为什么这个游戏能/不能在 MTool 里正确关联。"""
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"success": False, "message": "游戏不存在"}
+
+    status = get_game_mtool_status(game_id)
+    folder = game.get("folder_path") or ""
+    exe = game.get("executable_path") or ""
+    mtool_dir = status.get("mtool_dir") or ""
+
+    bat = mtool_link.find_launch_bat(folder) if folder else None
+    bat_info = mtool_link.inspect_launch_bat(bat) if bat else None
+    hook, bits, src = mtool_link.choose_hook(mtool_dir, game.get("engine_type") or "", exe)
+    rec_path = mtool_link.launch_record_path(mtool_dir, exe) if exe else None
+
+    return {
+        "success": True,
+        "engine_type": game.get("engine_type") or "",
+        "executable": exe,
+        "exe_bitness": mtool_link.get_exe_bitness(exe),
+        "expected_hook": str(hook),
+        "expected_hook_exists": hook.is_file(),
+        "bitness_source": src,
+        "bat": bat_info,
+        "bat_matches": bool(bat_info and bat_info.get("valid") and
+                            os.path.normcase(bat_info.get("hook") or "") == os.path.normcase(str(hook))),
+        "launch_record": {
+            "path": str(rec_path) if rec_path else "",
+            "exists": bool(rec_path and rec_path.is_file()),
+        },
+        "hook_dll": status.get("hook_dll"),
+        "hook_label": status.get("hook_label"),
+    }
 
 
 @app.post("/api/config/test_proxy")

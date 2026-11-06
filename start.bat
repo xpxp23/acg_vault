@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul 2>&1
-title ACG Game Vault v2.4
+title ACG Game Vault v2.5
 cd /d "%~dp0"
 
 echo [1/2] Checking Python environment...
@@ -11,7 +11,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo [2/2] Starting ACG Game Vault v2.4 ...
+echo [2/2] Starting ACG Game Vault v2.5 ...
 if "%1"=="--server" (
     python main.py
 ) else (

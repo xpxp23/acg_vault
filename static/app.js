@@ -390,6 +390,12 @@ createApp({
       global_overlay_hotkey: 'Alt+G',
       enable_ingame_screenshot: true,
       screenshot_hotkey: 'F12',
+      gamepad_enabled: true,
+      gamepad_deadzone: 0.35,
+      gamepad_profile: 'auto',
+      gamepad_back_screenshot: true,
+      gamepad_bindings: {},
+      gamepad_per_game: {},
       enable_auto_save_backup: true,
       auto_backup_min_minutes: 5,
       auto_backup_max_keep: 5,
@@ -1232,6 +1238,104 @@ createApp({
         showToast('保存设置异常: ' + err, 'error');
       }
     };
+
+    // ---------------- 手柄支持 (v2.5) ----------------
+    const PAD_BUTTON_LABELS = { a: 'A', b: 'B', x: 'X', y: 'Y', lb: 'LB', rb: 'RB', lt: 'LT', rt: 'RT', start: 'Start', back: 'Back' };
+    const PAD_DEFAULT_BINDINGS = {
+      a: 'confirm', b: 'cancel', x: 'dash', y: 'menu',
+      lb: 'pageup', rb: 'ff', lt: 'dash', rt: 'ff', start: 'enter', back: 'screenshot'
+    };
+    const PAD_ACTION_OPTIONS = [
+      { value: 'confirm', label: '确定 / 互动' },
+      { value: 'cancel', label: '取消 / 返回' },
+      { value: 'dash', label: '加速（跑步）' },
+      { value: 'menu', label: '菜单' },
+      { value: 'ff', label: '跳过 / 快进' },
+      { value: 'pageup', label: 'PageUp' },
+      { value: 'pagedown', label: 'PageDown' },
+      { value: 'enter', label: 'Enter' },
+      { value: 'screenshot', label: '游戏截图' },
+      { value: 'up', label: '方向 ↑' },
+      { value: 'down', label: '方向 ↓' },
+      { value: 'left', label: '方向 ←' },
+      { value: 'right', label: '方向 →' },
+      { value: '', label: '不映射' }
+    ];
+    const PAD_PROFILE_OPTIONS = [
+      { value: 'auto', label: '自动（按游戏引擎）' },
+      { value: 'rm_mv_mz', label: 'RPG Maker MV / MZ（Z 确认 · X 取消）' },
+      { value: 'rm_rgss', label: 'RPG Maker XP / VX / VX Ace（C 确认 · B 取消）' },
+      { value: 'wolf', label: 'WOLF RPG Editor（Z / X）' },
+      { value: 'generic', label: '通用（Enter / Esc）' }
+    ];
+
+    const gamepadStatus = ref({
+      available: false, connected: false, slot: null, active: false,
+      buttons: [], axes: {}, profile: 'generic', profile_label: '',
+      target_game: null, message: '正在检测手柄...'
+    });
+    let gamepadPollTimer = null;
+
+    const fetchGamepadStatus = async () => {
+      try {
+        const res = await fetch('/api/gamepad/status');
+        if (res.ok) gamepadStatus.value = await res.json();
+      } catch (err) { /* 静默：状态轮询失败不打扰用户 */ }
+    };
+
+    const startGamepadStatusPoll = () => {
+      if (gamepadPollTimer) return;
+      fetchGamepadStatus();
+      gamepadPollTimer = setInterval(fetchGamepadStatus, 300);
+    };
+
+    const stopGamepadStatusPoll = () => {
+      if (gamepadPollTimer) { clearInterval(gamepadPollTimer); gamepadPollTimer = null; }
+    };
+
+    const ensureGamepadBindings = () => {
+      const current = configData.value.gamepad_bindings;
+      if (!current || !Object.keys(current).length) {
+        configData.value.gamepad_bindings = { ...PAD_DEFAULT_BINDINGS };
+      }
+    };
+
+    const isPadPressed = (name) => (gamepadStatus.value.buttons || []).includes(name);
+
+    const runningGameList = computed(() => {
+      const byId = {};
+      (games.value || []).forEach(g => { byId[g.id] = g; });
+      return Object.values(runningGames.value || {}).map(info => {
+        const g = byId[info.game_id] || {};
+        return {
+          game_id: info.game_id,
+          title: g.display_title || g.clean_title || g.folder_name || `#${info.game_id}`,
+          mode: info.mode,
+          mtool_associated: info.mtool_associated
+        };
+      });
+    });
+
+    const perGameEntry = (id) => {
+      const map = configData.value.gamepad_per_game || {};
+      return map[String(id)] || {};
+    };
+    const perGameProfile = (id) => perGameEntry(id).profile || 'auto';
+    const perGameEnabled = (id) => perGameEntry(id).enabled !== false;
+
+    const _mutatePerGame = (id, patch) => {
+      const map = { ...(configData.value.gamepad_per_game || {}) };
+      const key = String(id);
+      const entry = { ...(map[key] || {}), ...patch };
+      Object.keys(entry).forEach(k => {
+        if (entry[k] === undefined || entry[k] === null || entry[k] === '') delete entry[k];
+      });
+      if (Object.keys(entry).length) map[key] = entry; else delete map[key];
+      configData.value.gamepad_per_game = map;
+    };
+
+    const setPerGameProfile = (id, value) => _mutatePerGame(id, { profile: value === 'auto' ? '' : value });
+    const setPerGameEnabled = (id, value) => _mutatePerGame(id, { enabled: value ? undefined : false });
 
     const applyLLMPreset = (preset) => {
       const presets = {
@@ -2897,7 +3001,22 @@ createApp({
           };
           startRunningGamesPoll();
           fetchStats();
-          showToast(data.message || 'MTool 辅助环境已就绪，正在拉起游戏...', 'success', 2500);
+          showToast(data.message || 'MTool 辅助环境已就绪，正在拉起游戏...', 'success', 3000);
+
+          // MTool 关联是异步完成的：hook 注入 + MTool 面板识别需要几秒，这里回访一次结果
+          setTimeout(async () => {
+            try {
+              const rr = await fetch('/api/games/running');
+              const rj = await rr.json();
+              const info = (rj.running_games || {})[String(game.id)];
+              if (!info || info.mode !== 'mtool') return;
+              if (info.mtool_associated === false) {
+                showToast(`MTool 未能关联：${info.mtool_detail || 'hook 未载入游戏进程'}`, 'warning', 7000);
+              } else if (info.mtool_associated === true) {
+                showToast(`MTool 已关联成功（${info.hook_dll || 'hook'}）`, 'success', 2500);
+              }
+            } catch (err) { /* 忽略回访失败 */ }
+          }, 9000);
         } else {
           showToast(data.message || 'MTool 启动失败', 'error');
         }
@@ -3670,6 +3789,15 @@ createApp({
       if (val) fetchExcludedLibraryData();
     });
 
+    watch([showSettingsModal, settingsActiveTab], ([open, tab]) => {
+      if (open && tab === 'gamepad') {
+        ensureGamepadBindings();
+        startGamepadStatusPoll();
+      } else {
+        stopGamepadStatusPoll();
+      }
+    });
+
     watch(
       [
         selectedGame,
@@ -4063,7 +4191,18 @@ createApp({
       archivedGamesList,
       restoreIgnoredPathAction,
       clearIgnoredPathsAction,
-      unarchiveGameAction
+      unarchiveGameAction,
+      // 手柄
+      gamepadStatus,
+      PAD_BUTTON_LABELS,
+      PAD_ACTION_OPTIONS,
+      PAD_PROFILE_OPTIONS,
+      isPadPressed,
+      runningGameList,
+      perGameProfile,
+      perGameEnabled,
+      setPerGameProfile,
+      setPerGameEnabled
     };
   }
 }).mount('#app');

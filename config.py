@@ -3,7 +3,7 @@ import sys
 import json
 from pathlib import Path
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("ACG_VAULT_DATA_DIR", str(BASE_DIR / "data")))
@@ -52,6 +52,13 @@ DEFAULT_CONFIG = {
     "overlay_click_through": False,
     "enable_ingame_screenshot": True,
     "screenshot_hotkey": "F12",
+    # Gamepad → Keyboard bridge (v2.5, RPG Maker optimized)
+    "gamepad_enabled": True,
+    "gamepad_deadzone": 0.35,
+    "gamepad_profile": "auto",  # "auto" | "rm_mv_mz" | "rm_rgss" | "wolf" | "generic"
+    "gamepad_back_screenshot": True,
+    "gamepad_bindings": {},      # {"a": "confirm", ...} 覆盖默认映射
+    "gamepad_per_game": {},      # {"<game_id>": {"profile": "...", "enabled": false}}
     # Auto Incremental Save Snapshot & WebDAV Cloud Backup (v2.4)
     "enable_auto_save_backup": True,
     "auto_backup_min_minutes": 5,
@@ -147,6 +154,16 @@ def save_config(cfg: dict) -> dict:
         merged["auto_backup_max_keep"] = max(1, min(30, int(merged.get("auto_backup_max_keep", 5))))
     except Exception:
         merged["auto_backup_max_keep"] = 5
+
+    try:
+        merged["gamepad_deadzone"] = max(0.05, min(0.9, float(merged.get("gamepad_deadzone", 0.35))))
+    except Exception:
+        merged["gamepad_deadzone"] = 0.35
+
+    if not isinstance(merged.get("gamepad_bindings"), dict):
+        merged["gamepad_bindings"] = {}
+    if not isinstance(merged.get("gamepad_per_game"), dict):
+        merged["gamepad_per_game"] = {}
 
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(merged, f, ensure_ascii=False, indent=2)

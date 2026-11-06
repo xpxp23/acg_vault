@@ -16,6 +16,7 @@ import httpx
 
 from db.database import get_game_by_id, record_game_launch, update_game_user_state
 from core.scanner import fast_inspect_folder, choose_best_executable, is_valid_translation_json, IGNORE_EXE_PATTERNS
+from core import mtool_link
 from config import load_config
 
 IS_WINDOWS = sys.platform == "win32"
@@ -263,7 +264,12 @@ def get_running_games_info() -> Dict[int, Dict[str, Any]]:
                 "pid": info.get("pid"),
                 "exe": info.get("exe", ""),
                 "mode": info.get("mode", "native"),
-                "elapsed_seconds": max(0, elapsed)
+                "elapsed_seconds": max(0, elapsed),
+                "hook_dll": info.get("hook_dll"),
+                "exe_bitness": info.get("exe_bitness"),
+                "launch_method": info.get("launch_method"),
+                "mtool_associated": info.get("mtool_associated"),
+                "mtool_detail": info.get("mtool_detail"),
             }
     return active
 
@@ -685,17 +691,16 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
                 break
 
     engine_type = game.get("engine_type", "") or ""
-    is_mtool_engine = False
-    hook_dll_name = "mzHook.dll"
-    if "Wolf" in engine_type:
-        is_mtool_engine = True
-        hook_dll_name = "wolfHook.dll"
-    elif any(k in engine_type for k in ["VX", "XP", "RGSS"]):
-        is_mtool_engine = True
-        hook_dll_name = "RGSSHook.dll"
-    elif "MV" in engine_type or "MZ" in engine_type or "RPG Maker" in engine_type:
-        is_mtool_engine = True
-        hook_dll_name = "mzHook.dll"
+    is_mtool_engine = mtool_link.detect_engine_key(engine_type) is not None
+
+    # v2.5: hook 必须与游戏主程序位数一致。旧实现固定 mzHook.dll（64 位），
+    # 对 32 位 RPG Maker MV 会静默注入失败，表现就是"游戏和 MTool 各自启动、互不关联"。
+    _exe_for_bits = game.get("executable_path") or ""
+    hook_path, exe_bitness, bitness_source = mtool_link.choose_hook(
+        str(mtool_dir), engine_type, _exe_for_bits
+    )
+    hook_dll_name = hook_path.name
+    hook_dll_exists = hook_path.is_file()
 
     is_baked = False
     if (
@@ -732,8 +737,50 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
         "launch_mode_default": launch_mode_default,
         "can_bake_patch": can_bake_patch,
         "engine_type": engine_type,
-        "hook_dll": hook_dll_name
+        "hook_dll": hook_dll_name,
+        "hook_dll_exists": hook_dll_exists,
+        "exe_bitness": exe_bitness,
+        "bitness_source": bitness_source,
+        "hook_label": mtool_link.describe_hook(engine_type, hook_path, exe_bitness)
     }
+
+
+def _verify_mtool_binding(game_id: int, hook_name: str, game_folder: str, exe_name: str,
+                          record_path: str, record_mtime_before: float) -> None:
+    """
+    启动后校验 MTool 是否真的"关联"上了：
+    首选判据 = hook DLL 是否加载进游戏进程（唯一可靠）；
+    权限不足无法枚举时，退回看 Tool\\gameLaunchs 记录是否被 MTool 刷新。
+    """
+    def current_pid() -> Optional[int]:
+        with RUNNING_LOCK:
+            info = RUNNING_GAMES.get(game_id)
+            pid = info.get("pid") if info else None
+        return pid or find_game_pid_in_folder(game_folder, exe_name)
+
+    try:
+        loaded = mtool_link.wait_dll_loaded(current_pid, hook_name, timeout=30.0)
+        associated = loaded
+        detail = "hook 已载入游戏进程" if loaded else ""
+        if loaded is None:
+            try:
+                mtime_now = os.path.getmtime(record_path) if os.path.exists(record_path) else 0.0
+                associated = bool(mtime_now > record_mtime_before + 0.5)
+                detail = "MTool 启动记录已刷新" if associated else "无法枚举模块，记录未刷新"
+            except Exception:
+                associated = None
+                detail = "无法判定"
+        elif loaded is False:
+            detail = "hook 未载入游戏进程（注入失败）"
+
+        with RUNNING_LOCK:
+            if game_id in RUNNING_GAMES:
+                RUNNING_GAMES[game_id]["mtool_associated"] = associated
+                RUNNING_GAMES[game_id]["mtool_detail"] = detail
+    except Exception as e:
+        with RUNNING_LOCK:
+            if game_id in RUNNING_GAMES:
+                RUNNING_GAMES[game_id]["mtool_detail"] = f"校验异常: {e}"
 
 
 def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
@@ -773,9 +820,9 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
     exe_name = Path(exe_path).name
     mtool_dir = Path(status["mtool_dir"])
     inject_exe = mtool_dir / "Tool" / "loaders" / "inject.exe"
-    hook_dll = mtool_dir / "Tool" / "loaders" / status["hook_dll"]
     nw_exe = mtool_dir / "Tool" / "nw.exe"
     tool_dir = mtool_dir / "Tool"
+    engine_type = game.get("engine_type", "") or ""
 
     if status.get("trs_file") and os.path.exists(status["trs_file"]):
         trs_name = os.path.basename(status["trs_file"])
@@ -786,41 +833,73 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # ---- v2.5：位数感知 hook + 复用/生成「与工具一同启动.bat」 ----
+    game_folder = folder_path or working_dir
+    hook_path, exe_bits, bitness_source = mtool_link.choose_hook(str(mtool_dir), engine_type, exe_path)
+    bat_res = mtool_link.ensure_launch_bat(game_folder, exe_path, str(mtool_dir), engine_type)
+    effective_hook = Path(bat_res.get("hook") or hook_path)
+    hook_for_verify = effective_hook.name
+    rec_path = mtool_link.launch_record_path(str(mtool_dir), exe_path)
+    record_mtime_before = rec_path.stat().st_mtime if rec_path.is_file() else 0.0
+    rec_res = mtool_link.ensure_launch_record(
+        str(mtool_dir), exe_path, str(effective_hook), int(bat_res.get("bits") or exe_bits)
+    )
+
     try:
-        if inject_exe.exists() and hook_dll.exists():
+        launch_method = ""
+        launch_note = ""
+
+        if bat_res.get("action") != "failed" and bat_res.get("path"):
+            if mtool_link.run_launch_bat(bat_res["path"], game_folder):
+                launch_method = "bat"
+                launch_note = {
+                    "existing": "复用联动脚本",
+                    "created": "已生成联动脚本",
+                    "repaired": "已重建联动脚本",
+                }.get(bat_res.get("action", ""), "联动脚本")
+            else:
+                bat_res["action"] = "failed"
+
+        if launch_method != "bat":
+            # 兜底：直接 inject（hook 已按位数选对）+ 拉起 MTool 面板
+            if not (inject_exe.exists() and effective_hook.exists()):
+                reason = bat_res.get("reason") or "缺少 inject.exe 或 hook DLL"
+                return {"success": False, "message": f"无法启动 MTool 联动：{reason}"}
+
             success, _, hInject = shell_launch(
                 exe_path=str(inject_exe),
-                parameters=f'"{exe_path}" "{hook_dll}"',
+                parameters=f'"{exe_path}" "{effective_hook}"',
                 working_dir=working_dir,
                 show_cmd=SW_SHOWNORMAL
             )
             close_win32_handle(hInject)
             if not success:
                 subprocess.run(
-                    f'cmd.exe /c start "" "{inject_exe}" "{exe_path}" "{hook_dll}"',
+                    f'cmd.exe /c start "" "{inject_exe}" "{exe_path}" "{effective_hook}"',
                     cwd=working_dir,
                     shell=True
                 )
-        elif status.get("has_bat") and status.get("bat_file"):
-            if IS_WINDOWS:
-                os.startfile(status["bat_file"])
-        else:
-            return {"success": False, "message": "缺少 MTool inject.exe 或 hook DLL，无法注入"}
+            launch_method = "inject"
+            launch_note = f"直接注入（{bat_res.get('reason') or '无联动脚本'}）"
 
-        if nw_exe.exists():
-            try:
-                _, _, hNw = shell_launch(
-                    exe_path=str(nw_exe),
-                    parameters=f'"{tool_dir}"',
-                    working_dir=str(tool_dir),
-                    show_cmd=SW_SHOWMINNOACTIVE
-                )
-                close_win32_handle(hNw)
-            except Exception:
-                pass
+            if nw_exe.exists():
+                try:
+                    _, _, hNw = shell_launch(
+                        exe_path=str(nw_exe),
+                        parameters=f'"{tool_dir}"',
+                        working_dir=str(tool_dir),
+                        show_cmd=SW_SHOWMINNOACTIVE
+                    )
+                    close_win32_handle(hNw)
+                except Exception:
+                    pass
 
-        time.sleep(1.0)
-        real_game_pid = find_game_pid_in_folder(folder_path or working_dir, exe_name)
+        real_game_pid = None
+        for _ in range(12):
+            time.sleep(0.4)
+            real_game_pid = find_game_pid_in_folder(game_folder, exe_name)
+            if real_game_pid:
+                break
 
         start_time = time.time()
         with RUNNING_LOCK:
@@ -829,7 +908,11 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
                 "start_time": start_time,
                 "exe": exe_name,
                 "mode": "mtool",
-                "folder_path": folder_path or working_dir
+                "folder_path": game_folder,
+                "hook_dll": hook_for_verify,
+                "exe_bitness": int(bat_res.get("bits") or exe_bits),
+                "launch_method": launch_method,
+                "mtool_associated": None,
             }
 
         t = threading.Thread(
@@ -839,12 +922,25 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
         )
         t.start()
 
+        vt = threading.Thread(
+            target=_verify_mtool_binding,
+            args=(game_id, hook_for_verify, game_folder, exe_name, str(rec_path), record_mtime_before),
+            daemon=True
+        )
+        vt.start()
+
         mode_name = "汉化" if status.get("has_translation") else "辅助"
+        bits_txt = f"{int(bat_res.get('bits') or exe_bits)} 位"
         return {
             "success": True,
             "pid": real_game_pid,
             "mode": "mtool",
-            "message": f"成功以 MTool {mode_name}模式启动: {exe_name}"
+            "launch_method": launch_method,
+            "hook_dll": hook_for_verify,
+            "exe_bitness": int(bat_res.get("bits") or exe_bits),
+            "bat_action": bat_res.get("action"),
+            "record_written": rec_res.get("written"),
+            "message": f"成功以 MTool {mode_name}模式启动: {exe_name}（{bits_txt} · {hook_for_verify} · {launch_note}）"
         }
     except Exception as e:
         return {"success": False, "message": f"MTool 启动失败: {str(e)}"}
