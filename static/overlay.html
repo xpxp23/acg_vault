@@ -50,16 +50,6 @@
       border-color: rgba(0, 195, 227, 0.72);
       box-shadow: 0 0 28px rgba(0, 195, 227, 0.24);
     }
-    .hud-lock-banner {
-      background: linear-gradient(90deg, rgba(8, 145, 178, 0.28) 0%, rgba(6, 182, 212, 0.16) 100%);
-      border-bottom: 1px solid rgba(0, 195, 227, 0.45);
-      color: #a5f3fc;
-    }
-    html[data-theme="light"] .hud-lock-banner {
-      background: linear-gradient(90deg, rgba(0, 195, 227, 0.18) 0%, rgba(0, 195, 227, 0.08) 100%);
-      border-bottom: 1px solid rgba(0, 195, 227, 0.55);
-      color: #005f73;
-    }
   </style>
 </head>
 <body class="text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
@@ -129,21 +119,6 @@
         </button>
       </div>
     </header>
-
-    <!-- 常驻穿透锁定状态横幅（痛点 5：清晰提示穿透状态、滚轮翻页与解锁方式） -->
-    <div
-      v-if="isClickThrough"
-      class="hud-lock-banner px-3 py-1.5 text-[11px] font-medium flex items-center justify-between gap-2 shrink-0"
-    >
-      <div class="flex items-center space-x-1.5 truncate">
-        <span class="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shrink-0"></span>
-        <span class="font-bold">🔒 鼠标穿透已锁定</span>
-        <span class="opacity-85 truncate">· 点击直达下层游戏，滚轮仍可翻页</span>
-      </div>
-      <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/35 shrink-0">
-        {{ overlayHotkey }} / Alt+T 解锁
-      </span>
-    </div>
 
     <!-- Toast Mini Banner (移除穿透模式下无法点击的 ✕ 按钮，自动消失) -->
     <div v-if="toastMsg" class="px-3 py-1.5 bg-indigo-950/95 border-b border-indigo-500/40 text-[11px] text-indigo-200 flex items-center justify-between shrink-0">
@@ -373,7 +348,8 @@
 
     <!-- Footer Status Bar -->
     <footer class="px-3.5 py-1.5 bg-slate-950/95 border-t border-slate-800/90 flex items-center justify-between text-[10px] text-slate-500 font-mono shrink-0">
-      <span>快捷键: {{ overlayHotkey }} 呼出/解锁 · Alt+T 穿透锁定 · F12 截图</span>
+      <span v-if="isClickThrough" class="text-cyan-400">🔒 已穿透 · 滚轮可翻页 · {{ overlayHotkey }} 解锁</span>
+      <span v-else>快捷键: {{ overlayHotkey }} 呼出/解锁 · Alt+T 穿透锁定 · F12 截图</span>
       <span v-if="game">{{ game.engine_type }} · {{ game.rj_code || 'LOCAL' }}</span>
     </footer>
    </div>
