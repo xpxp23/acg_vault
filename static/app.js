@@ -228,7 +228,21 @@ createApp({
 
     // Fullscreen Walkthrough Workspace states (v2.3: exclusively targets walkthrough_md)
     const showNotesFullscreen = ref(false);
-    const notesFullscreenLayout = ref('split'); // 'split' | 'reader' | 'editor'
+    const notesFullscreenLayout = ref('reader'); // 'split' | 'reader' | 'editor'
+
+    // v2.6.1: 全屏攻略默认纯净阅读，并记住上次手动选择的布局
+    const NOTES_LAYOUT_LS_KEY = 'acg_notes_last_layout';
+    const isValidNotesLayout = (v) => v === 'split' || v === 'reader' || v === 'editor';
+    const resolveNotesLayout = (pref) => {
+      if (isValidNotesLayout(pref)) return pref;
+      const last = localStorage.getItem(NOTES_LAYOUT_LS_KEY);
+      return isValidNotesLayout(last) ? last : 'reader';
+    };
+    const setNotesLayout = (layout) => {
+      if (!isValidNotesLayout(layout)) return;
+      notesFullscreenLayout.value = layout;
+      localStorage.setItem(NOTES_LAYOUT_LS_KEY, layout);
+    };
     const showNotesToc = ref(true);
     const notesSaveStatus = ref('saved'); // 'saved' | 'saving' | 'dirty'
     const personalMemoSaveStatus = ref('saved'); // 'saved' | 'saving' | 'dirty'
@@ -456,6 +470,12 @@ createApp({
         fetchAnalytics();
       }
       refreshIcons();
+    };
+
+    // Big Screen Mode (v2.6): 10-foot UI, gamepad-first. Opens as its own page so the
+    // focus/gamepad system never fights with this page's keyboard shortcuts & drawers.
+    const openBigScreen = () => {
+      window.location.href = '/bigscreen';
     };
 
     const cycleCoverFitMode = () => {
@@ -1174,6 +1194,109 @@ createApp({
       }
     };
 
+    // ---------------------------------------------------------------- 主题 (v3.0)
+    const themeMode = ref((window.AcgTheme && window.AcgTheme.mode) || 'auto');
+
+    const accentOptions = [
+      { id: 'nintendo', name: '任天堂红', color: '#e60012' },
+      { id: 'indigo', name: '靛蓝（原色）', color: '#6366f1' },
+      { id: 'emerald', name: '翡翠绿', color: '#10b981' },
+      { id: 'amber', name: '琥珀金', color: '#f59e0b' },
+      { id: 'violet', name: '紫罗兰', color: '#8b5cf6' }
+    ];
+    const themeAccent = ref((window.AcgTheme && window.AcgTheme.accent) || 'nintendo');
+
+    const setThemeAccent = (name) => {
+      themeAccent.value = name;
+      if (window.AcgTheme) window.AcgTheme.setAccent(name);
+    };
+
+    const setThemeMode = (mode) => {
+      themeMode.value = mode;
+      if (window.AcgTheme) window.AcgTheme.set(mode);
+    };
+
+    document.addEventListener('acg-theme-changed', () => {
+      if (window.AcgTheme) {
+        themeMode.value = window.AcgTheme.mode;
+        themeAccent.value = window.AcgTheme.accent;
+      }
+    });
+
+    // ---------------------------------------------------------------- Magpie (v2.7)
+    const magpieStatus = ref({ installed: false, path: '', running: false, scaling: false });
+
+    const refreshMagpieStatus = async (force = false) => {
+      try {
+        const res = await fetch(`/api/magpie/status${force ? '?refresh=true' : ''}`, { cache: 'no-store' });
+        const d = await res.json();
+        if (d && d.success && d.data) magpieStatus.value = d.data;
+      } catch (e) { /* ignore */ }
+    };
+
+    const magpiePresets = ref({ presets: [], active: '', mode_name: '', config_path: '' });
+
+    const refreshMagpiePresets = async () => {
+      try {
+        const res = await fetch('/api/magpie/presets', { cache: 'no-store' });
+        const d = await res.json();
+        if (d && d.success && d.data) magpiePresets.value = d.data;
+      } catch (e) { /* ignore */ }
+    };
+
+    const applyMagpiePreset = async (id) => {
+      if (!id) return;
+      const p = (magpiePresets.value.presets || []).find(x => x.id === id);
+      showToast(`正在切换 Magpie 预设：${p ? p.name : id}…`, 'info', 1800);
+      try {
+        const res = await fetch('/api/magpie/preset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+        const d = await res.json();
+        showToast(d.message || (d.success ? '已切换预设' : '切换失败'), d.success ? 'success' : 'error', 3800);
+        await refreshMagpiePresets();
+        refreshMagpieStatus();
+      } catch (e) {
+        showToast('切换预设失败', 'error');
+        refreshMagpiePresets();
+      }
+    };
+
+    const magpieEnsureRunning = async () => {
+      try {
+        const res = await fetch('/api/magpie/launch', { method: 'POST' });
+        const d = await res.json();
+        showToast(d.message || (d.success ? 'Magpie 已就绪' : '启动 Magpie 失败'), d.success ? 'success' : 'error', 3200);
+        refreshMagpieStatus(true);
+      } catch (e) {
+        showToast('启动 Magpie 失败', 'error');
+      }
+    };
+
+    const magpieScaleAction = async (game = null) => {
+      const g = game || selectedGame.value;
+      if (!g) { showToast('请先选择一个游戏', 'error'); return; }
+      if (!isGameRunning(g.id)) {
+        showToast('请先启动游戏 —— Magpie 只能放大正在运行的窗口', 'error', 3600);
+        return;
+      }
+      showToast('正在让 Magpie 接管全屏…', 'info', 1800);
+      try {
+        const res = await fetch('/api/magpie/scale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ game_id: g.id })
+        });
+        const d = await res.json();
+        showToast(d.message || (d.scaled ? '已用 Magpie 全屏' : 'Magpie 未能缩放'), d.scaled ? 'success' : 'error', 4200);
+        refreshMagpieStatus();
+      } catch (e) {
+        showToast('Magpie 请求失败', 'error');
+      }
+    };
+
     const fetchConfig = async () => {
       try {
         const res = await fetch('/api/config');
@@ -1196,7 +1319,7 @@ createApp({
           if (viewMode.value === 'analytics') fetchAnalytics();
         }
         if (data.notes_default_layout) {
-          notesFullscreenLayout.value = data.notes_default_layout;
+          notesFullscreenLayout.value = resolveNotesLayout(data.notes_default_layout);
         }
         if (data.notes_default_toc !== undefined) {
           showNotesToc.value = Boolean(data.notes_default_toc);
@@ -2815,7 +2938,7 @@ createApp({
     };
 
     const openNotesFullscreen = async (game = null) => {
-      notesFullscreenLayout.value = configData.value.notes_default_layout || 'split';
+      notesFullscreenLayout.value = resolveNotesLayout(configData.value.notes_default_layout);
       showNotesToc.value = configData.value.notes_default_toc !== false;
       syncScrollEnabled.value = configData.value.notes_sync_scroll !== false;
 
@@ -2846,6 +2969,9 @@ createApp({
     };
 
     const closeNotesFullscreen = () => {
+      if (isValidNotesLayout(notesFullscreenLayout.value)) {
+        localStorage.setItem(NOTES_LAYOUT_LS_KEY, notesFullscreenLayout.value);
+      }
       if (notesAutoSaveTimer) {
         clearTimeout(notesAutoSaveTimer);
         notesAutoSaveTimer = null;
@@ -3790,6 +3916,10 @@ createApp({
     });
 
     watch([showSettingsModal, settingsActiveTab], ([open, tab]) => {
+      if (open && tab === 'desktop') {
+        refreshMagpieStatus(true);
+        refreshMagpiePresets();
+      }
       if (open && tab === 'gamepad') {
         ensureGamepadBindings();
         startGamepadStatusPoll();
@@ -3848,6 +3978,12 @@ createApp({
       if (e.altKey && e.key.toLowerCase() === 'g') {
         e.preventDefault();
         openCompanionOverlayAction();
+        return;
+      }
+
+      if (e.altKey && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        openBigScreen();
         return;
       }
 
@@ -3932,6 +4068,15 @@ createApp({
       fetchGames();
       fetchStats();
       fetchCollections();
+      refreshMagpieStatus();
+      refreshMagpiePresets();
+      if (window.AcgWindow) {
+        window.AcgWindow.mount({
+          title: 'ACG Vault · 本地游戏资产与攻略中心',
+          minWidth: 1024,
+          minHeight: 680
+        });
+      }
       if (viewMode.value === 'analytics') {
         fetchAnalytics();
       }
@@ -3968,6 +4113,19 @@ createApp({
       exportAnalyticsPosterAction,
       openGameById,
       openCompanionOverlayAction,
+      openBigScreen,
+      themeMode,
+      themeAccent,
+      accentOptions,
+      setThemeMode,
+      setThemeAccent,
+      magpieStatus,
+      magpiePresets,
+      refreshMagpieStatus,
+      refreshMagpiePresets,
+      applyMagpiePreset,
+      magpieEnsureRunning,
+      magpieScaleAction,
       getThumbUrl,
       hasGameWalkthrough,
       hasPersonalMemo,
@@ -4136,6 +4294,7 @@ createApp({
       saveGameNotes,
       showNotesFullscreen,
       notesFullscreenLayout,
+      setNotesLayout,
       showNotesToc,
       notesSaveStatus,
       notesTocList,

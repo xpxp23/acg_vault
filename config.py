@@ -3,9 +3,25 @@ import sys
 import json
 from pathlib import Path
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "3.1.1"
 
-BASE_DIR = Path(__file__).resolve().parent
+# 冻结成 exe 后，__file__ 在 _MEIPASS 临时目录里；数据必须落在 exe 旁边，
+# 静态资源则从打包目录读。这样 exe 和源码共享同一份 data/。
+if getattr(sys, "frozen", False):
+    _exe_dir = Path(sys.executable).resolve().parent
+    # onedir 布局：exe 在 <root>\ACGVault\ 里，data 在 <root>\data。
+    # 如果 exe 同目录已经有 data（便携版），就跟着 exe 走；否则用上一级，保证和源码共用同一份库。
+    if (_exe_dir / "data").is_dir():
+        BASE_DIR = _exe_dir
+    elif (_exe_dir.parent / "data").is_dir():
+        BASE_DIR = _exe_dir.parent
+    else:
+        BASE_DIR = _exe_dir
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", str(_exe_dir)))
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+    RESOURCE_DIR = BASE_DIR
+
 DATA_DIR = Path(os.environ.get("ACG_VAULT_DATA_DIR", str(BASE_DIR / "data")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 COVERS_DIR = DATA_DIR / "covers"
@@ -36,7 +52,7 @@ DEFAULT_CONFIG = {
     "grid_density": "standard",  # "compact", "standard", "comfortable"
     "card_hover_style": "minimal",  # "minimal" (corner play, unobstructed art) or "classic" (center play)
     "card_footer_slot": "auto",  # "auto" (rating if >0 else tags/playtime), "tags", "rating"
-    "notes_default_layout": "split",  # "split", "reader", "editor"
+    "notes_default_layout": "last",  # "last" (记住上次) | "reader" (纯净阅读) | "split" | "editor"
     "notes_default_toc": True,
     "notes_sync_scroll": True,
     "notes_font_size": "md",  # "sm", "md", "lg"
@@ -45,6 +61,19 @@ DEFAULT_CONFIG = {
     "port": 8000,
     # Desktop Native, Companion Overlay & Hotkey Settings
     "desktop_mode": "native",  # "native" (PyWebView / App window) or "browser"
+    "frameless_window": True,  # 无边框窗口（自绘拖动条与窗口按钮）
+    # Magpie 全屏集成 (v2.7)
+    "magpie_enabled": True,
+    "magpie_path": "",            # 留空自动探测
+    "magpie_autostart": True,     # 需要时自动 Magpie.exe -st
+    "magpie_auto_scale": True,    # 启动游戏后自动全屏（默认仅大屏模式）
+    "magpie_auto_scope": "bigscreen",  # "bigscreen" | "always"
+    "magpie_auto_delay": 8,       # 游戏窗口出现后再等 N 秒
+    "magpie_active_preset": "pixel",  # 上次应用的 Magpie 预设
+    "ui_theme": "auto",
+    "ui_accent": "nintendo",       # nintendo | indigo | emerald | amber | violet            # auto | dark | light（深色=夜间，浅色=Switch 风格日间）
+    "window_bounds": {"x": None, "y": None, "width": 1460, "height": 920, "maximized": False},
+    "overlay_bounds": {"x": None, "y": None, "width": 460, "height": 740},
     "minimize_to_tray": True,
     "auto_start_windows": False,
     "global_boss_hotkey": "Alt+Space",
@@ -89,11 +118,14 @@ def sync_windows_autostart(enable: bool) -> bool:
         app_name = "ACGVault"
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
             if enable:
-                pythonw = Path(sys.executable).with_name("pythonw.exe")
-                exe_to_use = str(pythonw) if pythonw.exists() else sys.executable
-                desktop_script = BASE_DIR / "desktop_app.py"
-                target_script = str(desktop_script if desktop_script.exists() else (BASE_DIR / "main.py"))
-                cmd = f'"{exe_to_use}" "{target_script}" --minimized'
+                if getattr(sys, "frozen", False):
+                    cmd = f'"{sys.executable}" --minimized'
+                else:
+                    pythonw = Path(sys.executable).with_name("pythonw.exe")
+                    exe_to_use = str(pythonw) if pythonw.exists() else sys.executable
+                    desktop_script = BASE_DIR / "desktop_app.py"
+                    target_script = str(desktop_script if desktop_script.exists() else (BASE_DIR / "main.py"))
+                    cmd = f'"{exe_to_use}" "{target_script}" --minimized'
                 winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, cmd)
             else:
                 try:

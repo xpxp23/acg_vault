@@ -173,8 +173,18 @@ def get_process_image_path(pid: int) -> str:
         close_win32_handle(h)
 
 
-def find_game_pid_in_folder(folder_path: str, exe_filename: Optional[str] = None) -> Optional[int]:
-    """Finds the PID of a running game process strictly inside a specific folder."""
+def find_game_pid_in_folder(
+    folder_path: str,
+    exe_filename: Optional[str] = None,
+    fallback_by_name: bool = False
+) -> Optional[int]:
+    """
+    Finds the PID of a running game process strictly inside a specific folder.
+
+    fallback_by_name: 读不到进程镜像路径时按进程名兜底。MTool 以管理员权限注入时，
+    提权进程的 QueryFullProcessImageNameW 可能失败，旧实现会直接判定"游戏没启动"，
+    连带 playtime / 手柄转发 / F12 截图 / Alt+G 定位全部失靶。
+    """
     if not IS_WINDOWS or not folder_path:
         return None
     hSnap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -185,6 +195,8 @@ def find_game_pid_in_folder(folder_path: str, exe_filename: Optional[str] = None
         pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
         exact_candidates = []
         folder_candidates = []
+        name_candidates = []
+        own_pid = os.getpid()
         if ctypes.windll.kernel32.Process32FirstW(hSnap, ctypes.byref(pe)):
             while True:
                 pid = pe.th32ProcessID
@@ -195,15 +207,107 @@ def find_game_pid_in_folder(folder_path: str, exe_filename: Optional[str] = None
                         exact_candidates.append(pid)
                     elif not any(pat.search(sz_name) for pat in IGNORE_EXE_PATTERNS):
                         folder_candidates.append(pid)
+                elif fallback_by_name and exe_filename and not path and pid != own_pid:
+                    if sz_name.lower() == exe_filename.lower():
+                        name_candidates.append(pid)
                 if not ctypes.windll.kernel32.Process32NextW(hSnap, ctypes.byref(pe)):
                     break
         if exact_candidates:
             return exact_candidates[0]
         if folder_candidates:
             return folder_candidates[0]
+        if name_candidates:
+            return name_candidates[0]
         return None
     finally:
         close_win32_handle(hSnap)
+
+
+def _iter_process_snapshot() -> List[Tuple[int, str, str]]:
+    """一次 Toolhelp 快照，返回 (pid, exe 文件名, 完整路径)；路径读不到时为空串。"""
+    if not IS_WINDOWS:
+        return []
+    hSnap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not hSnap or hSnap == INVALID_HANDLE_VALUE:
+        return []
+    out: List[Tuple[int, str, str]] = []
+    try:
+        pe = PROCESSENTRY32W()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        if ctypes.windll.kernel32.Process32FirstW(hSnap, ctypes.byref(pe)):
+            while True:
+                out.append((int(pe.th32ProcessID), pe.szExeFile, get_process_image_path(int(pe.th32ProcessID))))
+                if not ctypes.windll.kernel32.Process32NextW(hSnap, ctypes.byref(pe)):
+                    break
+    finally:
+        close_win32_handle(hSnap)
+    return out
+
+
+def find_game_pid_multi(
+    exe_names: List[str],
+    search_roots: Optional[List[str]] = None,
+    allow_name_only: bool = True
+) -> Optional[int]:
+    """
+    按「多个候选 exe 名 + 多个候选目录」查找游戏进程。
+
+    MTool 的联动方式会让进程名和路径同时偏离游戏目录：
+      1. 软链/复制到 C:\\Users\\Public\\MTool_Game_Tmp\\<hash>\\ 下运行 MTool_Game.exe；
+      2. 勾选「复制工具到游戏」后直接在游戏目录跑 MTool_Game.exe；
+      3. 没改名的原始 exe（GamePro.exe / Game.exe）。
+    只按「游戏目录 + DB 里的 executable_path」找必然失配，这里同时接受名字与目录的多种组合。
+    """
+    wanted = {str(n).lower() for n in (exe_names or []) if n}
+    if not wanted:
+        return None
+    roots = [r for r in (search_roots or []) if r]
+    own_pid = os.getpid()
+    exact: List[int] = []
+    named: List[int] = []
+    for pid, name, path in _iter_process_snapshot():
+        if pid == own_pid or name.lower() not in wanted:
+            continue
+        if path and any(is_subpath(path, root) for root in roots):
+            exact.append(pid)
+        else:
+            named.append(pid)
+    if exact:
+        return exact[0]
+    if allow_name_only and named:
+        return named[0]
+    return None
+
+
+def parse_mtool_launch_target(bat_path: Optional[str]) -> Optional[Tuple[str, str]]:
+    """
+    从 MTool 生成的「与工具一同启动.bat」解析真正被注入的 exe。
+      inject.exe "C:\\Users\\Public\\MTool_Game_Tmp\\<hash>\\MTool_Game.exe" "wolfHook3.dll"
+    返回 (目录, exe 文件名)；解析失败返回 None。
+    """
+    if not bat_path or not os.path.exists(bat_path):
+        return None
+    text = ""
+    for enc in ("utf-8-sig", "utf-8", "gbk", "cp936"):
+        try:
+            with open(bat_path, "r", encoding=enc, errors="ignore") as f:
+                text = f.read()
+        except Exception:
+            continue
+        if text:
+            break
+    if not text:
+        return None
+    m = re.search(r'inject(?:\.exe)?"?\s+"([^"]+?\.exe)"', text, re.I)
+    if not m:
+        m = re.search(r'inject(?:\.exe)?"?\s+([^\s"]+?\.exe)', text, re.I)
+    if not m:
+        return None
+    target = m.group(1).strip().strip('"')
+    folder, name = os.path.dirname(target), os.path.basename(target)
+    if not folder or not name:
+        return None
+    return folder, name
 
 
 def shell_launch(exe_path: str, parameters: Optional[str] = None, working_dir: Optional[str] = None, show_cmd: int = SW_SHOWNORMAL):
@@ -264,6 +368,8 @@ def get_running_games_info() -> Dict[int, Dict[str, Any]]:
                 "pid": info.get("pid"),
                 "exe": info.get("exe", ""),
                 "mode": info.get("mode", "native"),
+                "phase": info.get("phase") or ("running" if info.get("pid") else "attaching"),
+                "attached": bool(info.get("pid")),
                 "elapsed_seconds": max(0, elapsed),
                 "hook_dll": info.get("hook_dll"),
                 "exe_bitness": info.get("exe_bitness"),
@@ -308,6 +414,65 @@ def _wait_handle_with_hotkey_poll(hProc: Any, game_id: int, pid: Optional[int], 
         last_shot = _poll_screenshot_hotkey_if_needed(game_id, pid, search_root, last_shot)
 
 
+def _bind_running_pid(game_id: int, pid: Optional[int], phase: str = "running") -> None:
+    """把最新发现的真实游戏 PID 写回会话表，供手柄转发 / 截图 / 悬浮窗定位共用。"""
+    with RUNNING_LOCK:
+        info = RUNNING_GAMES.get(game_id)
+        if info is not None:
+            if pid:
+                info["pid"] = int(pid)
+            info["phase"] = phase
+
+
+def _await_game_process(
+    search_root: str,
+    exe_name: Optional[str],
+    timeout: float,
+    poll: float = 0.5,
+    resolver: Optional[Any] = None
+) -> Optional[int]:
+    """
+    柔性等待游戏进程出现。
+
+    MTool 的 inject.exe 先起注入器、再拉起游戏本体；首次注入、需要人工点确认、
+    或 32 位 hook 加载较慢时，进程出现时间可能晚于 10 秒。旧实现是
+    「12×0.4s 初探 + 6×1s 补探」的双段硬超时，超时后会话在第一轮轮询就结束，
+    表现就是「玩了 3 小时，库里只记了 11 秒」。这里改成按配置柔性等待。
+    """
+    deadline = time.time() + max(3.0, timeout)
+    while time.time() < deadline:
+        pid = resolver() if resolver else find_game_pid_in_folder(search_root, exe_name, fallback_by_name=True)
+        if pid:
+            return pid
+        time.sleep(poll)
+    return None
+
+
+def _watch_until_exit(
+    game_id: int,
+    pid: Optional[int],
+    search_root: str,
+    exe_name: Optional[str],
+    last_shot: float = 0.0,
+    resolver: Optional[Any] = None
+) -> float:
+    """轮询守候进程退出；容忍偶发查询失败（连续 3 次、约 1.2s 读不到才判定退出）。"""
+    miss = 0
+    while True:
+        time.sleep(0.4)
+        last_shot = _poll_screenshot_hotkey_if_needed(game_id, pid, search_root, last_shot)
+        pid_now = resolver() if resolver else find_game_pid_in_folder(search_root, exe_name, fallback_by_name=True)
+        if pid_now:
+            miss = 0
+            if pid_now != pid:
+                pid = pid_now
+                _bind_running_pid(game_id, pid, "running")
+        else:
+            miss += 1
+            if miss >= 3:
+                return last_shot
+
+
 def monitor_game_pid(
     game_id: int,
     target_pid: Optional[int],
@@ -315,43 +480,50 @@ def monitor_game_pid(
     start_time: float,
     working_dir: Optional[str] = None,
     exe_name: Optional[str] = None,
-    game_folder: Optional[str] = None
+    game_folder: Optional[str] = None,
+    attach_timeout: float = 120.0,
+    resolver: Optional[Any] = None
 ):
     """
     Monitors the real game process until it closes, listens for screenshot hotkeys,
     records play duration & play_count only when session >= 3s (preventing 0s crash pollution),
     and triggers automatic incremental save backup + WebDAV sync on exit.
+
+    resolver: 自定义的「找 PID」回调。MTool 场景下进程名/路径都不在游戏目录里，
+    由 launch_game_with_mtool 传入多名字+多目录的解析器。
     """
     search_root = game_folder or working_dir
     last_shot = 0.0
+    # 只有真正抓到过进程才算有效会话；抓不到就退出的会话不能凭空记 120 秒
+    attached = False
+
+    def _find() -> Optional[int]:
+        if resolver is not None:
+            try:
+                return resolver()
+            except Exception:
+                return None
+        return find_game_pid_in_folder(search_root, exe_name, fallback_by_name=True)
+
     try:
         SYNCHRONIZE = 0x00100000
 
         if hProcess and IS_WINDOWS:
+            attached = True
             _wait_handle_with_hotkey_poll(hProcess, game_id, target_pid, search_root)
             close_win32_handle(hProcess)
             hProcess = None
-            # Retry child process detection across a 6-second window for unpacked / NW.js / Unity launcher wrappers
+            # 启动器型游戏（NW.js / Unity 引导器）常把真实游戏交给子进程：
+            # 主进程退出后再给 3 秒窗口寻找接管的子进程。
             child_pid = None
-            for _ in range(6):
-                time.sleep(1.0)
-                child_pid = find_game_pid_in_folder(search_root, exe_name)
+            for _ in range(5):
+                time.sleep(0.6)
+                child_pid = _find()
                 if child_pid:
                     break
             if child_pid:
-                with RUNNING_LOCK:
-                    if game_id in RUNNING_GAMES:
-                        RUNNING_GAMES[game_id]["pid"] = child_pid
-                while True:
-                    for _ in range(10):
-                        time.sleep(0.2)
-                        last_shot = _poll_screenshot_hotkey_if_needed(game_id, child_pid, search_root, last_shot)
-                    child_pid = find_game_pid_in_folder(search_root, exe_name)
-                    if not child_pid:
-                        break
-                    with RUNNING_LOCK:
-                        if game_id in RUNNING_GAMES:
-                            RUNNING_GAMES[game_id]["pid"] = child_pid
+                _bind_running_pid(game_id, child_pid, "running")
+                last_shot = _watch_until_exit(game_id, child_pid, search_root, exe_name, last_shot, _find)
         else:
             if hProcess:
                 close_win32_handle(hProcess)
@@ -359,40 +531,40 @@ def monitor_game_pid(
 
             active_pid = target_pid
             if not active_pid:
-                for _ in range(6):
-                    time.sleep(1.0)
-                    active_pid = find_game_pid_in_folder(search_root, exe_name)
-                    if active_pid:
-                        with RUNNING_LOCK:
-                            if game_id in RUNNING_GAMES:
-                                RUNNING_GAMES[game_id]["pid"] = active_pid
-                        break
+                # MTool / LE：进程出现时间不可控，按 attach_timeout 柔性等待，期间标记为 attaching
+                _bind_running_pid(game_id, None, "attaching")
+                active_pid = _await_game_process(search_root, exe_name, attach_timeout, resolver=_find)
 
-            if active_pid and IS_WINDOWS:
-                h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, active_pid)
+            if active_pid:
+                attached = True
+                _bind_running_pid(game_id, active_pid, "running")
+                h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, active_pid) if IS_WINDOWS else None
                 if h and h != INVALID_HANDLE_VALUE:
                     _wait_handle_with_hotkey_poll(h, game_id, active_pid, search_root)
                     close_win32_handle(h)
-                else:
-                    while True:
-                        for _ in range(10):
-                            time.sleep(0.2)
-                            last_shot = _poll_screenshot_hotkey_if_needed(game_id, active_pid, search_root, last_shot)
-                        active_pid = find_game_pid_in_folder(search_root, exe_name)
-                        if not active_pid:
+                    child_pid = None
+                    for _ in range(5):
+                        time.sleep(0.6)
+                        child_pid = _find()
+                        if child_pid:
                             break
+                    if child_pid:
+                        _bind_running_pid(game_id, child_pid, "running")
+                        last_shot = _watch_until_exit(game_id, child_pid, search_root, exe_name, last_shot, _find)
+                else:
+                    last_shot = _watch_until_exit(game_id, active_pid, search_root, exe_name, last_shot, _find)
             else:
-                while True:
-                    time.sleep(2.0)
-                    if not find_game_pid_in_folder(search_root, exe_name):
-                        break
+                # 等到超时也没等到进程 → 游戏没真正起来，不计时，直接收尾
+                with RUNNING_LOCK:
+                    RUNNING_GAMES.pop(game_id, None)
+                return
     except Exception as e:
         print(f"[MONITOR ERROR] {e}")
     finally:
         if hProcess:
             close_win32_handle(hProcess)
         duration = int(time.time() - start_time)
-        if duration >= 3:
+        if attached and duration >= 3:
             record_game_launch(game_id, duration_seconds=duration, increment_count=True)
 
         # v2.4: Automatic incremental save snapshot + optional WebDAV cloud backup when session >= threshold
@@ -501,6 +673,7 @@ def launch_game(game_id: int, mode: Optional[str] = None) -> Dict[str, Any]:
                 "start_time": start_time,
                 "exe": exe_name,
                 "mode": "native",
+                "phase": "running" if pid else "attaching",
                 "folder_path": folder_path or working_dir
             }
 
@@ -578,6 +751,7 @@ def launch_game_with_le(game_id: int) -> Dict[str, Any]:
                 "start_time": start_time,
                 "exe": exe_name,
                 "mode": "le",
+                "phase": "running" if real_pid else "attaching",
                 "folder_path": folder_path or working_dir
             }
 
@@ -746,7 +920,8 @@ def get_game_mtool_status(game_id: int) -> Dict[str, Any]:
 
 
 def _verify_mtool_binding(game_id: int, hook_name: str, game_folder: str, exe_name: str,
-                          record_path: str, record_mtime_before: float) -> None:
+                          record_path: str, record_mtime_before: float,
+                          resolver: Optional[Any] = None) -> None:
     """
     启动后校验 MTool 是否真的"关联"上了：
     首选判据 = hook DLL 是否加载进游戏进程（唯一可靠）；
@@ -756,7 +931,14 @@ def _verify_mtool_binding(game_id: int, hook_name: str, game_folder: str, exe_na
         with RUNNING_LOCK:
             info = RUNNING_GAMES.get(game_id)
             pid = info.get("pid") if info else None
-        return pid or find_game_pid_in_folder(game_folder, exe_name)
+        if pid:
+            return pid
+        if resolver is not None:
+            try:
+                return resolver()
+            except Exception:
+                return None
+        return find_game_pid_in_folder(game_folder, exe_name)
 
     try:
         loaded = mtool_link.wait_dll_loaded(current_pid, hook_name, timeout=30.0)
@@ -894,21 +1076,42 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
                 except Exception:
                     pass
 
-        real_game_pid = None
-        for _ in range(12):
-            time.sleep(0.4)
-            real_game_pid = find_game_pid_in_folder(game_folder, exe_name)
-            if real_game_pid:
-                break
+        # ---- 解析 MTool 真正注入的进程（可能被软链/复制到 Public 临时目录并改名）----
+        launch_dir, launch_exe = game_folder, exe_name
+        parsed_target = parse_mtool_launch_target(bat_res.get("path"))
+        if parsed_target:
+            launch_dir, launch_exe = parsed_target
 
+        launch_names: List[str] = []
+        for n in (launch_exe, exe_name, "MTool_Game.exe"):
+            if n and n.lower() not in {x.lower() for x in launch_names}:
+                launch_names.append(n)
+
+        launch_roots: List[str] = []
+        for d in (launch_dir, game_folder, working_dir):
+            if d and d not in launch_roots:
+                launch_roots.append(d)
+
+        def _resolve_mtool_pid() -> Optional[int]:
+            return find_game_pid_multi(launch_names, launch_roots, allow_name_only=True)
+
+        # 会话计时从"发起启动"就开始，注入耗时也算进这一局
         start_time = time.time()
+        # 先做 3 秒快速探测（正常启动 1~3 秒就出现），拿不到也不结束会话：
+        # 真正的柔性等待交给 monitor_game_pid 的 attach_timeout（默认 120s），
+        # 这样接口能尽快返回、大屏窗口可以马上让位给游戏。
+        real_game_pid = _await_game_process(launch_dir, launch_exe, 3.0, resolver=_resolve_mtool_pid)
+
         with RUNNING_LOCK:
             RUNNING_GAMES[game_id] = {
                 "pid": real_game_pid,
                 "start_time": start_time,
-                "exe": exe_name,
+                "exe": launch_exe,
                 "mode": "mtool",
+                "phase": "running" if real_game_pid else "attaching",
                 "folder_path": game_folder,
+                "launch_dir": launch_dir,
+                "launch_exe": launch_exe,
                 "hook_dll": hook_for_verify,
                 "exe_bitness": int(bat_res.get("bits") or exe_bits),
                 "launch_method": launch_method,
@@ -917,20 +1120,31 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
 
         t = threading.Thread(
             target=monitor_game_pid,
-            args=(game_id, real_game_pid, None, start_time, working_dir, exe_name, folder_path),
+            kwargs=dict(
+                game_id=game_id,
+                target_pid=real_game_pid,
+                hProcess=None,
+                start_time=start_time,
+                working_dir=working_dir,
+                exe_name=exe_name,
+                game_folder=folder_path,
+                attach_timeout=120.0,
+                resolver=_resolve_mtool_pid,
+            ),
             daemon=True
         )
         t.start()
 
         vt = threading.Thread(
             target=_verify_mtool_binding,
-            args=(game_id, hook_for_verify, game_folder, exe_name, str(rec_path), record_mtime_before),
+            args=(game_id, hook_for_verify, game_folder, exe_name, str(rec_path), record_mtime_before, _resolve_mtool_pid),
             daemon=True
         )
         vt.start()
 
         mode_name = "汉化" if status.get("has_translation") else "辅助"
         bits_txt = f"{int(bat_res.get('bits') or exe_bits)} 位"
+        wait_note = "" if real_game_pid else "（注入中，进程出现后自动接管计时）"
         return {
             "success": True,
             "pid": real_game_pid,
@@ -940,7 +1154,8 @@ def launch_game_with_mtool(game_id: int) -> Dict[str, Any]:
             "exe_bitness": int(bat_res.get("bits") or exe_bits),
             "bat_action": bat_res.get("action"),
             "record_written": rec_res.get("written"),
-            "message": f"成功以 MTool {mode_name}模式启动: {exe_name}（{bits_txt} · {hook_for_verify} · {launch_note}）"
+            "pending": not bool(real_game_pid),
+            "message": f"成功以 MTool {mode_name}模式启动: {exe_name}（{bits_txt} · {hook_for_verify} · {launch_note}）{wait_note}"
         }
     except Exception as e:
         return {"success": False, "message": f"MTool 启动失败: {str(e)}"}

@@ -1,0 +1,188 @@
+/* ==========================================================================
+   强调色（夜间 / 日间同时生效）—— 由 tools 生成，勿手改
+   html[data-accent] 切换整套 --ax-*，再把 indigo 族映射上去
+   ========================================================================== */
+
+:root {
+  --ax-50: #fff1f2;
+  --ax-100: #ffe0e2;
+  --ax-200: #ffc2c7;
+  --ax-300: #ff9aa2;
+  --ax-400: #ff5c69;
+  --ax-500: #e60012;
+  --ax-600: #c4000f;
+  --ax-700: #a3000c;
+  --ax-800: #7d0009;
+  --ax-900: #5c0007;
+  --ax-950: #330004;
+}
+
+html[data-accent="indigo"] {
+  --ax-50: #eef2ff;
+  --ax-100: #e0e7ff;
+  --ax-200: #c7d2fe;
+  --ax-300: #a5b4fc;
+  --ax-400: #818cf8;
+  --ax-500: #6366f1;
+  --ax-600: #4f46e5;
+  --ax-700: #4338ca;
+  --ax-800: #3730a3;
+  --ax-900: #312e81;
+  --ax-950: #1e1b4b;
+}
+
+html[data-accent="emerald"] {
+  --ax-50: #ecfdf5;
+  --ax-100: #d1fae5;
+  --ax-200: #a7f3d0;
+  --ax-300: #6ee7b7;
+  --ax-400: #34d399;
+  --ax-500: #10b981;
+  --ax-600: #059669;
+  --ax-700: #047857;
+  --ax-800: #065f46;
+  --ax-900: #064e3b;
+  --ax-950: #022c22;
+}
+
+html[data-accent="amber"] {
+  --ax-50: #fffbeb;
+  --ax-100: #fef3c7;
+  --ax-200: #fde68a;
+  --ax-300: #fcd34d;
+  --ax-400: #fbbf24;
+  --ax-500: #f59e0b;
+  --ax-600: #d97706;
+  --ax-700: #b45309;
+  --ax-800: #92400e;
+  --ax-900: #78350f;
+  --ax-950: #451a03;
+}
+
+html[data-accent="violet"] {
+  --ax-50: #f5f3ff;
+  --ax-100: #ede9fe;
+  --ax-200: #ddd6fe;
+  --ax-300: #c4b5fd;
+  --ax-400: #a78bfa;
+  --ax-500: #8b5cf6;
+  --ax-600: #7c3aed;
+  --ax-700: #6d28d9;
+  --ax-800: #5b21b6;
+  --ax-900: #4c1d95;
+  --ax-950: #2e1065;
+}
+html[data-theme="light"] .bg-indigo-400 { background-color: var(--ax-400); }
+html[data-theme="dark"] .bg-indigo-400 { background-color: var(--ax-400); }
+html[data-theme="light"] .hover\:bg-indigo-400:hover { background-color: var(--ax-400); }
+html[data-theme="dark"] .hover\:bg-indigo-400:hover { background-color: var(--ax-400); }
+html[data-theme="light"] .bg-indigo-500 { background-color: var(--ax-500); }
+html[data-theme="dark"] .bg-indigo-500 { background-color: var(--ax-500); }
+html[data-theme="light"] .hover\:bg-indigo-500:hover { background-color: var(--ax-500); }
+html[data-theme="dark"] .hover\:bg-indigo-500:hover { background-color: var(--ax-500); }
+html[data-theme="light"] .bg-indigo-500\/10 { background-color: var(--ax-500); }
+html[data-theme="dark"] .bg-indigo-500\/10 { background-color: var(--ax-500); }
+html[data-theme="light"] .bg-indigo-500\/15 { background-color: var(--ax-500); }
+html[data-theme="dark"] .bg-indigo-500\/15 { background-color: var(--ax-500); }
+html[data-theme="light"] .bg-indigo-500\/20 { background-color: var(--ax-500); }
+html[data-theme="dark"] .bg-indigo-500\/20 { background-color: var(--ax-500); }
+html[data-theme="light"] .bg-indigo-500\/25 { background-color: var(--ax-500); }
+html[data-theme="dark"] .bg-indigo-500\/25 { background-color: var(--ax-500); }
+html[data-theme="light"] .hover\:bg-indigo-500\/30:hover { background-color: var(--ax-500); }
+html[data-theme="dark"] .hover\:bg-indigo-500\/30:hover { background-color: var(--ax-500); }
+html[data-theme="light"] .bg-indigo-500\/40 { background-color: var(--ax-500); }
+html[data-theme="dark"] .bg-indigo-500\/40 { background-color: var(--ax-500); }
+html[data-theme="light"] .hover\:bg-indigo-500\/40:hover { background-color: var(--ax-500); }
+html[data-theme="dark"] .hover\:bg-indigo-500\/40:hover { background-color: var(--ax-500); }
+html[data-theme="light"] .bg-indigo-500\/85 { background-color: var(--ax-500); }
+html[data-theme="dark"] .bg-indigo-500\/85 { background-color: var(--ax-500); }
+html[data-theme="light"] .bg-indigo-600 { background-color: var(--ax-600); }
+html[data-theme="dark"] .bg-indigo-600 { background-color: var(--ax-600); }
+html[data-theme="light"] .hover\:bg-indigo-600:hover { background-color: var(--ax-600); }
+html[data-theme="dark"] .hover\:bg-indigo-600:hover { background-color: var(--ax-600); }
+html[data-theme="light"] .bg-indigo-600\/20 { background-color: var(--ax-600); }
+html[data-theme="dark"] .bg-indigo-600\/20 { background-color: var(--ax-600); }
+html[data-theme="light"] .bg-indigo-600\/25 { background-color: var(--ax-600); }
+html[data-theme="dark"] .bg-indigo-600\/25 { background-color: var(--ax-600); }
+html[data-theme="light"] .bg-indigo-600\/30 { background-color: var(--ax-600); }
+html[data-theme="dark"] .bg-indigo-600\/30 { background-color: var(--ax-600); }
+html[data-theme="light"] .hover\:bg-indigo-600\/35:hover { background-color: var(--ax-600); }
+html[data-theme="dark"] .hover\:bg-indigo-600\/35:hover { background-color: var(--ax-600); }
+html[data-theme="light"] .hover\:bg-indigo-600\/40:hover { background-color: var(--ax-600); }
+html[data-theme="dark"] .hover\:bg-indigo-600\/40:hover { background-color: var(--ax-600); }
+html[data-theme="light"] .bg-indigo-600\/50 { background-color: var(--ax-600); }
+html[data-theme="dark"] .bg-indigo-600\/50 { background-color: var(--ax-600); }
+html[data-theme="light"] .bg-indigo-600\/80 { background-color: var(--ax-600); }
+html[data-theme="dark"] .bg-indigo-600\/80 { background-color: var(--ax-600); }
+html[data-theme="light"] .bg-indigo-950 { background-color: var(--ax-50); }
+html[data-theme="dark"] .bg-indigo-950 { background-color: var(--ax-950); }
+html[data-theme="light"] .bg-indigo-950\/40 { background-color: var(--ax-50); }
+html[data-theme="dark"] .bg-indigo-950\/40 { background-color: var(--ax-950); }
+html[data-theme="light"] .bg-indigo-950\/60 { background-color: var(--ax-50); }
+html[data-theme="dark"] .bg-indigo-950\/60 { background-color: var(--ax-950); }
+html[data-theme="light"] .hover\:bg-indigo-950\/60:hover { background-color: var(--ax-50); }
+html[data-theme="dark"] .hover\:bg-indigo-950\/60:hover { background-color: var(--ax-950); }
+html[data-theme="light"] .bg-indigo-950\/85 { background-color: var(--ax-50); }
+html[data-theme="dark"] .bg-indigo-950\/85 { background-color: var(--ax-950); }
+html[data-theme="light"] .bg-indigo-950\/90 { background-color: var(--ax-50); }
+html[data-theme="dark"] .bg-indigo-950\/90 { background-color: var(--ax-950); }
+html[data-theme="light"] .bg-indigo-950\/95 { background-color: var(--ax-50); }
+html[data-theme="dark"] .bg-indigo-950\/95 { background-color: var(--ax-950); }
+html[data-theme="light"] .border-indigo-400 { border-color: var(--ax-600); }
+html[data-theme="dark"] .border-indigo-400 { border-color: var(--ax-400); }
+html[data-theme="light"] .border-indigo-400\/30 { border-color: var(--ax-600); }
+html[data-theme="dark"] .border-indigo-400\/30 { border-color: var(--ax-400); }
+html[data-theme="light"] .border-indigo-400\/70 { border-color: var(--ax-600); }
+html[data-theme="dark"] .border-indigo-400\/70 { border-color: var(--ax-400); }
+html[data-theme="light"] .hover\:border-indigo-400\/70:hover { border-color: var(--ax-600); }
+html[data-theme="dark"] .hover\:border-indigo-400\/70:hover { border-color: var(--ax-400); }
+html[data-theme="light"] .border-indigo-500 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500 { border-color: var(--ax-500); }
+html[data-theme="light"] .hover\:border-indigo-500:hover { border-color: var(--ax-500); }
+html[data-theme="dark"] .hover\:border-indigo-500:hover { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-500\/20 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500\/20 { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-500\/25 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500\/25 { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-500\/30 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500\/30 { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-500\/35 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500\/35 { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-500\/40 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500\/40 { border-color: var(--ax-500); }
+html[data-theme="light"] .hover\:border-indigo-500\/40:hover { border-color: var(--ax-500); }
+html[data-theme="dark"] .hover\:border-indigo-500\/40:hover { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-500\/50 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500\/50 { border-color: var(--ax-500); }
+html[data-theme="light"] .hover\:border-indigo-500\/50:hover { border-color: var(--ax-500); }
+html[data-theme="dark"] .hover\:border-indigo-500\/50:hover { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-500\/60 { border-color: var(--ax-500); }
+html[data-theme="dark"] .border-indigo-500\/60 { border-color: var(--ax-500); }
+html[data-theme="light"] .hover\:border-indigo-500\/60:hover { border-color: var(--ax-500); }
+html[data-theme="dark"] .hover\:border-indigo-500\/60:hover { border-color: var(--ax-500); }
+html[data-theme="light"] .border-indigo-700\/50 { border-color: var(--ax-300); }
+html[data-theme="dark"] .border-indigo-700\/50 { border-color: var(--ax-700); }
+html[data-theme="light"] .border-indigo-800\/60 { border-color: var(--ax-200); }
+html[data-theme="dark"] .border-indigo-800\/60 { border-color: var(--ax-800); }
+html[data-theme="light"] .text-indigo-100 { color: var(--ax-900); }
+html[data-theme="dark"] .text-indigo-100 { color: var(--ax-100); }
+html[data-theme="light"] .hover\:text-indigo-100:hover { color: var(--ax-900); }
+html[data-theme="dark"] .hover\:text-indigo-100:hover { color: var(--ax-100); }
+html[data-theme="light"] .text-indigo-200 { color: var(--ax-800); }
+html[data-theme="dark"] .text-indigo-200 { color: var(--ax-200); }
+html[data-theme="light"] .hover\:text-indigo-200:hover { color: var(--ax-800); }
+html[data-theme="dark"] .hover\:text-indigo-200:hover { color: var(--ax-200); }
+html[data-theme="light"] .text-indigo-300 { color: var(--ax-700); }
+html[data-theme="dark"] .text-indigo-300 { color: var(--ax-300); }
+html[data-theme="light"] .hover\:text-indigo-300:hover { color: var(--ax-700); }
+html[data-theme="dark"] .hover\:text-indigo-300:hover { color: var(--ax-300); }
+html[data-theme="light"] .text-indigo-400 { color: var(--ax-600); }
+html[data-theme="dark"] .text-indigo-400 { color: var(--ax-400); }
+html[data-theme="light"] .text-indigo-400\/70 { color: var(--ax-600); }
+html[data-theme="dark"] .text-indigo-400\/70 { color: var(--ax-400); }
+html[data-theme="light"] .text-indigo-400\/90 { color: var(--ax-600); }
+html[data-theme="dark"] .text-indigo-400\/90 { color: var(--ax-400); }
+html[data-theme="light"] .text-indigo-500 { color: var(--ax-500); }
+html[data-theme="dark"] .text-indigo-500 { color: var(--ax-500); }
+html[data-theme="light"] .text-indigo-600 { color: var(--ax-400); }
+html[data-theme="dark"] .text-indigo-600 { color: var(--ax-600); }

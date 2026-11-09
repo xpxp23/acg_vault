@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from config import (
     APP_VERSION,
     BASE_DIR,
+    RESOURCE_DIR,
     COVERS_DIR,
     THUMBS_DIR,
     GALLERY_DIR,
@@ -237,6 +238,11 @@ def log_client_error(req: ClientLogRequest):
     print(f"[CLIENT {req.level.upper()}] {req.message} (url: {req.url})")
     if req.stack:
         print(f"Client Stack:\n{req.stack}")
+    try:
+        from desktop_app import log_desktop_error
+        log_desktop_error("[CLIENT %s] %s @ %s\n%s" % (req.level.upper(), req.message, req.url, req.stack or ""))
+    except Exception:
+        pass
     return {"status": "ok"}
 
 
@@ -376,12 +382,12 @@ class UpdateCollectionGamesRequest(BaseModel):
     action: str = "add"  # "add", "remove", "set"
 
 
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.mount("/static", StaticFiles(directory=str(RESOURCE_DIR / "static")), name="static")
 
 
 @app.get("/")
 def serve_index():
-    index_file = BASE_DIR / "static" / "index.html"
+    index_file = RESOURCE_DIR / "static" / "index.html"
     if index_file.exists():
         return FileResponse(str(index_file))
     return {"message": f"ACG Game Vault v{APP_VERSION} API is running."}
@@ -389,10 +395,48 @@ def serve_index():
 
 @app.get("/overlay")
 def serve_overlay():
-    overlay_file = BASE_DIR / "static" / "overlay.html"
+    overlay_file = RESOURCE_DIR / "static" / "overlay.html"
     if overlay_file.exists():
         return FileResponse(str(overlay_file))
     raise HTTPException(status_code=404, detail="Overlay view not found")
+
+
+@app.get("/overlay_unlock")
+def serve_overlay_unlock():
+    """穿透锁定时浮在伴侣窗右上角的小解锁条。"""
+    f = RESOURCE_DIR / "static" / "overlay_unlock.html"
+    if f.exists():
+        return FileResponse(str(f))
+    raise HTTPException(status_code=404, detail="Unlock view not found")
+
+
+@app.get("/bigscreen")
+def serve_bigscreen():
+    """Serves the 10-foot / gamepad-first Big Screen mode UI."""
+    bigscreen_file = RESOURCE_DIR / "static" / "bigscreen.html"
+    if bigscreen_file.exists():
+        return FileResponse(str(bigscreen_file))
+    raise HTTPException(status_code=404, detail="Big Screen view not found")
+
+
+@app.post("/api/window/minimize")
+def window_minimize_api():
+    """Minimizes the native desktop window (no-op in plain browser mode)."""
+    try:
+        from desktop_app import set_main_window_minimized
+        return {"success": set_main_window_minimized(True)}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/window/restore")
+def window_restore_api():
+    """Restores the native desktop window after a Big Screen game session ends."""
+    try:
+        from desktop_app import set_main_window_minimized
+        return {"success": set_main_window_minimized(False)}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 @app.get("/api/overlay/context")
@@ -450,17 +494,41 @@ def get_overlay_context(game_id: Optional[int] = Query(None)):
 
 @app.post("/api/overlay/summon")
 def summon_overlay_window_api(game_id: Optional[int] = Query(None)):
-    """Summons the native Always-on-Top Companion Overlay window (or opens popup fallback)."""
+    """Toggles the native Always-on-Top Companion Overlay window (or opens popup fallback)."""
     if game_id:
         set_last_active_game_id(game_id)
     try:
-        from desktop_app import show_or_toggle_overlay_window
+        from desktop_app import show_or_toggle_overlay_window, is_overlay_visible
+        was_visible = is_overlay_visible()
         cfg = load_config()
         port = int(cfg.get("port", 8000))
-        threading.Thread(target=show_or_toggle_overlay_window, args=(port, False, game_id), daemon=True).start()
-        return {"success": True, "message": "已呼出游戏内攻略伴侣悬浮窗 (Alt+G)"}
+        # toggle=True：再点一次「伴侣小窗」就是关闭，符合直觉
+        threading.Thread(target=show_or_toggle_overlay_window, args=(port, True, game_id), daemon=True).start()
+        if was_visible:
+            return {"success": True, "visible": False, "message": "已关闭伴侣小窗（Alt+G 可再次呼出）"}
+        return {"success": True, "visible": True, "message": "已呼出游戏内攻略伴侣悬浮窗 (Alt+G)"}
     except Exception:
         return {"success": False, "message": "请在浏览器新窗口打开伴侣视图"}
+
+
+@app.get("/api/overlay/state")
+def overlay_state_api():
+    """伴侣窗的穿透 / 透明度状态（页面轮询用，热键改状态后能立刻同步）。"""
+    try:
+        from desktop_app import get_overlay_state
+        return {"success": True, **get_overlay_state()}
+    except Exception:
+        # 浏览器模式下没有桌面窗口，返回页面自身的默认值
+        return {"success": True, "click_through": False, "opacity": 0.92, "visible": True, "desktop": False}
+
+
+@app.post("/api/overlay/opacity")
+def overlay_opacity_api(req: dict):
+    try:
+        from desktop_app import set_overlay_opacity
+        return set_overlay_opacity(float(req.get("opacity", 0.92)))
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 @app.post("/api/overlay/click_through")
@@ -1000,12 +1068,47 @@ async def import_cg_save_api(game_id: int, file: UploadFile = File(...)):
 
 class LaunchGameRequest(BaseModel):
     mode: Optional[str] = None
+    # "bigscreen" 表示从大屏模式发起，用于决定是否自动 Magpie 全屏
+    source: Optional[str] = None
+
+
+class MagpieScaleRequest(BaseModel):
+    game_id: Optional[int] = None
+
+
+class MagpiePresetRequest(BaseModel):
+    id: str
+
+
+class ThemeRequest(BaseModel):
+    mode: Optional[str] = None
+    accent: Optional[str] = None
+
+
+def _schedule_magpie_auto_scale(game_id: int, source: Optional[str], res: Dict[str, Any]) -> None:
+    """按设置决定是否在启动后自动 Magpie 全屏（延迟等待游戏窗口出现）。"""
+    try:
+        cfg = load_config()
+        if not cfg.get("magpie_enabled", True) or not cfg.get("magpie_auto_scale", False):
+            return
+        scope = cfg.get("magpie_auto_scope", "bigscreen")
+        if scope != "always" and source != "bigscreen":
+            return
+        delay = int(cfg.get("magpie_auto_delay", 8) or 8)
+        from core.magpie import auto_scale_async
+        auto_scale_async(game_id, delay=delay)
+        res["magpie_auto"] = {"scheduled": True, "delay": delay}
+    except Exception as e:
+        print(f"[Magpie] schedule failed: {e}")
 
 
 @app.post("/api/games/{game_id}/launch")
 def launch_game_api(game_id: int, req: Optional[LaunchGameRequest] = None):
     mode = req.mode if req else None
-    return launch_game(game_id, mode=mode)
+    res = launch_game(game_id, mode=mode)
+    if isinstance(res, dict) and res.get("success"):
+        _schedule_magpie_auto_scale(game_id, req.source if req else None, res)
+    return res
 
 
 @app.post("/api/games/{game_id}/launch_mtool")
@@ -1016,6 +1119,87 @@ def launch_mtool_api(game_id: int):
 @app.post("/api/games/{game_id}/launch_le")
 def launch_le_api(game_id: int):
     return launch_game_with_le(game_id)
+
+
+@app.get("/api/theme")
+def get_theme():
+    cfg = load_config()
+    return {
+        "success": True,
+        "mode": cfg.get("ui_theme", "auto"),
+        "accent": cfg.get("ui_accent", "nintendo"),
+    }
+
+
+@app.post("/api/theme")
+def set_theme(req: ThemeRequest):
+    try:
+        cfg = load_config()
+        if req.mode:
+            cfg["ui_theme"] = req.mode if req.mode in ("auto", "dark", "light") else "auto"
+        if req.accent:
+            cfg["ui_accent"] = req.accent if req.accent in ("nintendo", "indigo", "emerald", "amber", "violet") else "nintendo"
+        save_config(cfg)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    return {"success": True, "mode": cfg.get("ui_theme", "auto"), "accent": cfg.get("ui_accent", "nintendo")}
+
+
+@app.get("/api/magpie/status")
+def magpie_status_api(refresh: bool = Query(False)):
+    try:
+        from core.magpie import get_status
+        return {"success": True, "data": get_status(refresh=refresh)}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/magpie/launch")
+def magpie_launch_api():
+    """确保 Magpie 以托盘模式运行（Magpie.exe -st）。"""
+    try:
+        from core.magpie import ensure_running
+        cfg = load_config()
+        return ensure_running(str(cfg.get("magpie_path") or ""))
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/magpie/scale")
+def magpie_scale_api(req: Optional[MagpieScaleRequest] = None):
+    """让 Magpie 对正在运行的游戏窗口全屏。"""
+    try:
+        from core.magpie import scale_game
+        gid = req.game_id if req else None
+        if not gid:
+            running = get_running_games_info()
+            if running:
+                gid = max(running.items(), key=lambda kv: kv[1].get("start_time", 0))[0]
+        if not gid:
+            return {"success": False, "scaled": False, "message": "没有正在运行的游戏"}
+        return scale_game(int(gid))
+    except Exception as e:
+        return {"success": False, "scaled": False, "message": str(e)}
+
+
+@app.get("/api/magpie/presets")
+def magpie_presets_api():
+    """列出 Magpie 缩放预设与当前生效项。"""
+    try:
+        from core.magpie import get_presets
+        return {"success": True, "data": get_presets()}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/api/magpie/preset")
+def magpie_apply_preset_api(req: MagpiePresetRequest):
+    """切换 Magpie 全局缩放预设（会重启 Magpie）。"""
+    try:
+        from core.magpie import apply_preset
+        return apply_preset(req.id)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 @app.get("/api/games/{game_id}/mtool_status")

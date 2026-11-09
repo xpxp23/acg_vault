@@ -1,24 +1,32 @@
 @echo off
 chcp 65001 >nul 2>&1
-title ACG Game Vault v2.5
 cd /d "%~dp0"
 
-echo [1/2] Checking Python environment...
-where python >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ERROR] Python not found! Please install Python 3.10+ and add it to PATH.
+if /i "%~1"=="--server" goto :server
+
+rem Prefer the packaged standalone build; fall back to a silent pythonw launch.
+if exist "%~dp0ACGVault\ACGVault.exe" (
+    start "" "%~dp0ACGVault\ACGVault.exe"
+    exit /b 0
+)
+
+where pythonw >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] pythonw.exe not found. Install Python 3.10+ and add it to PATH.
     pause
     exit /b 1
 )
 
-echo [2/2] Starting ACG Game Vault v2.5 ...
-if "%1"=="--server" (
-    python main.py
-) else (
-    python desktop_app.py
-)
-if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] Application exited unexpectedly.
+start "" pythonw "%~dp0desktop_app.py"
+exit /b 0
+
+:server
+where python >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] python.exe not found.
     pause
+    exit /b 1
 )
+echo Server mode: http://127.0.0.1:8000  (Ctrl+C to stop)
+python "%~dp0main.py"
+pause

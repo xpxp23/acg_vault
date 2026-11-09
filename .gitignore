@@ -18,9 +18,21 @@ data/config.json
 # Local runtime & media assets
 data/covers/
 data/extracted_game_data/
+data/webview_profile/
 
 # Temporary / dump files & system files
 edge_dom.html
 *.lnk
 .DS_Store
 Thumbs.db
+
+# Build artifacts & runtime logs
+build/
+dist/
+*.spec
+/ACGVault/
+data/*.log
+data/desktop.log
+
+# Agent workspace data
+.workbuddy/

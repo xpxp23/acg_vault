@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>ACG Game Vault v2.5 - 本地游戏资产、AI攻略与数据馆藏中心</title>
+  <title>ACG Game Vault v3.1.1 - 本地游戏资产、大屏模式、AI攻略与数据馆藏中心</title>
 
   <!-- Global Diagnostic & Error Interceptor -->
   <script>
@@ -72,6 +72,21 @@
   <script src="/static/vendor/lucide.min.js?v=2.4"></script>
   <script src="/static/vendor/marked.min.js?v=2.4"></script>
   <link rel="stylesheet" href="/static/style.css?v=2.4">
+  <script>
+    // 首帧前先定主题，避免深/浅色闪烁
+    (function () {
+      try {
+        var mode = 'auto';
+        var raw = localStorage.getItem('acg_theme');
+        if (raw) { var o = JSON.parse(raw); if (o && o.mode) mode = o.mode; if (o && o.accent) document.documentElement.dataset.accent = o.accent; }
+        var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = (mode === 'light' || mode === 'dark') ? mode : (dark ? 'dark' : 'light');
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.0">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.1">
+  <script src="/static/theme.js?v=3.0"></script>
 </head>
 <body class="bg-[#070a12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
   <!-- Boot / Crash Emergency Fallback Banner -->
@@ -214,7 +229,7 @@
     </transition>
 
     <!-- Top Navigation Header -->
-    <header class="sticky top-0 z-40 glass-panel border-b border-slate-800/80 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+    <header id="app-header" class="sticky top-0 z-40 glass-panel border-b border-slate-800/80 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
       <!-- Brand & Mini Collection Metrics -->
       <div class="flex items-center space-x-5">
         <div class="flex items-center space-x-3 cursor-pointer group" @click="resetFilters">
@@ -224,7 +239,7 @@
           <div>
             <div class="flex items-center space-x-2">
               <h1 class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-indigo-300 bg-clip-text text-transparent">ACG Vault</h1>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v2.4</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v3.1.1</span>
             </div>
             <p class="text-[11px] text-slate-400 font-medium">本地 ACG 资产、AI 攻略与馆藏中心</p>
           </div>
@@ -282,6 +297,16 @@
             <i data-lucide="sparkles" :class="{'animate-pulse': batchScrapeState.is_running}" class="w-3.5 h-3.5"></i>
           </span>
           <span>{{ batchScrapeState.is_running ? '刮削中...' : '一键刮削' }}</span>
+        </button>
+
+        <!-- Big Screen Mode Entry (v2.6) -->
+        <button
+          @click="openBigScreen"
+          class="flex items-center space-x-1.5 px-3 py-2 rounded-xl bg-fuchsia-500/15 border border-fuchsia-500/35 hover:bg-fuchsia-500/30 text-fuchsia-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
+          title="进入大屏模式：10 英尺影院级 UI，支持 Xbox / PlayStation 手柄与方向键操作（Alt+B）"
+        >
+          <i data-lucide="tv" class="w-3.5 h-3.5 text-fuchsia-300"></i>
+          <span class="hidden md:inline">大屏模式</span>
         </button>
 
         <!-- In-Game Companion Overlay Quick Launch Button (v2.3 Feature #1) -->
@@ -1884,6 +1909,25 @@
                     <i data-lucide="layers" class="w-3.5 h-3.5 text-cyan-400"></i>
                     <span>伴侣小窗 (Alt+G)</span>
                   </button>
+
+                  <button
+                    @click="magpieScaleAction(selectedGame)"
+                    :disabled="!isGameRunning(selectedGame.id)"
+                    class="px-3 py-2 bg-fuchsia-500/15 border border-fuchsia-500/35 hover:bg-fuchsia-500/30 disabled:opacity-40 disabled:cursor-not-allowed text-fuchsia-200 text-xs font-semibold rounded-xl flex items-center space-x-1 transition-all cursor-pointer"
+                    title="用 Magpie 把正在运行的游戏窗口放大到全屏（先启动游戏；需已安装 Magpie）"
+                  >
+                    <i data-lucide="maximize-2" class="w-3.5 h-3.5 text-fuchsia-300"></i>
+                    <span>Magpie 全屏</span>
+                  </button>
+
+                  <select
+                    v-model="magpiePresets.active"
+                    @change="applyMagpiePreset(magpiePresets.active)"
+                    class="px-2 py-2 rounded-xl bg-fuchsia-500/10 border border-fuchsia-500/30 text-fuchsia-200 text-xs font-semibold cursor-pointer"
+                    title="切换 Magpie 缩放预设（会重启 Magpie 约 2 秒）"
+                  >
+                    <option v-for="p in magpiePresets.presets" :key="p.id" :value="p.id">{{ p.name }}</option>
+                  </select>
                 </div>
 
                 <!-- Folder & Explorer Reveal -->
@@ -3087,7 +3131,7 @@
           <div class="flex items-center justify-between border-b border-slate-800 pb-3">
             <h2 class="text-base font-bold text-white flex items-center space-x-2">
               <i data-lucide="settings" class="w-5 h-5 text-indigo-400"></i>
-              <span>ACG Vault v2.5 系统与个性化定制中心</span>
+              <span>ACG Vault v3.1.1 系统与个性化定制中心</span>
             </h2>
             <button @click="showSettingsModal = false" class="text-slate-400 hover:text-white cursor-pointer">
               <i data-lucide="x" class="w-5 h-5"></i>
@@ -3235,12 +3279,69 @@
 
           <!-- Tab 2: UI & Walkthrough Reading Customization -->
           <div v-if="settingsActiveTab === 'ui'" class="space-y-4 text-xs max-h-[62vh] overflow-y-auto pr-1">
+            <div class="rounded-xl border border-slate-700 bg-slate-900/60 p-3.5">
+              <div class="flex items-center justify-between mb-2.5">
+                <div>
+                  <div class="text-slate-200 font-semibold">界面主题</div>
+                  <div class="text-[11px] text-slate-500">夜间 = 原来的深色配色；日间 = Switch 风格（浅灰 + 白卡 + 任天堂红）</div>
+                </div>
+                <span class="text-[10px] px-2 py-0.5 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 shrink-0">
+                  {{ themeMode === 'auto' ? '跟随系统' : (themeMode === 'light' ? '日间' : '夜间') }}
+                </span>
+              </div>
+              <div class="grid grid-cols-3 gap-2">
+                <button
+                  @click="setThemeMode('auto')"
+                  :class="['px-3 py-2 rounded-xl border text-left transition-all cursor-pointer',
+                           themeMode === 'auto' ? 'bg-indigo-500/20 border-indigo-500/60 text-slate-100' : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:border-slate-500']"
+                >
+                  <div class="font-semibold">🖥 跟随系统</div>
+                  <div class="text-[10px] text-slate-500 mt-0.5">随 Windows 深浅色</div>
+                </button>
+                <button
+                  @click="setThemeMode('light')"
+                  :class="['px-3 py-2 rounded-xl border text-left transition-all cursor-pointer',
+                           themeMode === 'light' ? 'bg-indigo-500/20 border-indigo-500/60 text-slate-100' : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:border-slate-500']"
+                >
+                  <div class="font-semibold">☀ 日间</div>
+                  <div class="text-[10px] text-slate-500 mt-0.5">Switch 浅色</div>
+                </button>
+                <button
+                  @click="setThemeMode('dark')"
+                  :class="['px-3 py-2 rounded-xl border text-left transition-all cursor-pointer',
+                           themeMode === 'dark' ? 'bg-indigo-500/20 border-indigo-500/60 text-slate-100' : 'bg-slate-800/60 border-slate-700 text-slate-300 hover:border-slate-500']"
+                >
+                  <div class="font-semibold">🌙 夜间</div>
+                  <div class="text-[10px] text-slate-500 mt-0.5">原深色配色</div>
+                </button>
+              </div>
+
+              <div class="mt-3 pt-3 border-t border-slate-700/60 flex items-center justify-between gap-3">
+                <div>
+                  <div class="text-slate-300 font-semibold">强调色</div>
+                  <div class="text-[10px] text-slate-500 mt-0.5">按钮 / 选中态 / 高亮统一换色</div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <button
+                    v-for="a in accentOptions"
+                    :key="a.id"
+                    @click="setThemeAccent(a.id)"
+                    :title="a.name"
+                    :class="['w-7 h-7 rounded-full transition-all cursor-pointer border-2',
+                             themeAccent === a.id ? 'border-slate-100 scale-110 shadow-lg' : 'border-transparent hover:scale-105 opacity-85']"
+                    :style="{ background: a.color }"
+                  ></button>
+                </div>
+              </div>
+            </div>
+
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               <div>
                 <label class="font-semibold text-slate-300 block mb-1.5">全屏攻略工作台默认布局</label>
                 <select v-model="configData.notes_default_layout" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
-                  <option value="split">双栏联动 (左编辑 + 右实时预览)</option>
+                  <option value="last">自动 (记住上次使用的布局 · 默认)</option>
                   <option value="reader">纯净阅读模式 (居中杂志排版)</option>
+                  <option value="split">双栏联动 (左编辑 + 右实时预览)</option>
                   <option value="editor">专注编辑模式 (宽屏源码编辑)</option>
                 </select>
               </div>
@@ -3565,10 +3666,102 @@
 
             <div class="flex items-center justify-between py-2 border-t border-slate-800">
               <div>
+                <div class="text-slate-200 font-semibold">无边框窗口（自绘标题栏与窗口按钮）</div>
+                <div class="text-[11px] text-slate-500">去掉系统标题栏，顶栏空白处可拖动窗口、右上角为最小化 / 最大化 / 关闭；关闭此项后重启生效</div>
+              </div>
+              <input type="checkbox" v-model="configData.frameless_window" class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer">
+            </div>
+
+            <div class="flex items-center justify-between py-2 border-t border-slate-800">
+              <div>
                 <div class="text-slate-200 font-semibold">随 Windows 系统开机自动静默启动并驻留托盘</div>
                 <div class="text-[11px] text-slate-500">自动写入当前用户注册表 Run 项 (`pythonw desktop_app.py --minimized`)，零黑框打扰</div>
               </div>
               <input type="checkbox" v-model="configData.auto_start_windows" class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer">
+            </div>
+
+            <!-- Magpie 全屏集成 (v2.7) -->
+            <div class="pt-3 mt-2 border-t border-slate-800 space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div>
+                  <div class="text-slate-200 font-semibold flex items-center gap-1.5">
+                    <span>Magpie 全屏（第三方窗口放大）</span>
+                    <span class="px-1.5 py-0.5 rounded bg-fuchsia-500/20 border border-fuchsia-500/40 text-fuchsia-300 text-[10px] font-bold">v2.7</span>
+                  </div>
+                  <div class="text-[11px] text-slate-500 leading-relaxed">把窗口化游戏放大到全屏（Anime4K / FSR / Lanczos / CRT），适合不支持全屏、或内置全屏很糊的游戏。只调用你本机安装的 Magpie，不打包其代码。</div>
+                </div>
+                <span class="px-2 py-1 rounded-lg text-[11px] font-semibold shrink-0 border"
+                      :class="magpieStatus.installed ? (magpieStatus.running ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-amber-500/15 text-amber-300 border-amber-500/40') : 'bg-rose-500/15 text-rose-300 border-rose-500/40'">
+                  {{ magpieStatus.installed ? (magpieStatus.running ? '运行中' : '未启动') : '未安装' }}
+                </span>
+              </div>
+
+              <div>
+                <div class="flex items-center justify-between mb-1.5">
+                  <span class="font-semibold text-slate-300">缩放预设（点一下即切换）</span>
+                  <span class="text-[10px] text-slate-500">切换会重启 Magpie（约 2 秒）</span>
+                </div>
+                <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  <button
+                    v-for="p in magpiePresets.presets"
+                    :key="p.id"
+                    @click="applyMagpiePreset(p.id)"
+                    :disabled="!p.available"
+                    :class="['text-left px-3 py-2 rounded-xl border transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed',
+                             magpiePresets.active === p.id ? 'bg-fuchsia-500/20 border-fuchsia-500/60 shadow-lg shadow-fuchsia-500/10' : 'bg-slate-800/60 border-slate-700 hover:border-slate-500']"
+                  >
+                    <div class="flex items-center justify-between gap-1">
+                      <span class="text-slate-100 font-semibold text-xs">{{ p.name }}</span>
+                      <span v-if="magpiePresets.active === p.id" class="text-[9px] px-1 rounded bg-fuchsia-500/30 text-fuchsia-200 shrink-0">当前</span>
+                    </div>
+                    <div class="text-[10px] text-slate-500 leading-snug mt-0.5">{{ p.desc }}</div>
+                  </button>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label class="font-semibold text-slate-300 block mb-1.5">Magpie.exe 路径（留空自动探测）</label>
+                  <input v-model="configData.magpie_path" placeholder="E:\ACG\Magpie_v0.10.2_2\Magpie.exe"
+                         class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 font-mono text-[11px]" />
+                  <div class="text-[10px] text-slate-500 mt-1 truncate" :title="magpieStatus.path">{{ magpieStatus.path || '尚未找到 Magpie.exe' }}</div>
+                </div>
+                <div>
+                  <label class="font-semibold text-slate-300 block mb-1.5">自动全屏时机</label>
+                  <select v-model="configData.magpie_auto_scope" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-200">
+                    <option value="bigscreen">仅大屏模式启动游戏时</option>
+                    <option value="always">任何方式启动游戏都自动</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-800/60 border border-slate-700 cursor-pointer">
+                  <span class="text-slate-300">启动游戏后自动 Magpie 全屏</span>
+                  <input type="checkbox" v-model="configData.magpie_auto_scale" class="w-4 h-4 rounded border-slate-700 text-fuchsia-600 bg-slate-800 cursor-pointer">
+                </label>
+                <label class="flex items-center justify-between py-2 px-3 rounded-xl bg-slate-800/60 border border-slate-700 cursor-pointer">
+                  <span class="text-slate-300">需要时自动启动 Magpie（托盘）</span>
+                  <input type="checkbox" v-model="configData.magpie_autostart" class="w-4 h-4 rounded border-slate-700 text-fuchsia-600 bg-slate-800 cursor-pointer">
+                </label>
+              </div>
+
+              <div class="flex items-center justify-between py-2">
+                <div>
+                  <div class="text-slate-200 font-semibold">游戏窗口出现后再等待</div>
+                  <div class="text-[11px] text-slate-500">给游戏留加载时间，避免 Magpie 抢在窗口就绪前触发</div>
+                </div>
+                <div class="flex items-center space-x-2 shrink-0">
+                  <input type="range" min="3" max="30" step="1" v-model.number="configData.magpie_auto_delay" class="w-40 accent-fuchsia-500 cursor-pointer">
+                  <span class="font-mono text-fuchsia-300 w-10 text-right">{{ configData.magpie_auto_delay }}s</span>
+                </div>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2">
+                <button @click="refreshMagpieStatus(true)" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold cursor-pointer">重新检测</button>
+                <button @click="magpieEnsureRunning" class="px-3 py-1.5 rounded-lg bg-fuchsia-600/20 hover:bg-fuchsia-600 border border-fuchsia-500/40 text-fuchsia-200 hover:text-white text-xs font-semibold cursor-pointer">启动 Magpie</button>
+                <button @click="magpieScaleAction(selectedGame)" class="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600 border border-indigo-500/40 text-indigo-200 hover:text-white text-xs font-semibold cursor-pointer">对运行中的游戏测试</button>
+              </div>
             </div>
           </div>
 
@@ -3713,6 +3906,21 @@
           </div>
 
           <div class="space-y-3 text-xs">
+            <div class="p-3.5 rounded-2xl bg-fuchsia-950/30 border border-fuchsia-500/40 flex items-start space-x-3.5">
+              <div class="flex flex-col space-y-1 items-center shrink-0">
+                <kbd class="px-2.5 py-1 rounded-lg bg-slate-900 text-fuchsia-300 font-mono font-bold text-xs border border-fuchsia-500/50 shadow">Alt+B</kbd>
+              </div>
+              <div class="flex-1 space-y-1">
+                <div class="font-bold text-fuchsia-200 text-sm flex items-center space-x-1.5">
+                  <span>大屏模式 · 手柄化 10 英尺影院 UI</span>
+                  <span class="px-1.5 py-0.5 rounded bg-fuchsia-500/25 text-fuchsia-200 text-[10px]">v2.6 新增</span>
+                </div>
+                <p class="text-slate-300 text-xs leading-relaxed">
+                  按 <kbd class="px-1 bg-slate-900 rounded">Alt+B</kbd> 进入大屏模式：Xbox / PlayStation 手柄直接导航，A 进详情、B 返回（长按退出）、X 收藏、Y 操作面板、LB/RB 切栏目、Start 筛选。启动游戏后窗口自动最小化，游戏退出自动回到大屏并结算本次时长。
+                </p>
+              </div>
+            </div>
+
             <div class="p-3.5 rounded-2xl bg-cyan-950/30 border border-cyan-500/40 flex items-start space-x-3.5">
               <div class="flex flex-col space-y-1 items-center shrink-0">
                 <kbd class="px-2.5 py-1 rounded-lg bg-slate-900 text-cyan-300 font-mono font-bold text-xs border border-cyan-500/50 shadow">Alt+G</kbd>
@@ -3946,14 +4154,14 @@
         <!-- Top Immersive Bar -->
         <header class="h-14 border-b border-slate-800/90 bg-slate-900/90 px-4 flex items-center justify-between shrink-0 gap-3 z-10 shadow-lg">
           <!-- Left: Game Info & Quick Launch -->
-          <div class="flex items-center space-x-3 min-w-0 max-w-md lg:max-w-xl">
+          <div class="flex items-center space-x-3 min-w-0 flex-1 max-w-[46rem]">
             <div class="w-9 h-11 rounded-md bg-slate-800 overflow-hidden shrink-0 border border-slate-700/80 shadow">
               <img v-if="selectedGame.cover_url" :src="getThumbUrl(selectedGame.cover_url)" class="w-full h-full object-cover" />
               <div v-else class="w-full h-full flex items-center justify-center text-[10px] text-slate-500 font-bold">ACG</div>
             </div>
-            <div class="min-w-0">
+            <div class="min-w-0 flex-1">
               <div class="flex items-center space-x-2">
-                <h2 class="text-sm font-bold text-white truncate max-w-xs lg:max-w-md">
+                <h2 class="text-sm font-bold text-white truncate">
                   {{ selectedGame.display_title || selectedGame.folder_name }}
                 </h2>
                 <span v-if="selectedGame.rj_code" class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-indigo-950 border border-indigo-700/50 text-indigo-300 shrink-0">
@@ -3967,11 +4175,11 @@
               </p>
             </div>
 
-            <div class="hidden sm:flex items-center space-x-1.5 pl-2 border-l border-slate-800">
+            <div class="hidden sm:flex items-center space-x-1.5 pl-2 border-l border-slate-800 shrink-0">
               <button
                 @click="launchGameAction(selectedGame)"
                 :disabled="isGameRunning(selectedGame.id)"
-                class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-semibold flex items-center space-x-1 shadow-sm transition-all cursor-pointer"
+                class="shrink-0 whitespace-nowrap px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-semibold flex items-center space-x-1 shadow-sm transition-all cursor-pointer"
                 title="边看攻略边玩游戏"
               >
                 <i data-lucide="play" class="w-3.5 h-3.5 fill-white"></i>
@@ -3979,7 +4187,7 @@
               </button>
               <button
                 @click="openCompanionOverlayAction(selectedGame)"
-                class="px-2.5 py-1 rounded-lg bg-cyan-600/25 border border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white text-xs font-semibold flex items-center space-x-1 transition-all cursor-pointer"
+                class="shrink-0 whitespace-nowrap px-2.5 py-1 rounded-lg bg-cyan-600/25 border border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white text-xs font-semibold flex items-center space-x-1 transition-all cursor-pointer"
                 title="切换为悬浮置顶伴侣小窗 (Alt+G)"
               >
                 <i data-lucide="layers" class="w-3.5 h-3.5"></i>
@@ -3999,7 +4207,7 @@
           <div class="flex items-center space-x-2">
             <div class="bg-slate-950 border border-slate-800 p-0.5 rounded-xl flex items-center shadow-inner text-xs">
               <button
-                @click="notesFullscreenLayout = 'split'"
+                @click="setNotesLayout('split')"
                 :class="[
                   'px-3 py-1 rounded-lg font-medium transition-all flex items-center space-x-1 cursor-pointer',
                   notesFullscreenLayout === 'split' ? 'bg-indigo-600 text-white shadow font-semibold' : 'text-slate-400 hover:text-slate-200'
@@ -4009,7 +4217,7 @@
                 <span class="hidden md:inline">双栏联动</span>
               </button>
               <button
-                @click="notesFullscreenLayout = 'reader'"
+                @click="setNotesLayout('reader')"
                 :class="[
                   'px-3 py-1 rounded-lg font-medium transition-all flex items-center space-x-1 cursor-pointer',
                   notesFullscreenLayout === 'reader' ? 'bg-indigo-600 text-white shadow font-semibold' : 'text-slate-400 hover:text-slate-200'
@@ -4019,7 +4227,7 @@
                 <span class="hidden md:inline">纯净阅读</span>
               </button>
               <button
-                @click="notesFullscreenLayout = 'editor'"
+                @click="setNotesLayout('editor')"
                 :class="[
                   'px-3 py-1 rounded-lg font-medium transition-all flex items-center space-x-1 cursor-pointer',
                   notesFullscreenLayout === 'editor' ? 'bg-indigo-600 text-white shadow font-semibold' : 'text-slate-400 hover:text-slate-200'
@@ -4256,7 +4464,8 @@
 
   </div>
 
-  <script src="/static/app.js?v=2.4"></script>
+  <script src="/static/windowbar.js?v=2.6.3"></script>
+  <script src="/static/app.js?v=2.6.2"></script>
   <!-- Watchdog: Check if Vue mounted correctly -->
   <script>
     setTimeout(function() {
