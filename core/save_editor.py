@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-RPG Maker MV (.rpgsave LZString Base64) & MZ (.rmmzsave Zlib/Pako) Visual Save Editor for ACG Vault v2.4.
+RPG Maker MV (.rpgsave LZString Base64) & MZ (.rmmzsave Zlib/Pako) Visual Save Editor for ACG Vault v3.2.
 Provides:
 1. Pure-Python LZString Base64 Decompressor & Compressor (100% compatible with RPG Maker MV LZString.compressToBase64)
 2. Multi-mode Zlib / Pako / Raw Deflate Decompressor & Compressor (compatible with RPG Maker MZ StorageManager.jsonToZip)
@@ -36,44 +36,42 @@ def decompress_from_base64(input_str: str) -> str:
     """Decompresses an LZString Base64 encoded string (used by RPG Maker MV .rpgsave)."""
     if not input_str:
         return ""
-    s = "".join(ch for ch in input_str.strip() if ch in _BASE_REVERSE_DICT)
-    if not s:
+    rev = _BASE_REVERSE_DICT
+    vals = [rev[ch] for ch in input_str.strip() if ch in rev]
+    if not vals:
         return ""
-    length = len(s)
-
-    def get_next_value(index: int) -> int:
-        if index >= length:
-            return 0
-        return _BASE_REVERSE_DICT.get(s[index], 0)
-
-    return _lz_decompress(length, 32, get_next_value)
+    length = len(vals)
+    vals.append(0)
+    return _lz_decompress(length, 32, vals)
 
 
 def _lz_decompress(length: int, reset_value: int, get_next_value) -> str:
+    """Optimized LZString bitwise decompressor supporting both pre-mapped int list and callable getter."""
     dictionary: List[str] = [chr(0), chr(1), chr(2)]
     enlarge_in = 4
     dict_size = 4
     num_bits = 3
     result: List[str] = []
 
-    data_val = get_next_value(0)
+    is_seq = isinstance(get_next_value, list)
+    data_val = get_next_value[0] if is_seq else get_next_value(0)
     data_position = reset_value
     data_index = 1
 
     def read_bits(n_bits: int) -> int:
         nonlocal data_val, data_position, data_index
         bits = 0
-        maxpower = 1 << n_bits
-        power = 1
-        while power != maxpower:
-            resb = data_val & data_position
+        for shift in range(n_bits):
+            if data_val & data_position:
+                bits |= (1 << shift)
             data_position >>= 1
             if data_position == 0:
                 data_position = reset_value
-                data_val = get_next_value(data_index)
+                if is_seq:
+                    data_val = get_next_value[data_index] if data_index < length else 0
+                else:
+                    data_val = get_next_value(data_index) if data_index < length else 0
                 data_index += 1
-            bits |= (power if resb > 0 else 0)
-            power <<= 1
         return bits
 
     next_c = read_bits(2)
@@ -81,26 +79,39 @@ def _lz_decompress(length: int, reset_value: int, get_next_value) -> str:
         c = chr(read_bits(8))
     elif next_c == 1:
         c = chr(read_bits(16))
-    elif next_c == 2:
-        return ""
     else:
         return ""
 
     dictionary.append(c)
     w = c
     result.append(c)
+    dict_append = dictionary.append
+    res_append = result.append
 
     while True:
         if data_index > length:
             return ""
-        c_code = read_bits(num_bits)
+        # Inline bit loop for the hot path
+        c_code = 0
+        for shift in range(num_bits):
+            if data_val & data_position:
+                c_code |= (1 << shift)
+            data_position >>= 1
+            if data_position == 0:
+                data_position = reset_value
+                if is_seq:
+                    data_val = get_next_value[data_index] if data_index < length else 0
+                else:
+                    data_val = get_next_value(data_index) if data_index < length else 0
+                data_index += 1
+
         if c_code == 0:
-            dictionary.append(chr(read_bits(8)))
+            dict_append(chr(read_bits(8)))
             c_code = dict_size
             dict_size += 1
             enlarge_in -= 1
         elif c_code == 1:
-            dictionary.append(chr(read_bits(16)))
+            dict_append(chr(read_bits(16)))
             c_code = dict_size
             dict_size += 1
             enlarge_in -= 1
@@ -111,16 +122,15 @@ def _lz_decompress(length: int, reset_value: int, get_next_value) -> str:
             enlarge_in = 1 << num_bits
             num_bits += 1
 
-        if c_code < len(dictionary) and dictionary[c_code] is not None:
+        if c_code < len(dictionary):
             entry = dictionary[c_code]
+        elif c_code == dict_size:
+            entry = w + w[0]
         else:
-            if c_code == dict_size:
-                entry = w + w[0]
-            else:
-                return ""
+            return ""
 
-        result.append(entry)
-        dictionary.append(w + entry[0])
+        res_append(entry)
+        dict_append(w + entry[0])
         dict_size += 1
         enlarge_in -= 1
         w = entry
@@ -134,7 +144,7 @@ def compress_to_base64(uncompressed: str) -> str:
     """Compresses a string into LZString Base64 format (compatible with RPG Maker MV .rpgsave)."""
     if uncompressed is None:
         return ""
-    res = _lz_compress(uncompressed, 6, lambda a: _KEY_STR_BASE64[a])
+    res = _lz_compress(uncompressed, 6, _KEY_STR_BASE64.__getitem__)
     mod = len(res) % 4
     if mod == 1:
         return res + "==="
@@ -146,10 +156,11 @@ def compress_to_base64(uncompressed: str) -> str:
 
 
 def _lz_compress(uncompressed: str, bits_per_char: int, get_char_from_int) -> str:
+    """Optimized LZString bitwise compressor with inlined bit-packing loop."""
     if uncompressed is None:
         return ""
     context_dictionary: Dict[str, int] = {}
-    context_dictionary_to_create: Dict[str, bool] = {}
+    context_dictionary_to_create: Set[str] = set()
     context_w = ""
     context_enlarge_in = 2
     context_dict_size = 3
@@ -157,21 +168,20 @@ def _lz_compress(uncompressed: str, bits_per_char: int, get_char_from_int) -> st
     context_data: List[str] = []
     context_data_val = 0
     context_data_position = 0
-
-    def write_bit(value: int):
-        nonlocal context_data_val, context_data_position
-        context_data_val = (context_data_val << 1) | (value & 1)
-        if context_data_position == bits_per_char - 1:
-            context_data_position = 0
-            context_data.append(get_char_from_int(context_data_val))
-            context_data_val = 0
-        else:
-            context_data_position += 1
+    last_bit_pos = bits_per_char - 1
+    data_append = context_data.append
 
     def write_bits(n_bits: int, value: int):
+        nonlocal context_data_val, context_data_position
         val = value
         for _ in range(n_bits):
-            write_bit(val & 1)
+            context_data_val = (context_data_val << 1) | (val & 1)
+            if context_data_position == last_bit_pos:
+                context_data_position = 0
+                data_append(get_char_from_int(context_data_val))
+                context_data_val = 0
+            else:
+                context_data_position += 1
             val >>= 1
 
     def produce_w():
@@ -188,7 +198,7 @@ def _lz_compress(uncompressed: str, bits_per_char: int, get_char_from_int) -> st
             if context_enlarge_in == 0:
                 context_enlarge_in = 1 << context_num_bits
                 context_num_bits += 1
-            del context_dictionary_to_create[context_w]
+            context_dictionary_to_create.discard(context_w)
         else:
             write_bits(context_num_bits, context_dictionary[context_w])
         context_enlarge_in -= 1
@@ -200,7 +210,7 @@ def _lz_compress(uncompressed: str, bits_per_char: int, get_char_from_int) -> st
         if c not in context_dictionary:
             context_dictionary[c] = context_dict_size
             context_dict_size += 1
-            context_dictionary_to_create[c] = True
+            context_dictionary_to_create.add(c)
 
         wc = context_w + c
         if wc in context_dictionary:
@@ -217,8 +227,8 @@ def _lz_compress(uncompressed: str, bits_per_char: int, get_char_from_int) -> st
     write_bits(context_num_bits, 2)
     while True:
         context_data_val <<= 1
-        if context_data_position == bits_per_char - 1:
-            context_data.append(get_char_from_int(context_data_val))
+        if context_data_position == last_bit_pos:
+            data_append(get_char_from_int(context_data_val))
             break
         else:
             context_data_position += 1

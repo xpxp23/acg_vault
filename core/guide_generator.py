@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-RPG Maker MV/MZ Story & Branch AST Unpacker + AI Walkthrough Generator for ACG Vault v2.3.
+RPG Maker MV/MZ Story & Branch AST Unpacker + AI Walkthrough Generator for ACG Vault v3.2.
 - Automatically unpacks and inspects System.json, Actors.json, Items.json, CommonEvents.json, MapInfos.json, and Map*.json
 - Applies local translation dictionary (翻译文件.json / translation.json) so extracted Japanese switches/choices/dialogs are translated
 - Generates a structured, magazine-grade Markdown full-ending walkthrough into `walkthrough_md` (preserving `user_notes` for personal memos)
-- Provides real-time F9 Variable & Switch cheat table inspection for the In-Game Companion Overlay (Alt+G)
+- Provides mtime-cached real-time F9 Variable & Switch cheat table inspection for the In-Game Companion Overlay (Alt+G)
 """
 
 import os
 import re
+import copy
 import json
+import threading
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -31,6 +33,25 @@ ENDING_EVENT_PAT = re.compile(
     r"结局|ED|Ending|エンディング|エピローグ|Epilogue|プロローグ|Prologue|クリア|Clear|真エンド|バッド|ノーマル|回想|全開|敗北|ボス|最終|终章",
     re.I
 )
+PRIORITY_MAP_NAME_PAT = re.compile(
+    r"回想|结局|ED|Ending|終|终|最終|最终|ボス|Boss|城|館|馆|真|クリア|Clear|Gallery|ギャラリー|神殿|最深|王|室|エピローグ|Epilogue|路线|Route",
+    re.I
+)
+
+_F9_CHEATS_LOCK = threading.Lock()
+_F9_CHEATS_CACHE: Dict[int, Tuple[Tuple[float, float, str], Dict[str, Any]]] = {}
+
+_WALKTHROUGH_GUARD = threading.Lock()
+_WALKTHROUGH_GAME_LOCKS: Dict[int, threading.Lock] = {}
+
+
+def _get_walkthrough_lock(game_id: int) -> threading.Lock:
+    with _WALKTHROUGH_GUARD:
+        lock = _WALKTHROUGH_GAME_LOCKS.get(game_id)
+        if lock is None:
+            lock = threading.Lock()
+            _WALKTHROUGH_GAME_LOCKS[game_id] = lock
+        return lock
 
 
 def _find_data_dir(folder_path: str) -> Optional[Path]:
@@ -40,11 +61,14 @@ def _find_data_dir(folder_path: str) -> Optional[Path]:
     for cand in [p / "data", p / "www" / "data", p / "contents" / "data", p / "contents" / "www" / "data"]:
         if cand.exists() and (cand / "System.json").exists():
             return cand
-    for sub in p.iterdir():
-        if sub.is_dir() and not sub.name.startswith("."):
-            for cand in [sub / "data", sub / "www" / "data"]:
-                if cand.exists() and (cand / "System.json").exists():
-                    return cand
+    try:
+        for sub in p.iterdir():
+            if sub.is_dir() and not sub.name.startswith("."):
+                for cand in [sub / "data", sub / "www" / "data"]:
+                    if cand.exists() and (cand / "System.json").exists():
+                        return cand
+    except Exception:
+        pass
     return None
 
 
@@ -61,7 +85,7 @@ def _load_json_safe(path: Path) -> Any:
 def extract_f9_debug_cheats(game_id: int) -> Dict[str, Any]:
     """
     Extracts F9 variables and switches table from RPG Maker System.json (or parses from walkthrough_md)
-    for instant lookup inside the In-Game Companion Overlay (Alt+G).
+    for instant lookup inside the In-Game Companion Overlay (Alt+G), with mtime-based memory caching.
     """
     game = get_game_by_id(game_id)
     if not game:
@@ -70,9 +94,31 @@ def extract_f9_debug_cheats(game_id: int) -> Dict[str, Any]:
     folder_path = game.get("folder_path") or ""
     data_dir = _find_data_dir(folder_path) if folder_path and os.path.exists(folder_path) else None
 
+    sys_mtime = 0.0
+    trs_mtime = 0.0
+    trs_path: Optional[str] = None
+    if data_dir:
+        sys_file = data_dir / "System.json"
+        if sys_file.exists():
+            try:
+                sys_mtime = sys_file.stat().st_mtime
+            except Exception:
+                pass
+        trs_path = find_translation_dict_in_folder(folder_path)
+        if trs_path and os.path.exists(trs_path):
+            try:
+                trs_mtime = os.path.getmtime(trs_path)
+            except Exception:
+                pass
+
+    cache_sig = (sys_mtime, trs_mtime, str(game.get("updated_at") or ""))
+    with _F9_CHEATS_LOCK:
+        cached_entry = _F9_CHEATS_CACHE.get(game_id)
+        if cached_entry and cached_entry[0] == cache_sig:
+            return copy.deepcopy(cached_entry[1])
+
     if data_dir:
         trans_dict: Dict[str, str] = {}
-        trs_path = find_translation_dict_in_folder(folder_path)
         if trs_path and os.path.exists(trs_path):
             try:
                 trans_dict = MZPatcher.load_dict(trs_path)
@@ -120,12 +166,17 @@ def extract_f9_debug_cheats(game_id: int) -> Dict[str, Any]:
 
         vars_list.sort(key=lambda x: (not x["is_key"], x["id"]))
         sw_list.sort(key=lambda x: (not x["is_key"], x["id"]))
-        return {
+        result = {
             "supported": True,
             "source": "system_json",
             "variables": vars_list[:80],
             "switches": sw_list[:80]
         }
+        with _F9_CHEATS_LOCK:
+            if len(_F9_CHEATS_CACHE) > 256:
+                _F9_CHEATS_CACHE.clear()
+            _F9_CHEATS_CACHE[game_id] = (cache_sig, copy.deepcopy(result))
+        return result
 
     # Fallback: parse Var # / Sw # tables from walkthrough_md if game folder isn't RPG Maker or not present
     wt_text = game.get("walkthrough_md") or ""
@@ -138,12 +189,52 @@ def extract_f9_debug_cheats(game_id: int) -> Dict[str, Any]:
         sid = int(m.group(1))
         sw_fallback.append({"id": sid, "code": f"Sw #{sid:04d}", "name": m.group(2).strip(), "raw_name": "", "is_key": True})
 
-    return {
+    result = {
         "supported": bool(vars_fallback or sw_fallback),
         "source": "walkthrough_md",
         "variables": vars_fallback,
         "switches": sw_fallback
     }
+    with _F9_CHEATS_LOCK:
+        if len(_F9_CHEATS_CACHE) > 256:
+            _F9_CHEATS_CACHE.clear()
+        _F9_CHEATS_CACHE[game_id] = (cache_sig, copy.deepcopy(result))
+    return result
+
+
+def _select_priority_map_files(data_dir: Path, map_names: Dict[int, str], raw_map_names: Dict[int, str], max_maps: int = 45) -> List[Tuple[int, Path]]:
+    """
+    Prioritizes RPG Maker Map*.json files by combining MapInfos.json keywords
+    (回想/结局/終/ボス/Boss/城/館/真 etc.) and highest-ID late-game/epilogue maps
+    instead of blindly slicing the first 40 alphabetical Map*.json files.
+    """
+    all_maps: List[Tuple[int, Path]] = []
+    for mf in data_dir.glob("Map*.json"):
+        if mf.name.lower() == "mapinfos.json":
+            continue
+        m_match = re.match(r"^Map(\d+)\.json$", mf.name, re.I)
+        if not m_match:
+            continue
+        all_maps.append((int(m_match.group(1)), mf))
+
+    if not all_maps:
+        return []
+
+    all_maps.sort(key=lambda x: x[0])
+    top_tail_ids = {mid for mid, _ in all_maps[-15:]}
+
+    def _map_sort_key(item: Tuple[int, Path]) -> Tuple[int, int]:
+        mid, _ = item
+        t_name = map_names.get(mid, "")
+        r_name = raw_map_names.get(mid, "")
+        if PRIORITY_MAP_NAME_PAT.search(t_name) or PRIORITY_MAP_NAME_PAT.search(r_name):
+            return (0, mid)
+        if mid in top_tail_ids:
+            return (1, -mid)
+        return (2, mid)
+
+    prioritized = sorted(all_maps, key=_map_sort_key)[:max_maps]
+    return prioritized
 
 
 def inspect_rpgmaker_project(folder_path: str) -> Dict[str, Any]:
@@ -260,7 +351,7 @@ def inspect_rpgmaker_project(folder_path: str) -> Dict[str, Any]:
                     choices.append(" / ".join(opts))
             elif code == 122 and len(params) >= 5:
                 v_id = params[0]
-                if v_id in var_map and any(KEY_VAR_PAT.search(var_map[v_id]) for _ in [1]):
+                if v_id in var_map and KEY_VAR_PAT.search(var_map[v_id]):
                     op_map = {0: "=", 1: "+=", 2: "-="}
                     if params[2] in op_map and params[3] == 0:
                         var_changes.append(f"{var_map[v_id]} {op_map[params[2]]} {params[4]}")
@@ -293,20 +384,18 @@ def inspect_rpgmaker_project(folder_path: str) -> Dict[str, Any]:
             important_events.append(parsed)
 
     map_names: Dict[int, str] = {}
+    raw_map_names: Dict[int, str] = {}
     if isinstance(mapinfos_data, list):
         for m in mapinfos_data:
             if isinstance(m, dict) and m.get("id") and m.get("name"):
-                map_names[int(m["id"])] = tr(str(m["name"]))
+                mid = int(m["id"])
+                raw_n = str(m["name"]).strip()
+                raw_map_names[mid] = raw_n
+                map_names[mid] = tr(raw_n)
 
-    map_files = sorted(data_dir.glob("Map*.json"))[:40]
+    selected_maps = _select_priority_map_files(data_dir, map_names, raw_map_names, max_maps=45)
     map_branches = []
-    for mf in map_files:
-        if mf.name.lower() == "mapinfos.json":
-            continue
-        m_match = re.match(r"Map(\d+)\.json", mf.name, re.I)
-        if not m_match:
-            continue
-        mid = int(m_match.group(1))
+    for mid, mf in selected_maps:
         m_title = map_names.get(mid, mf.stem)
         m_json = _load_json_safe(mf)
         if not isinstance(m_json, dict):
@@ -355,7 +444,7 @@ def _compile_static_markdown_guide(game: Dict[str, Any], blueprint: Dict[str, An
         f"# 《{title}》全流程分支、核心数值与全结局攻略",
         "",
         f"> **作品信息**：{f'`{rj}` · ' if rj else ''}开发商：**{circle}** · 驱动引擎：**{engine}**",
-        "> **攻略说明**：本攻略由 **ACG Vault v2.3 工程解包引擎** 自动逆向解析游戏内部 `System.json`、`CommonEvents.json` 与地图事件脚本生成，包含精确的内部开关/变量 ID 与分支触发条件。",
+        "> **攻略说明**：本攻略由 **ACG Vault 工程解包引擎** 自动逆向解析游戏内部 `System.json`、`CommonEvents.json` 与地图事件脚本生成，包含精确的内部开关/变量 ID 与分支触发条件。",
         "",
         "## 一、 核心角色与初期设定"
     ]
@@ -457,104 +546,111 @@ def generate_game_walkthrough(game_id: int, use_llm: bool = True, overwrite: boo
     """
     Generates a comprehensive Markdown walkthrough for game_id into `walkthrough_md`
     (keeping `user_notes` completely untouched for the user's personal clearance notes).
+    Uses a per-game mutex lock to prevent concurrent duplicate appends.
     """
-    game = get_game_by_id(game_id)
-    if not game:
-        return {"success": False, "message": "游戏不存在"}
+    game_lock = _get_walkthrough_lock(game_id)
+    with game_lock:
+        game = get_game_by_id(game_id)
+        if not game:
+            return {"success": False, "message": "游戏不存在"}
 
-    folder_path = game.get("folder_path") or ""
-    blueprint = inspect_rpgmaker_project(folder_path) if folder_path and os.path.exists(folder_path) else {"supported": False}
+        folder_path = game.get("folder_path") or ""
+        blueprint = inspect_rpgmaker_project(folder_path) if folder_path and os.path.exists(folder_path) else {"supported": False}
 
-    cfg = load_config()
-    llm_ready = bool(use_llm and cfg.get("llm_enabled") and (cfg.get("llm_api_key") or "127.0.0.1" in (cfg.get("llm_api_base") or "") or "localhost" in (cfg.get("llm_api_base") or "")))
+        cfg = load_config()
+        llm_ready = bool(use_llm and cfg.get("llm_enabled") and (cfg.get("llm_api_key") or "127.0.0.1" in (cfg.get("llm_api_base") or "") or "localhost" in (cfg.get("llm_api_base") or "")))
 
-    generated_md = ""
-    used_engine = "ast_compiler"
+        generated_md = ""
+        used_engine = "ast_compiler"
 
-    if llm_ready:
-        title = game.get("display_title") or game.get("clean_title") or game.get("folder_name")
-        compact_bp = {
-            "title": title,
-            "original_title": game.get("original_title"),
-            "circle": game.get("circle_name"),
-            "engine": game.get("engine_type"),
-            "tags": game.get("tags"),
-            "synopsis": (game.get("synopsis") or "")[:600],
-            "unpacked_data": {
-                "actors": blueprint.get("actors", [])[:8],
-                "key_variables": blueprint.get("key_variables", [])[:20],
-                "key_switches": blueprint.get("key_switches", [])[:20],
-                "key_items": blueprint.get("key_items", [])[:15],
-                "important_events": blueprint.get("important_common_events", [])[:18],
-                "map_branches": blueprint.get("map_branches", [])[:15]
-            } if blueprint.get("supported") else "Non-RPGMaker engine"
-        }
-        prompt = (
-            f"请为游戏《{title}》撰写一份结构严谨、排版精美的杂志级 Markdown 全流程与全结局攻略。\n"
-            "以下是我们从该游戏工程文件（System.json / CommonEvents.json / Map*.json）中解包提取出的真实内部开关、变量、事件分支与角色数据：\n"
-            f"```json\n{json.dumps(compact_bp, ensure_ascii=False, indent=2)}\n```\n"
-            "要求：\n"
-            "1. 必须包含：一、核心机制与角色设定；二、核心变量与开关表（附带真实编号 Var/Sw ID 及 F8/F9 修改提示）；三、主线流程与关键分支选项表（Markdown 表格）；四、全结局达成条件与全 CG 收集 Checklist（使用 `- [ ]` 交互式复选框）。\n"
-            "2. 充分利用解包数据中的真实变量名、开关名、公共事件名和地图名，切勿编造虚假数值。"
-        )
-        llm_md = call_llm_chat(
-            messages=[
-                {"role": "system", "content": "你是一位殿堂级 ACG 游戏攻略作者与逆向工程分析师，擅长编写条理清晰、含精确开关变量与分支表格的 Markdown 攻略。"},
-                {"role": "user", "content": prompt}
-            ],
-            cfg=cfg,
-            temperature=0.3,
-            max_tokens=2800,
-            timeout=35.0
-        )
-        if llm_md and len(llm_md.strip()) > 200:
-            generated_md = llm_md.strip()
-            used_engine = "llm_plus_ast" if blueprint.get("supported") else "llm"
-
-    if not generated_md:
-        if blueprint.get("supported"):
-            generated_md = _compile_static_markdown_guide(game, blueprint)
-            used_engine = "ast_compiler"
-        else:
+        if llm_ready:
             title = game.get("display_title") or game.get("clean_title") or game.get("folder_name")
-            tags_str = " / ".join(game.get("tags") or ["ACG", game.get("engine_type") or "PC"])
-            generated_md = (
-                f"# 《{title}》全流程全结局攻略与收集指南\n\n"
-                f"> **社团/开发商**：{game.get('circle_name') or '未知'} · **引擎**：{game.get('engine_type') or 'PC'} · **标签**：{tags_str}\n\n"
-                f"## 一、 故事背景与核心玩法\n{game.get('synopsis') or '暂无简介，可在游玩过程中补充关键机制说明。'}\n\n"
-                "## 二、 关键路线分支与选项表\n"
-                "| 章节 / 阶段 | 触发地点 / 场景 | 关键行动与选项 | 结果 / 解锁内容 |\n"
-                "| :--- | :--- | :--- | :--- |\n"
-                "| 序章 | 初始场景 | 推进基础剧情并保存初始存档 | 开启主线分支 |\n"
-                "| 中盘 | 核心探索区 | 完成关键角色互动事件 | 提升好感度 / 推进路线 |\n"
-                "| 终章 | 最终决战 / 分支点 | 根据角色数值满足对应阈值 | 进入对应结局 |\n\n"
-                "## 三、 全结局与全 CG 收集 Checklist\n"
-                "- [ ] **True End (真结局 / 完美结局)**：满足全部核心好感或主线条件\n"
-                "- [ ] **Normal End (普通结局)**：常规通关路线\n"
-                "- [ ] **Bad / Sub End (特殊分支结局)**：特定条件或战败分支触发\n"
-                "- [ ] **全 CG 回想屋 100% 解锁**：可在详情页使用【导入全CG存档】或游戏内回想全开开关\n"
+            compact_bp = {
+                "title": title,
+                "original_title": game.get("original_title"),
+                "circle": game.get("circle_name"),
+                "engine": game.get("engine_type"),
+                "tags": game.get("tags"),
+                "synopsis": (game.get("synopsis") or "")[:600],
+                "unpacked_data": {
+                    "actors": blueprint.get("actors", [])[:8],
+                    "key_variables": blueprint.get("key_variables", [])[:20],
+                    "key_switches": blueprint.get("key_switches", [])[:20],
+                    "key_items": blueprint.get("key_items", [])[:15],
+                    "important_events": blueprint.get("important_common_events", [])[:18],
+                    "map_branches": blueprint.get("map_branches", [])[:15]
+                } if blueprint.get("supported") else "Non-RPGMaker engine"
+            }
+            prompt = (
+                f"请为游戏《{title}》撰写一份结构严谨、排版精美的杂志级 Markdown 全流程与全结局攻略。\n"
+                "以下是我们从该游戏工程文件（System.json / CommonEvents.json / Map*.json）中解包提取出的真实内部开关、变量、事件分支与角色数据：\n"
+                f"```json\n{json.dumps(compact_bp, ensure_ascii=False, indent=2)}\n```\n"
+                "要求：\n"
+                "1. 必须包含：一、核心机制与角色设定；二、核心变量与开关表（附带真实编号 Var/Sw ID 及 F8/F9 修改提示）；三、主线流程与关键分支选项表（Markdown 表格）；四、全结局达成条件与全 CG 收集 Checklist（使用 `- [ ]` 交互式复选框）。\n"
+                "2. 充分利用解包数据中的真实变量名、开关名、公共事件名和地图名，切勿编造虚假数值。"
             )
-            used_engine = "smart_template"
+            llm_md = call_llm_chat(
+                messages=[
+                    {"role": "system", "content": "你是一位殿堂级 ACG 游戏攻略作者与逆向工程分析师，擅长编写条理清晰、含精确开关变量与分支表格的 Markdown 攻略。"},
+                    {"role": "user", "content": prompt}
+                ],
+                cfg=cfg,
+                temperature=0.3,
+                max_tokens=2800,
+                timeout=35.0
+            )
+            if llm_md and len(llm_md.strip()) > 200:
+                generated_md = llm_md.strip()
+                used_engine = "llm_plus_ast" if blueprint.get("supported") else "llm"
 
-    existing_wt = (game.get("walkthrough_md") or "").strip()
-    if existing_wt and not overwrite:
-        final_walkthrough = f"{existing_wt}\n\n---\n\n{generated_md}"
-    else:
-        final_walkthrough = generated_md
+        if not generated_md:
+            if blueprint.get("supported"):
+                generated_md = _compile_static_markdown_guide(game, blueprint)
+                used_engine = "ast_compiler"
+            else:
+                title = game.get("display_title") or game.get("clean_title") or game.get("folder_name")
+                tags_str = " / ".join(game.get("tags") or ["ACG", game.get("engine_type") or "PC"])
+                generated_md = (
+                    f"# 《{title}》全流程全结局攻略与收集指南\n\n"
+                    f"> **社团/开发商**：{game.get('circle_name') or '未知'} · **引擎**：{game.get('engine_type') or 'PC'} · **标签**：{tags_str}\n\n"
+                    f"## 一、 故事背景与核心玩法\n{game.get('synopsis') or '暂无简介，可在游玩过程中补充关键机制说明。'}\n\n"
+                    "## 二、 关键路线分支与选项表\n"
+                    "| 章节 / 阶段 | 触发地点 / 场景 | 关键行动与选项 | 结果 / 解锁内容 |\n"
+                    "| :--- | :--- | :--- | :--- |\n"
+                    "| 序章 | 初始场景 | 推进基础剧情并保存初始存档 | 开启主线分支 |\n"
+                    "| 中盘 | 核心探索区 | 完成关键角色互动事件 | 提升好感度 / 推进路线 |\n"
+                    "| 终章 | 最终决战 / 分支点 | 根据角色数值满足对应阈值 | 进入对应结局 |\n\n"
+                    "## 三、 全结局与全 CG 收集 Checklist\n"
+                    "- [ ] **True End (真结局 / 完美结局)**：满足全部核心好感或主线条件\n"
+                    "- [ ] **Normal End (普通结局)**：常规通关路线\n"
+                    "- [ ] **Bad / Sub End (特殊分支结局)**：特定条件或战败分支触发\n"
+                    "- [ ] **全 CG 回想屋 100% 解锁**：可在详情页使用【导入全CG存档】或游戏内回想全开开关\n"
+                )
+                used_engine = "smart_template"
 
-    update_game_user_state(game_id=game_id, walkthrough_md=final_walkthrough)
+        fresh_game = get_game_by_id(game_id) or game
+        existing_wt = (fresh_game.get("walkthrough_md") or "").strip()
+        if existing_wt and not overwrite:
+            if generated_md in existing_wt:
+                final_walkthrough = existing_wt
+            else:
+                final_walkthrough = f"{existing_wt}\n\n---\n\n{generated_md}"
+        else:
+            final_walkthrough = generated_md
 
-    engine_labels = {
-        "llm_plus_ast": "AI 大模型 + 工程解包 AST 联合生成",
-        "llm": "AI 大模型智能生成",
-        "ast_compiler": "RPG Maker 工程解包 AST 静态编译",
-        "smart_template": "元数据智能结构化生成"
-    }
-    return {
-        "success": True,
-        "engine_used": used_engine,
-        "unpacked_supported": bool(blueprint.get("supported")),
-        "walkthrough_md": final_walkthrough,
-        "user_notes": game.get("user_notes") or "",
-        "message": f"全结局攻略生成成功（{engine_labels.get(used_engine, used_engine)}，共 {len(generated_md)} 字符）！"
-    }
+        update_game_user_state(game_id=game_id, walkthrough_md=final_walkthrough)
+
+        engine_labels = {
+            "llm_plus_ast": "AI 大模型 + 工程解包 AST 联合生成",
+            "llm": "AI 大模型智能生成",
+            "ast_compiler": "RPG Maker 工程解包 AST 静态编译",
+            "smart_template": "元数据智能结构化生成"
+        }
+        return {
+            "success": True,
+            "engine_used": used_engine,
+            "unpacked_supported": bool(blueprint.get("supported")),
+            "walkthrough_md": final_walkthrough,
+            "user_notes": fresh_game.get("user_notes") or "",
+            "message": f"全结局攻略生成成功（{engine_labels.get(used_engine, used_engine)}，共 {len(generated_md)} 字符）！"
+        }

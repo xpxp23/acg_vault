@@ -4,27 +4,32 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <title>ACG Vault · 大屏模式</title>
+  <title>ACG Vault v3.2.0 · 大屏模式</title>
   <style>[v-cloak]{display:none !important;}</style>
-  <link rel="stylesheet" href="/static/bigscreen.css?v=2.6">
+  <link rel="stylesheet" href="/static/style.css?v=3.2">
+  <link rel="stylesheet" href="/static/bigscreen.css?v=3.2">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
       try {
         var mode = 'auto';
         var raw = localStorage.getItem('acg_theme');
-        if (raw) { var o = JSON.parse(raw); if (o && o.mode) mode = o.mode; if (o && o.accent) document.documentElement.dataset.accent = o.accent; }
+        if (raw) {
+          var o = JSON.parse(raw);
+          if (o && o.mode) mode = o.mode;
+          if (o && o.accent) document.documentElement.dataset.accent = o.accent;
+        }
         var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
         document.documentElement.dataset.theme = (mode === 'light' || mode === 'dark') ? mode : (dark ? 'dark' : 'light');
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.0">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.1">
-  <script src="/static/theme.js?v=3.0"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.2">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.2">
+  <script src="/static/theme.js?v=3.2"></script>
 </head>
 <body>
-<div id="app" v-cloak>
+<div id="app" class="bs-root" v-cloak>
 
   <!-- ============================ ambient backdrop ============================ -->
   <div class="bs-backdrop">
@@ -46,8 +51,8 @@
       <div class="bs-brand">
         <div class="bs-mark"><bs-icon name="gamepad" size="22"></bs-icon></div>
         <div class="bs-brand-text">
-          <h1>ACG VAULT</h1>
-          <p>BIG SCREEN · {{ games.length }} TITLES</p>
+          <h1 class="brand-title">ACG VAULT</h1>
+          <p>BIG SCREEN v3.2.0 · {{ games.length }} TITLES</p>
         </div>
       </div>
 
@@ -243,7 +248,7 @@
           <span class="chip" v-for="t in parseTags(detailGame)" :key="'dt-' + t">{{ t }}</span>
         </div>
 
-        <div class="detail-text" ref="detailText">
+        <div class="detail-text" ref="detailTextEl">
           <p v-if="detailLoading" style="color:#64748b">正在读取完整资料…</p>
           <template v-else>
             <p>{{ detailGame.synopsis || '暂无简介。' }}</p>
@@ -331,16 +336,16 @@
         <span class="key b">{{ pad.cancel }}</span> 返回
       </span>
     </header>
-    <div class="reader-body" ref="readerBody" v-html="reader.html"></div>
+    <div class="reader-body notes-markdown-body" ref="readerBody" v-html="reader.html"></div>
   </div>
 
   <!-- ================================= toast ================================ -->
   <div class="bs-toast" v-if="toast" :class="toast.type">{{ toast.text }}</div>
 </div>
 
-<script src="/static/vendor/vue.global.prod.js?v=2.6"></script>
-<script src="/static/vendor/marked.min.js?v=2.6"></script>
-<script src="/static/windowbar.js?v=2.6.3"></script>
-<script src="/static/bigscreen.js?v=2.6.3"></script>
+<script src="/static/vendor/vue.global.prod.js?v=3.2"></script>
+<script src="/static/vendor/marked.min.js?v=3.2"></script>
+<script src="/static/windowbar.js?v=3.2"></script>
+<script src="/static/bigscreen.js?v=3.2"></script>
 </body>
 </html>

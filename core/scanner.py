@@ -40,6 +40,10 @@ SKIP_WALK_DIRS = {
     "data_original_backup", "_archive_duplicates", "_save_backups"
 }
 
+SKIP_MTIME_DIRS = {
+    "save", "saves", "savedata", "krkrsave", "userdata", "logs", "crashes", "temp", "cache"
+}
+
 KNOWN_TRS_FILENAMES = {
     "翻译文件.json", "translation.json", "trs.json", "zh_cn.json", "chs.json",
     "customtrs.json", "autotrans.json", "manualtransfile.json"
@@ -184,15 +188,47 @@ def extract_rj_code(text: str) -> Optional[str]:
     return None
 
 
+def compute_folder_modified_mtime(folder_path: str) -> float:
+    """
+    Computes a unified folder modification timestamp across incremental check and DB storage:
+    takes the maximum st_mtime of the top-level directory itself and its immediate level-1
+    subdirectories/files (excluding volatile save/log/cache directories).
+    This prevents deep level-2 save file updates from invalidating 99% of incremental scan cache.
+    """
+    latest = 0.0
+    try:
+        st = os.stat(folder_path)
+        latest = st.st_mtime
+    except Exception:
+        return latest
+
+    try:
+        with os.scandir(folder_path) as it:
+            for child in it:
+                name_low = child.name.lower()
+                if name_low in SKIP_MTIME_DIRS or name_low.startswith("."):
+                    continue
+                try:
+                    cst = child.stat()
+                    if cst.st_mtime > latest:
+                        latest = cst.st_mtime
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return latest
+
+
 def fast_inspect_folder(folder_path: str, max_depth: int = 2, max_entries: int = 8000) -> Tuple[List[str], str, int, float, float, bool]:
     """
     Recursively inspects folder up to max_depth to find executables, engine, size, mtime, creation ctime, and translation presence.
     Includes entry budget protection so unpacked games with tens of thousands of tiny files never stall disk I/O.
+    Uses unified compute_folder_modified_mtime so incremental scan cache comparisons always match DB values.
     """
     exes: List[str] = []
     engine = "Unknown"
     total_size = 0
-    latest_mtime = 0.0
+    latest_mtime = compute_folder_modified_mtime(folder_path)
     created_ctime = 0.0
     has_trs = False
     scanned_count = 0
@@ -200,12 +236,11 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2, max_entries: int =
     try:
         root_stat = os.stat(folder_path)
         created_ctime = root_stat.st_ctime
-        latest_mtime = root_stat.st_mtime
     except Exception:
         pass
 
     def scan_level(p: str, depth: int):
-        nonlocal engine, total_size, latest_mtime, has_trs, scanned_count
+        nonlocal engine, total_size, has_trs, scanned_count
         if scanned_count >= max_entries:
             return
         try:
@@ -217,8 +252,6 @@ def fast_inspect_folder(folder_path: str, max_depth: int = 2, max_entries: int =
                     try:
                         st = entry.stat()
                         total_size += st.st_size
-                        if st.st_mtime > latest_mtime:
-                            latest_mtime = st.st_mtime
 
                         if entry.is_file():
                             name_low = entry.name.lower()
@@ -320,7 +353,7 @@ def scan_directory(
     dir_path_str: str,
     progress_callback: Optional[Callable[[int, int, str], None]] = None
 ) -> List[Dict[str, Any]]:
-    """Scans a root directory (e.g. E:\\ACG) and returns parsed game items with optional incremental mtime acceleration."""
+    """Scans a root directory (e.g. E:\\ACG) and returns parsed game items with unified incremental mtime acceleration."""
     results: List[Dict[str, Any]] = []
     root = Path(dir_path_str)
     if not root.exists() or not root.is_dir():
@@ -360,15 +393,18 @@ def scan_directory(
             except Exception:
                 pass
 
-        # Fast incremental check: if top-level mtime matches DB cache and exe still exists, skip deep traversal
+        # Fast incremental check: unified mtime signature (top-level + level-1 entries) matches DB cache
         cached_item = existing_cache.get(norm_p)
         if cached_item and cached_item.get("folder_size_bytes", 0) > 0:
             try:
-                st = entry.stat()
-                top_mtime_str = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+                sig_mtime = compute_folder_modified_mtime(folder_path)
+                sig_mtime_str = datetime.fromtimestamp(sig_mtime).strftime("%Y-%m-%d %H:%M") if sig_mtime > 0 else ""
+                top_st_mtime = entry.stat().st_mtime
+                top_mtime_str = datetime.fromtimestamp(top_st_mtime).strftime("%Y-%m-%d %H:%M")
+                cached_mtime_str = cached_item.get("folder_modified_at") or ""
                 cached_exe = cached_item.get("executable_path") or ""
                 if (
-                    top_mtime_str == cached_item.get("folder_modified_at")
+                    cached_mtime_str in (sig_mtime_str, top_mtime_str)
                     and (not cached_exe or os.path.exists(cached_exe))
                 ):
                     results.append({
@@ -381,7 +417,7 @@ def scan_directory(
                         "executable_path": cached_exe,
                         "folder_size_bytes": cached_item.get("folder_size_bytes", 0),
                         "folder_size_str": cached_item.get("folder_size_str") or format_size(cached_item.get("folder_size_bytes", 0)),
-                        "folder_modified_at": cached_item.get("folder_modified_at") or top_mtime_str,
+                        "folder_modified_at": sig_mtime_str or cached_mtime_str,
                         "downloaded_at": cached_item.get("downloaded_at") or "",
                         "is_tool": int(cached_item.get("is_tool", 0)),
                         "has_translation": int(cached_item.get("has_translation", 0)),

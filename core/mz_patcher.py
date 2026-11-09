@@ -6,6 +6,7 @@ and supports one-click restoration (unbake) from original backup.
 """
 
 import os
+import re
 import sys
 import json
 import shutil
@@ -257,6 +258,48 @@ RUNTIME_PLUGIN_CODE = """//=====================================================
 """
 
 
+def _strip_trailing_js_comments_and_comma(prefix: str) -> str:
+    """
+    Strips trailing whitespace, single-line // comments, block /* */ comments, and trailing commas
+    before the closing `];` of plugins.js so injected plugin entries never have their leading comma
+    swallowed by a `//` comment or doubled into `,,`.
+    """
+    lines = prefix.splitlines()
+    while lines:
+        last_line = lines[-1].strip()
+        if not last_line or last_line.startswith("//"):
+            lines.pop()
+            continue
+        # Strip inline // comment after `}` or `},` or `[` at the end of the line
+        m_inline = re.match(r"^(.*?[\}\],])\s*//.*$", lines[-1])
+        if m_inline:
+            lines[-1] = m_inline.group(1)
+        break
+    cleaned = "\n".join(lines).rstrip()
+    # Strip trailing block comments /* ... */
+    while cleaned.endswith("*/"):
+        b_start = cleaned.rfind("/*")
+        if b_start == -1:
+            break
+        cleaned = cleaned[:b_start].rstrip()
+    if cleaned.endswith(","):
+        cleaned = cleaned[:-1].rstrip()
+    return cleaned
+
+
+def inject_entry_into_plugins_js(code: str, plugin_name: str, description: str) -> str:
+    """Safely injects a plugin entry into RPG Maker MV/MZ plugins.js content."""
+    if f'"name":"{plugin_name}"' in code or f'"name": "{plugin_name}"' in code:
+        return code
+    idx = code.rfind("];")
+    if idx == -1:
+        return code
+    prefix_clean = _strip_trailing_js_comments_and_comma(code[:idx])
+    sep = "\n" if prefix_clean.endswith("[") else ",\n"
+    entry = f'{sep}{{"name":"{plugin_name}","status":true,"description":"{description}","parameters":{{}}}}\n];'
+    return prefix_clean + entry + code[idx + 2:]
+
+
 class MZPatcher:
     @staticmethod
     def find_game_root(folder_path: str) -> Optional[str]:
@@ -451,15 +494,12 @@ class MZPatcher:
                 shutil.copy2(plugins_file, plugins_bak)
             with open(plugins_file, 'r', encoding='utf-8-sig') as f:
                 code = f.read()
-            if '"name":"translation_patch"' not in code:
-                idx = code.rfind('];')
-                if idx != -1:
-                    prefix_check = code[:idx].rstrip()
-                    comma = '' if prefix_check.endswith('[') else ','
-                    entry = f'{comma}\n{{"name":"translation_patch","status":true,"description":"Universal Runtime Translation Patch","parameters":{{}}}}\n];'
-                    new_code = code[:idx] + entry
-                    with open(plugins_file, 'w', encoding='utf-8') as f:
-                        f.write(new_code)
+            new_code = inject_entry_into_plugins_js(
+                code, "translation_patch", "Universal Runtime Translation Patch"
+            )
+            if new_code != code:
+                with open(plugins_file, 'w', encoding='utf-8') as f:
+                    f.write(new_code)
 
         return {
             "success": True,
@@ -468,7 +508,7 @@ class MZPatcher:
             "message": f"静态固化汉化成功！已将 {stats['count']} 处文本固化到游戏本体并安装 v2.4 高速缓存动态补丁。"
         }
 
-    def unbake(self, game_folder: str) -> Dict[str, Any]:
+    def unbake(self, game_folder: str, keep_cg_unlocker: Optional[bool] = None) -> Dict[str, Any]:
         game_root = self.find_game_root(game_folder)
         if not game_root:
             return {"success": False, "message": "未找到 RPG Maker MV/MZ 的游戏根目录"}
@@ -506,10 +546,35 @@ class MZPatcher:
 
             plugins_file = os.path.join(game_root, 'js', 'plugins.js')
             plugins_bak = plugins_file + '.original_bak'
+            cg_unlocker_js = os.path.join(game_root, 'js', 'plugins', 'acg_vault_cg_unlocker.js')
+
+            preserve_cg = bool(keep_cg_unlocker) or os.path.exists(cg_unlocker_js)
+            if not preserve_cg and os.path.exists(plugins_file):
+                try:
+                    with open(plugins_file, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                        if '"acg_vault_cg_unlocker"' in f.read():
+                            preserve_cg = True
+                except Exception:
+                    pass
+
             if os.path.exists(plugins_bak):
                 shutil.copy2(plugins_bak, plugins_file)
                 try:
                     os.remove(plugins_bak)
+                except Exception:
+                    pass
+
+            # Re-preserve acg_vault_cg_unlocker in plugins.js if the game is still CG-unlocked
+            if preserve_cg and os.path.exists(plugins_file):
+                try:
+                    with open(plugins_file, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                        restored_code = f.read()
+                    updated_code = inject_entry_into_plugins_js(
+                        restored_code, "acg_vault_cg_unlocker", "ACG Vault Full CG Unlocker"
+                    )
+                    if updated_code != restored_code:
+                        with open(plugins_file, 'w', encoding='utf-8') as f:
+                            f.write(updated_code)
                 except Exception:
                     pass
 
@@ -528,7 +593,20 @@ class MZPatcher:
             return {"success": False, "message": f"还原原版数据失败: {str(e)}"}
 
 
+def _is_safe_subpath(child_path: Path, parent_path: Path) -> bool:
+    try:
+        c = Path(os.path.normcase(os.path.abspath(str(child_path))))
+        p = Path(os.path.normcase(os.path.abspath(str(parent_path))))
+        return c == p or c.is_relative_to(p)
+    except Exception:
+        c_s = os.path.normcase(os.path.abspath(str(child_path))).rstrip("\\/") + os.sep
+        p_s = os.path.normcase(os.path.abspath(str(parent_path))).rstrip("\\/") + os.sep
+        return c_s.startswith(p_s)
+
+
 def find_translation_dict_in_folder(folder_path: str) -> Optional[str]:
+    if not folder_path or not os.path.exists(folder_path):
+        return None
     p = Path(folder_path)
     search_dirs = [p]
     if (p / "www").is_dir():
@@ -539,12 +617,19 @@ def find_translation_dict_in_folder(folder_path: str) -> Optional[str]:
             if (d / cand).exists():
                 return str(d / cand)
 
-    if (p / "lastLoadedTrsFile").exists():
+    if (p / "lastLoadedTrsFile").is_file():
         try:
-            with open(p / "lastLoadedTrsFile", "r", encoding="utf-8-sig") as f:
+            with open(p / "lastLoadedTrsFile", "r", encoding="utf-8-sig", errors="ignore") as f:
                 ref = f.read().strip()
-                if ref and (p / ref).exists() and is_valid_translation_json(str(p / ref)):
-                    return str(p / ref)
+            if ref:
+                cand_path = (p / ref).resolve()
+                if (
+                    _is_safe_subpath(cand_path, p.resolve())
+                    and cand_path.is_file()
+                    and cand_path.suffix.lower() in (".json", ".trs")
+                ):
+                    if cand_path.suffix.lower() == ".trs" or is_valid_translation_json(str(cand_path)):
+                        return str(cand_path)
         except Exception:
             pass
 
@@ -589,7 +674,8 @@ def unbake_game_translation(game_id: int) -> Dict[str, Any]:
         return {"success": False, "message": "游戏目录不存在"}
 
     patcher = MZPatcher()
-    res = patcher.unbake(folder_path)
+    keep_cg = bool(int(game.get("cg_unlocked") or 0) == 1)
+    res = patcher.unbake(folder_path, keep_cg_unlocker=keep_cg)
     if res.get("success"):
         remaining_trs = find_translation_dict_in_folder(folder_path)
         has_bat = any((Path(folder_path) / b).exists() for b in ("与工具一同启动.bat", "StartWithTool.bat"))

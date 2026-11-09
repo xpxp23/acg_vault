@@ -2,11 +2,12 @@ import re
 import os
 import io
 import json
+import threading
 import urllib.parse
 import httpx
 from bs4 import BeautifulSoup
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from config import COVERS_DIR, THUMBS_DIR
 from db.database import get_scrape_cache, set_scrape_cache, normalize_and_localize_tags
 
@@ -30,6 +31,64 @@ IMAGE_MAGIC_PREFIXES = (
     b"GIF89a",            # GIF
     b"BM"                 # BMP
 )
+
+MAX_COVER_IMAGE_BYTES = 30 * 1024 * 1024  # 30 MB
+
+_CLIENT_POOL_LOCK = threading.Lock()
+_CLIENT_POOL: Dict[Optional[str], httpx.Client] = {}
+
+
+class _PooledHttpClientAdapter:
+    """
+    Thread-safe context-manager adapter around a shared httpx.Client connection pool.
+    Allows existing `with get_http_client(proxy, timeout=...) as client:` blocks to
+    reuse keep-alive connections without closing the underlying shared client pool.
+    """
+    def __init__(self, client: httpx.Client, timeout: float):
+        self._client = client
+        self._timeout = timeout
+
+    def __enter__(self) -> "_PooledHttpClientAdapter":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        return None
+
+    def get(self, url: str, **kwargs):
+        kwargs.setdefault("timeout", self._timeout)
+        return self._client.get(url, **kwargs)
+
+    def post(self, url: str, **kwargs):
+        kwargs.setdefault("timeout", self._timeout)
+        return self._client.post(url, **kwargs)
+
+    def request(self, method: str, url: str, **kwargs):
+        kwargs.setdefault("timeout", self._timeout)
+        return self._client.request(method, url, **kwargs)
+
+    def stream(self, method: str, url: str, **kwargs):
+        kwargs.setdefault("timeout", self._timeout)
+        return self._client.stream(method, url, **kwargs)
+
+    def close(self) -> None:
+        return None
+
+
+def _get_shared_httpx_client(proxy: Optional[str]) -> httpx.Client:
+    norm_proxy = proxy.strip() if proxy and proxy.strip() else None
+    with _CLIENT_POOL_LOCK:
+        client = _CLIENT_POOL.get(norm_proxy)
+        if client is None or client.is_closed:
+            client = httpx.Client(
+                headers={"User-Agent": USER_AGENTS, "Accept-Language": "ja,zh-CN,zh,en-US;q=0.9"},
+                cookies={"adultchecked": "1", "over18": "yes", "birthtime": "283993201", "lastagecheckage": "1-0-1980"},
+                proxy=norm_proxy,
+                timeout=6.0,
+                follow_redirects=True,
+                limits=httpx.Limits(max_keepalive_connections=16, max_connections=32)
+            )
+            _CLIENT_POOL[norm_proxy] = client
+        return client
 
 
 def is_valid_image_bytes(data: bytes) -> bool:
@@ -60,19 +119,13 @@ def generate_cover_thumbnail(source_path: Path, max_width: int = 420) -> Optiona
         return None
 
 
-def get_http_client(proxy: Optional[str] = None, timeout: float = 4.5) -> httpx.Client:
-    proxies = proxy.strip() if proxy and proxy.strip() else None
-    return httpx.Client(
-        headers={"User-Agent": USER_AGENTS, "Accept-Language": "ja,zh-CN,zh,en-US;q=0.9"},
-        cookies={"adultchecked": "1", "over18": "yes", "birthtime": "283993201", "lastagecheckage": "1-0-1980"},
-        proxy=proxies,
-        timeout=timeout,
-        follow_redirects=True
-    )
+def get_http_client(proxy: Optional[str] = None, timeout: float = 4.5) -> _PooledHttpClientAdapter:
+    shared = _get_shared_httpx_client(proxy)
+    return _PooledHttpClientAdapter(shared, timeout=timeout)
 
 
 def download_and_cache_cover(img_url: str, filename_stem: str, proxy: Optional[str] = None, force: bool = False) -> str:
-    """Downloads remote image, validates magic bytes, saves locally, and generates a grid thumbnail."""
+    """Downloads remote image with 30MB size limit, validates magic bytes, saves locally, and generates a grid thumbnail."""
     if not img_url:
         return ""
     if img_url.startswith("/api/covers/"):
@@ -98,10 +151,24 @@ def download_and_cache_cover(img_url: str, filename_stem: str, proxy: Optional[s
             return f"/api/covers/{target_name}"
 
         with get_http_client(proxy, timeout=6.5) as client:
-            resp = client.get(img_url)
-            if resp.status_code == 200 and is_valid_image_bytes(resp.content):
+            with client.stream("GET", img_url) as resp:
+                if resp.status_code != 200:
+                    return ""
+                cl_header = resp.headers.get("Content-Length")
+                if cl_header and cl_header.isdigit() and int(cl_header) > MAX_COVER_IMAGE_BYTES:
+                    return ""
+                chunks: List[bytes] = []
+                total_len = 0
+                for chunk in resp.iter_bytes(chunk_size=65536):
+                    total_len += len(chunk)
+                    if total_len > MAX_COVER_IMAGE_BYTES:
+                        return ""
+                    chunks.append(chunk)
+                content = b"".join(chunks)
+
+            if is_valid_image_bytes(content):
                 with open(target_path, "wb") as f:
-                    f.write(resp.content)
+                    f.write(content)
                 generate_cover_thumbnail(target_path)
                 return f"/api/covers/{target_name}"
     except Exception as e:
@@ -249,8 +316,12 @@ def scrape_dlsite(rj_code: str, proxy: Optional[str] = None, force: bool = False
         synopsis = outline_el.get_text(separator="\n", strip=True)
 
     cached_cover = download_and_cache_cover(cover_url, code, proxy, force=force)
-    # Exclude the primary cover from sample_urls if identical, then cache up to 4 sample previews
-    filtered_samples = [u for u in raw_sample_urls if u and not u.endswith(Path(cover_url).name)]
+    # Exclude the primary cover from sample_urls if identical (guarding against empty cover_basename!)
+    cover_basename = Path(cover_url.split("?")[0]).name if cover_url else ""
+    filtered_samples = [
+        u for u in raw_sample_urls
+        if u and (not cover_basename or not u.split("?")[0].endswith(cover_basename))
+    ]
     if not filtered_samples and len(raw_sample_urls) > 1:
         filtered_samples = raw_sample_urls[1:]
     cached_samples = download_and_cache_samples(filtered_samples, code, proxy=proxy, force=force, max_count=4)

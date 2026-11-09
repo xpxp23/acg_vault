@@ -1,9 +1,12 @@
 import os
 import sys
+import copy
 import json
+import threading
 from pathlib import Path
+from typing import Dict, Any, Optional
 
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.2.0"
 
 # 冻结成 exe 后，__file__ 在 _MEIPASS 临时目录里；数据必须落在 exe 旁边，
 # 静态资源则从打包目录读。这样 exe 和源码共享同一份 data/。
@@ -35,7 +38,9 @@ CONFIG_FILE = DATA_DIR / "config.json"
 DB_PATH = DATA_DIR / "acg_vault.db"
 L10N_TAGS_FILE = DATA_DIR / "l10n_tags_zh.json"
 
-DEFAULT_CONFIG = {
+SENSITIVE_CONFIG_KEYS = ("llm_api_key", "webdav_password")
+
+DEFAULT_CONFIG: Dict[str, Any] = {
     "game_directories": [r"E:\ACG"],
     "archive_directory": r"E:\ACG\_Archive_Duplicates",
     "save_backup_directory": r"E:\ACG\_Save_Backups",
@@ -70,8 +75,8 @@ DEFAULT_CONFIG = {
     "magpie_auto_scope": "bigscreen",  # "bigscreen" | "always"
     "magpie_auto_delay": 8,       # 游戏窗口出现后再等 N 秒
     "magpie_active_preset": "pixel",  # 上次应用的 Magpie 预设
-    "ui_theme": "auto",
-    "ui_accent": "nintendo",       # nintendo | indigo | emerald | amber | violet            # auto | dark | light（深色=夜间，浅色=Switch 风格日间）
+    "ui_theme": "auto",           # auto | dark | light（深色=夜间，浅色=Switch 风格日间）
+    "ui_accent": "nintendo",      # nintendo | indigo | emerald | amber | violet
     "window_bounds": {"x": None, "y": None, "width": 1460, "height": 920, "maximized": False},
     "overlay_bounds": {"x": None, "y": None, "width": 460, "height": 740},
     "minimize_to_tray": True,
@@ -107,6 +112,38 @@ DEFAULT_CONFIG = {
     "llm_auto_translate": True
 }
 
+_CONFIG_LOCK = threading.RLock()
+_CONFIG_CACHE: Optional[Dict[str, Any]] = None
+_CONFIG_MTIME: float = -1.0
+
+
+def mask_sensitive_config(cfg: dict) -> dict:
+    """Masks sensitive keys (e.g. llm_api_key, webdav_password) before returning config to the frontend."""
+    out = copy.deepcopy(cfg) if isinstance(cfg, dict) else {}
+    for key in SENSITIVE_CONFIG_KEYS:
+        val = out.get(key)
+        if isinstance(val, str) and val.strip():
+            s = val.strip()
+            if "****" in s:
+                out[key] = s
+            elif len(s) <= 6:
+                out[key] = "****"
+            else:
+                out[key] = f"{s[:3]}****{s[-2:]}"
+    return out
+
+
+def merge_masked_secrets(new_cfg: dict, old_cfg: dict) -> dict:
+    """Preserves original secrets from old_cfg when incoming new_cfg contains masked '****' placeholders."""
+    out = copy.deepcopy(new_cfg) if isinstance(new_cfg, dict) else {}
+    old = old_cfg if isinstance(old_cfg, dict) else {}
+    for key in SENSITIVE_CONFIG_KEYS:
+        if key in out:
+            val = out.get(key)
+            if isinstance(val, str) and "****" in val:
+                out[key] = old.get(key, "")
+    return out
+
 
 def sync_windows_autostart(enable: bool) -> bool:
     """Registers or removes ACG Vault in Windows HKCU Run registry for auto-start."""
@@ -139,69 +176,107 @@ def sync_windows_autostart(enable: bool) -> bool:
 
 
 def load_config() -> dict:
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                merged = DEFAULT_CONFIG.copy()
+    """Loads configuration with thread-safe st_mtime memory caching and returns a deep copy."""
+    global _CONFIG_CACHE, _CONFIG_MTIME
+    with _CONFIG_LOCK:
+        if CONFIG_FILE.exists():
+            try:
+                st_mtime = CONFIG_FILE.stat().st_mtime
+                if _CONFIG_CACHE is not None and st_mtime == _CONFIG_MTIME:
+                    return copy.deepcopy(_CONFIG_CACHE)
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                merged = copy.deepcopy(DEFAULT_CONFIG)
                 if isinstance(cfg, dict):
                     merged.update(cfg)
                 if isinstance(merged.get("game_directories"), list):
                     cleaned_dirs = [str(d).strip() for d in merged["game_directories"] if str(d).strip()]
-                    merged["game_directories"] = cleaned_dirs or DEFAULT_CONFIG["game_directories"].copy()
-                return merged
-        except Exception:
-            pass
-    save_config(DEFAULT_CONFIG)
-    return DEFAULT_CONFIG.copy()
+                    merged["game_directories"] = cleaned_dirs or copy.deepcopy(DEFAULT_CONFIG["game_directories"])
+                _CONFIG_CACHE = copy.deepcopy(merged)
+                _CONFIG_MTIME = st_mtime
+                return copy.deepcopy(merged)
+            except Exception:
+                if _CONFIG_CACHE is not None:
+                    return copy.deepcopy(_CONFIG_CACHE)
+        saved = save_config(DEFAULT_CONFIG)
+        return copy.deepcopy(saved)
 
 
 def save_config(cfg: dict) -> dict:
-    prev_auto_start = None
-    if CONFIG_FILE.exists():
+    """Atomically writes config via config.json.tmp -> os.replace and immediately updates memory cache."""
+    global _CONFIG_CACHE, _CONFIG_MTIME
+    with _CONFIG_LOCK:
+        prev_cfg: Dict[str, Any] = {}
+        if _CONFIG_CACHE is not None:
+            prev_cfg = copy.deepcopy(_CONFIG_CACHE)
+        elif CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        prev_cfg = loaded
+            except Exception:
+                pass
+
+        prev_auto_start = prev_cfg.get("auto_start_windows")
+        incoming = merge_masked_secrets(cfg if isinstance(cfg, dict) else {}, prev_cfg)
+
+        merged = copy.deepcopy(DEFAULT_CONFIG)
+        if prev_cfg:
+            merged.update(prev_cfg)
+        merged.update(incoming)
+
+        if isinstance(merged.get("game_directories"), list):
+            cleaned_dirs = [str(d).strip() for d in merged["game_directories"] if str(d).strip()]
+            merged["game_directories"] = cleaned_dirs or copy.deepcopy(DEFAULT_CONFIG["game_directories"])
+
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                prev_auto_start = json.load(f).get("auto_start_windows")
+            merged["port"] = max(1024, min(65535, int(merged.get("port", 8000))))
         except Exception:
-            pass
+            merged["port"] = 8000
 
-    merged = DEFAULT_CONFIG.copy()
-    if isinstance(cfg, dict):
-        merged.update(cfg)
-    if isinstance(merged.get("game_directories"), list):
-        cleaned_dirs = [str(d).strip() for d in merged["game_directories"] if str(d).strip()]
-        merged["game_directories"] = cleaned_dirs or DEFAULT_CONFIG["game_directories"].copy()
+        try:
+            merged["auto_backup_min_minutes"] = max(1, min(120, int(merged.get("auto_backup_min_minutes", 5))))
+        except Exception:
+            merged["auto_backup_min_minutes"] = 5
 
-    try:
-        merged["port"] = max(1024, min(65535, int(merged.get("port", 8000))))
-    except Exception:
-        merged["port"] = 8000
+        try:
+            merged["auto_backup_max_keep"] = max(1, min(30, int(merged.get("auto_backup_max_keep", 5))))
+        except Exception:
+            merged["auto_backup_max_keep"] = 5
 
-    try:
-        merged["auto_backup_min_minutes"] = max(1, min(120, int(merged.get("auto_backup_min_minutes", 5))))
-    except Exception:
-        merged["auto_backup_min_minutes"] = 5
+        try:
+            merged["gamepad_deadzone"] = max(0.05, min(0.9, float(merged.get("gamepad_deadzone", 0.35))))
+        except Exception:
+            merged["gamepad_deadzone"] = 0.35
 
-    try:
-        merged["auto_backup_max_keep"] = max(1, min(30, int(merged.get("auto_backup_max_keep", 5))))
-    except Exception:
-        merged["auto_backup_max_keep"] = 5
+        if not isinstance(merged.get("gamepad_bindings"), dict):
+            merged["gamepad_bindings"] = {}
+        if not isinstance(merged.get("gamepad_per_game"), dict):
+            merged["gamepad_per_game"] = {}
 
-    try:
-        merged["gamepad_deadzone"] = max(0.05, min(0.9, float(merged.get("gamepad_deadzone", 0.35))))
-    except Exception:
-        merged["gamepad_deadzone"] = 0.35
+        tmp_file = CONFIG_FILE.with_name("config.json.tmp")
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(merged, f, ensure_ascii=False, indent=2)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp_file, CONFIG_FILE)
+        except Exception:
+            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(merged, f, ensure_ascii=False, indent=2)
 
-    if not isinstance(merged.get("gamepad_bindings"), dict):
-        merged["gamepad_bindings"] = {}
-    if not isinstance(merged.get("gamepad_per_game"), dict):
-        merged["gamepad_per_game"] = {}
+        try:
+            _CONFIG_MTIME = CONFIG_FILE.stat().st_mtime
+        except Exception:
+            _CONFIG_MTIME = -1.0
+        _CONFIG_CACHE = copy.deepcopy(merged)
 
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=2)
+        # Always ensure Windows registry path stays accurate when enabled or toggled
+        if merged.get("auto_start_windows") or prev_auto_start != merged.get("auto_start_windows"):
+            sync_windows_autostart(bool(merged.get("auto_start_windows")))
 
-    # Always ensure Windows registry path stays accurate when enabled or toggled
-    if merged.get("auto_start_windows") or prev_auto_start != merged.get("auto_start_windows"):
-        sync_windows_autostart(bool(merged.get("auto_start_windows")))
-
-    return merged
+        return copy.deepcopy(merged)

@@ -1,5 +1,5 @@
 """
-MTool 联动启动支撑模块 (v2.5)
+MTool 联动启动支撑模块 (v3.2)
 
 解决的问题
 ----------
@@ -10,7 +10,7 @@ MTool 联动启动支撑模块 (v2.5)
 
 本模块提供四件事
 ----------------
-1. `get_exe_bitness()`  读 PE 头判定 32/64 位，而不是靠引擎名猜。
+1. `get_exe_bitness()`  读 PE 头判定 32/64 位（支持任意偏移 e_lfanew），而不是靠引擎名猜。
 2. `choose_hook()`      按「引擎 + 位数」选正确 hook DLL。
 3. `ensure_launch_bat()` 优先复用 MTool 生成的「与工具一同启动.bat」，
    缺失或不一致（旧 MTool 路径 / 位数不符）时重新生成，旧文件留 .bak。
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 IS_WINDOWS = sys.platform == "win32"
-CREATE_NO_WINDOW = 0x08000000
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if IS_WINDOWS else 0
 
 # MTool 首次启动某游戏后生成的联动脚本（中英文两版命名）
 BAT_CANDIDATES = ("与工具一同启动.bat", "StartWithTool.bat")
@@ -81,19 +81,23 @@ def detect_engine_key(engine_type: Optional[str]) -> Optional[str]:
 
 
 def get_exe_bitness(exe_path: Optional[str]) -> Optional[int]:
-    """读取 PE 头返回 32 / 64，失败返回 None。"""
+    """读取 DOS 头 e_lfanew 并 seek 到 PE 头验证签名与 Machine 字段，返回 32 / 64，失败返回 None。"""
     if not exe_path or not os.path.isfile(exe_path):
         return None
     try:
         with open(exe_path, "rb") as f:
-            head = f.read(0x400)
-        if len(head) < 0x40 or head[:2] != b"MZ":
-            return None
-        e_lfanew = int.from_bytes(head[0x3C:0x40], "little")
-        if e_lfanew <= 0 or e_lfanew + 6 > len(head):
-            return None
-        machine = int.from_bytes(head[e_lfanew + 4: e_lfanew + 6], "little")
-        return _MACHINE_MAP.get(machine)
+            dos_head = f.read(0x40)
+            if len(dos_head) < 0x40 or dos_head[:2] != b"MZ":
+                return None
+            e_lfanew = int.from_bytes(dos_head[0x3C:0x40], "little", signed=False)
+            if e_lfanew <= 0 or e_lfanew > 64 * 1024 * 1024:
+                return None
+            f.seek(e_lfanew)
+            pe_hdr = f.read(6)
+            if len(pe_hdr) < 6 or pe_hdr[:4] != b"PE\x00\x00":
+                return None
+            machine = int.from_bytes(pe_hdr[4:6], "little", signed=False)
+            return _MACHINE_MAP.get(machine)
     except Exception:
         return None
 
@@ -164,9 +168,9 @@ def inspect_launch_bat(bat_path: Path) -> Dict[str, Any]:
         return info
 
     base = str(bat_path.parent) + os.sep
-    inject = m.group(1).replace("%~dp0", base)
-    game_exe = m.group(2).replace("%~dp0", base)
-    hook = m.group(3).replace("%~dp0", base)
+    inject = m.group(1).replace("%~dp0", base).replace("%%", "%")
+    game_exe = m.group(2).replace("%~dp0", base).replace("%%", "%")
+    hook = m.group(3).replace("%~dp0", base).replace("%%", "%")
     inject = os.path.normpath(inject)
     game_exe = os.path.normpath(game_exe)
     hook = os.path.normpath(hook)
@@ -193,6 +197,11 @@ def inspect_launch_bat(bat_path: Path) -> Dict[str, Any]:
     return info
 
 
+def _escape_bat_percent(path_str: str) -> str:
+    """将写入 .bat 的路径中的 % 转义为 %%，避免 cmd 展开环境变量导致路径截断。"""
+    return str(path_str).replace("%", "%%")
+
+
 def build_bat_text(mtool_dir: str, folder_path: str, game_exe: str, hook_dll: str) -> str:
     tool_dir = Path(mtool_dir) / "Tool"
     inject = tool_dir / "loaders" / "inject.exe"
@@ -204,11 +213,17 @@ def build_bat_text(mtool_dir: str, folder_path: str, game_exe: str, hook_dll: st
     except Exception:
         rel_exe = Path(game_exe).name
 
+    esc_inject = _escape_bat_percent(str(inject))
+    esc_rel_exe = _escape_bat_percent(rel_exe)
+    esc_hook = _escape_bat_percent(str(hook_dll))
+    esc_nw = _escape_bat_percent(str(nw))
+    esc_tool_dir = _escape_bat_percent(str(tool_dir))
+
     lines = [
-        "@chcp 65001",
+        "@chcp 65001 >nul",
         "@cd /d \"%~dp0\"",
-        f"\"{inject}\" \"%~dp0{rel_exe}\" \"{hook_dll}\"",
-        f"start \"\" \"{nw}\" \"{tool_dir}\"",
+        f"\"{esc_inject}\" \"%~dp0{esc_rel_exe}\" \"{esc_hook}\"",
+        f"start \"\" \"{esc_nw}\" \"{esc_tool_dir}\"",
     ]
     return "\r\n".join(lines) + "\r\n"
 
@@ -288,17 +303,23 @@ def ensure_launch_bat(folder_path: str, game_exe: str, mtool_dir: str,
 # ---------------------------------------------------------
 # MTool 侧的 per-game 认知记录
 # ---------------------------------------------------------
+def _normalize_exe_for_md5(game_exe: str) -> str:
+    return os.path.normpath(os.path.abspath(str(game_exe))).replace("/", "\\").lower()
+
+
 def launch_record_path(mtool_dir: str, game_exe: str) -> Path:
-    key = hashlib.md5(str(game_exe).lower().encode("utf-8")).hexdigest()
+    norm_exe = _normalize_exe_for_md5(game_exe)
+    key = hashlib.md5(norm_exe.encode("utf-8")).hexdigest()
     return Path(mtool_dir) / "Tool" / "gameLaunchs" / key
 
 
 def ensure_launch_record(mtool_dir: str, game_exe: str, hook_dll: str, bits: int) -> Dict[str, Any]:
     """
-    维护 Tool\\gameLaunchs\\<md5(小写 exe 完整路径)>。
+    维护 Tool\\gameLaunchs\\<md5(标准化小写 exe 完整路径)>。
     已存在则只修正 dllPath / is64Bit，保留用户在 MTool 里的其它选项。
     """
     path = launch_record_path(mtool_dir, game_exe)
+    norm_exe = os.path.normpath(os.path.abspath(str(game_exe))).replace("/", "\\")
     is64 = bits == 64
     data: Dict[str, Any] = {}
     if path.is_file():
@@ -310,7 +331,7 @@ def ensure_launch_record(mtool_dir: str, game_exe: str, hook_dll: str, bits: int
             data = {}
 
     created = not data
-    data.setdefault("gameExe", str(game_exe))
+    data.setdefault("gameExe", norm_exe)
     data.setdefault("injectAtOEP", True)
     data.setdefault("makeLaunchBat", True)
     data.setdefault("lazyInject", True)
@@ -318,13 +339,13 @@ def ensure_launch_record(mtool_dir: str, game_exe: str, hook_dll: str, bits: int
     data.setdefault("packageRelease", False)
     data.setdefault("selfNWStart", False)
 
-    data["gameExe"] = str(game_exe)
+    data["gameExe"] = norm_exe
     data["dllPath"] = str(hook_dll)
 
     const_args = data.get("constArgs")
     if not isinstance(const_args, dict):
         const_args = {}
-    const_args["gameExe"] = str(game_exe)
+    const_args["gameExe"] = norm_exe
     const_args["dllPath"] = str(hook_dll)
     const_args["is64Bit"] = is64
     const_args.setdefault("needEnglishPath", True)
@@ -344,7 +365,10 @@ def ensure_launch_record(mtool_dir: str, game_exe: str, hook_dll: str, bits: int
 # 启动与关联校验
 # ---------------------------------------------------------
 def run_launch_bat(bat_path: str, folder_path: str) -> bool:
-    """用隐藏控制台执行联动脚本（脚本内部的 start 仍会正常弹出 MTool 窗口）。"""
+    """
+    用隐藏控制台执行联动脚本（脚本内部的 start 仍会正常弹出 MTool 窗口）。
+    绝不回退到会闪黑窗的 os.startfile(bat_path)，若 cmd.exe 启动异常则直接无窗口执行解析出的命令。
+    """
     if not IS_WINDOWS:
         return False
     try:
@@ -357,10 +381,27 @@ def run_launch_bat(bat_path: str, folder_path: str) -> bool:
         return True
     except Exception:
         try:
-            os.startfile(bat_path)  # type: ignore[attr-defined]
-            return True
+            info = inspect_launch_bat(Path(bat_path))
+            if info.get("valid") and info.get("inject") and info.get("game_exe") and info.get("hook"):
+                subprocess.Popen(
+                    [info["inject"], info["game_exe"], info["hook"]],
+                    cwd=folder_path,
+                    creationflags=CREATE_NO_WINDOW,
+                    close_fds=True,
+                )
+                tool_dir = Path(info["inject"]).resolve().parent.parent
+                nw_exe = tool_dir / "nw.exe"
+                if nw_exe.is_file():
+                    subprocess.Popen(
+                        [str(nw_exe), str(tool_dir)],
+                        cwd=str(tool_dir),
+                        creationflags=CREATE_NO_WINDOW,
+                        close_fds=True,
+                    )
+                return True
         except Exception:
-            return False
+            pass
+        return False
 
 
 def is_dll_loaded(pid: Optional[int], dll_name: str) -> Optional[bool]:

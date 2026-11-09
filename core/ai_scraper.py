@@ -8,9 +8,11 @@ from bs4 import BeautifulSoup
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
-from config import COVERS_DIR, load_config
+from config import COVERS_DIR, load_config, merge_masked_secrets
 from db.database import (
     get_all_games,
+    get_game_by_id,
+    get_game_by_path,
     upsert_game,
     manual_update_game_metadata,
     normalize_and_localize_tags,
@@ -25,6 +27,54 @@ from core.scraper import (
     get_http_client
 )
 from core.scanner import clean_title_from_folder, extract_rj_code
+
+
+def _extract_balanced_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Extracts the first valid JSON object from an LLM reply by scanning balanced `{ ... }`
+    braces (respecting string literals and escape sequences) instead of greedy `\\{.*\\}` regex.
+    """
+    if not text:
+        return None
+    n = len(text)
+    idx = 0
+    while idx < n:
+        start = text.find("{", idx)
+        if start == -1:
+            break
+        depth = 0
+        in_str = False
+        esc = False
+        end = -1
+        for pos in range(start, n):
+            ch = text[pos]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = pos
+                        break
+        if end != -1:
+            candidate = text[start:end + 1]
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+        idx = start + 1
+    return None
 
 
 def call_llm_chat(
@@ -84,7 +134,7 @@ def test_llm_connection(custom_cfg: Optional[Dict[str, Any]] = None) -> Dict[str
     """Verifies connectivity and model response for the configured LLM API."""
     cfg = load_config()
     if custom_cfg:
-        cfg.update(custom_cfg)
+        cfg.update(merge_masked_secrets(custom_cfg, cfg))
 
     api_base = (cfg.get("llm_api_base") or "").strip()
     api_key = (cfg.get("llm_api_key") or "").strip()
@@ -123,7 +173,7 @@ def test_llm_connection(custom_cfg: Optional[Dict[str, Any]] = None) -> Dict[str
 def llm_parse_folder_metadata(folder_name: str, clues: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Uses LLM (with deterministic regex fallback) to extract structured metadata from messy
-    folk-translated folder names.
+    folk-translated folder names. Uses balanced-brace JSON extraction.
     """
     clues = clues or {}
     fallback = _regex_parse_folder_metadata(folder_name, clues)
@@ -153,21 +203,19 @@ def llm_parse_folder_metadata(folder_name: str, clues: Optional[Dict[str, Any]] 
     )
     if reply:
         try:
-            m = re.search(r"\{.*\}", reply, flags=re.S)
-            if m:
-                parsed = json.loads(m.group(0))
-                if isinstance(parsed, dict) and parsed.get("clean_title"):
-                    merged = fallback.copy()
-                    for k in ("clean_title", "original_title", "circle_name", "rj_code", "version", "translator_group"):
-                        if parsed.get(k):
-                            merged[k] = str(parsed[k]).strip()
-                    if isinstance(parsed.get("tags"), list) and parsed["tags"]:
-                        merged["tags"] = normalize_and_localize_tags(
-                            fallback.get("tags", []) + [str(t).strip() for t in parsed["tags"] if str(t).strip()],
-                            localize=True
-                        )
-                    merged["used_llm"] = True
-                    return merged
+            parsed = _extract_balanced_json_object(reply)
+            if isinstance(parsed, dict) and parsed.get("clean_title"):
+                merged = fallback.copy()
+                for k in ("clean_title", "original_title", "circle_name", "rj_code", "version", "translator_group"):
+                    if parsed.get(k):
+                        merged[k] = str(parsed[k]).strip()
+                if isinstance(parsed.get("tags"), list) and parsed["tags"]:
+                    merged["tags"] = normalize_and_localize_tags(
+                        fallback.get("tags", []) + [str(t).strip() for t in parsed["tags"] if str(t).strip()],
+                        localize=True
+                    )
+                merged["used_llm"] = True
+                return merged
         except Exception:
             pass
     return fallback
@@ -418,7 +466,8 @@ def process_single_game_ai_scrape(
 ) -> Tuple[bool, Optional[Dict[str, Any]]]:
     """
     Complete AI scraping & translation pipeline for a single game,
-    supporting DLsite, Bangumi, Steam, and VNDB while respecting preferred_source and user-customized titles.
+    supporting DLsite, Bangumi, Steam, and VNDB while respecting preferred_source and
+    re-fetching latest DB record before saving to prevent Lost Update races.
     """
     cfg = load_config()
     pref = (preferred_source or cfg.get("scrape_source") or "auto").lower()
@@ -524,30 +573,57 @@ def process_single_game_ai_scrape(
     if not meta:
         return False, None
 
-    merged_tags = normalize_and_localize_tags((meta.get("tags") or []) + (parsed_info.get("tags") or []), localize=True)
-    if not merged_tags and game.get("tags"):
-        merged_tags = normalize_and_localize_tags(game["tags"], localize=True)
+    # Re-fetch latest game row right before DB write to prevent Lost Update race conditions
+    # if the user edited fields while network/LLM scraping was running
+    latest_game = None
+    if game.get("id"):
+        latest_game = get_game_by_id(int(game["id"]))
+    if not latest_game and fpath:
+        latest_game = get_game_by_path(fpath)
+    base_game = latest_game or game
 
-    scraped_disp = meta.get("display_title") or meta.get("title") or clean_t or game["folder_name"]
-    final_display_title = resolve_best_display_title(game, scraped_disp, fallback_title=clean_t or game["folder_name"])
+    def _pick_field(field_name: str, scraped_val: Any, default_val: Any = "") -> Any:
+        old_val = game.get(field_name)
+        cur_val = base_game.get(field_name)
+        # If the user modified this field while scraping was in-flight, keep the user's latest value
+        if cur_val and cur_val != old_val:
+            return cur_val
+        # Also protect custom uploaded covers unless force-overwriting explicitly
+        if field_name in ("cover_url", "banner_url") and isinstance(cur_val, str) and "/custom_" in cur_val and not force:
+            return cur_val
+        return scraped_val or cur_val or default_val
+
+    merged_tags = normalize_and_localize_tags(
+        (base_game.get("tags") or []) + (meta.get("tags") or []) + (parsed_info.get("tags") or []),
+        localize=True
+    )
+
+    scraped_disp = meta.get("display_title") or meta.get("title") or clean_t or base_game["folder_name"]
+    if base_game.get("display_title") and base_game.get("display_title") != game.get("display_title"):
+        final_display_title = base_game["display_title"]
+    else:
+        final_display_title = resolve_best_display_title(base_game, scraped_disp, fallback_title=clean_t or base_game["folder_name"])
+
+    final_cover = _pick_field("cover_url", meta.get("cover_url"), "")
+    final_banner = _pick_field("banner_url", meta.get("banner_url") or final_cover, final_cover)
 
     update_dict = {
-        "folder_name": game["folder_name"],
-        "folder_path": game["folder_path"],
-        "rj_code": target_rj or meta.get("rj_code") or game.get("rj_code", ""),
+        "folder_name": base_game["folder_name"],
+        "folder_path": base_game["folder_path"],
+        "rj_code": _pick_field("rj_code", target_rj or meta.get("rj_code"), ""),
         "display_title": final_display_title,
-        "original_title": meta.get("original_title") or parsed_info.get("original_title") or game.get("original_title", ""),
-        "cover_url": meta.get("cover_url") or game.get("cover_url", ""),
-        "banner_url": meta.get("banner_url") or meta.get("cover_url") or game.get("banner_url", ""),
-        "sample_images": meta.get("sample_images") or game.get("sample_images") or [],
-        "synopsis": meta.get("synopsis") or game.get("synopsis", ""),
-        "circle_name": meta.get("circle_name") or parsed_info.get("circle_name") or game.get("circle_name", ""),
-        "release_date": meta.get("release_date") or game.get("release_date", ""),
-        "voice_actors": meta.get("voice_actors") or game.get("voice_actors") or [],
+        "original_title": _pick_field("original_title", meta.get("original_title") or parsed_info.get("original_title"), ""),
+        "cover_url": final_cover,
+        "banner_url": final_banner,
+        "sample_images": _pick_field("sample_images", meta.get("sample_images"), []),
+        "synopsis": _pick_field("synopsis", meta.get("synopsis"), ""),
+        "circle_name": _pick_field("circle_name", meta.get("circle_name") or parsed_info.get("circle_name"), ""),
+        "release_date": _pick_field("release_date", meta.get("release_date"), ""),
+        "voice_actors": _pick_field("voice_actors", meta.get("voice_actors"), []),
         "tags": merged_tags,
-        "source_url": meta.get("source_url") or game.get("source_url", ""),
-        "source_type": meta.get("source_type") or "dlsite",
-        "rating_score": meta.get("rating_score") or game.get("rating_score") or 0.0
+        "source_url": _pick_field("source_url", meta.get("source_url"), ""),
+        "source_type": meta.get("source_type") or base_game.get("source_type") or "dlsite",
+        "rating_score": meta.get("rating_score") or base_game.get("rating_score") or 0.0
     }
     upsert_game(update_dict)
     return True, update_dict

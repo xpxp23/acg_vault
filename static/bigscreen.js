@@ -1,5 +1,5 @@
 /*
- * ACG Vault · Big Screen Mode (v2.6)
+ * ACG Vault · Big Screen Mode (v3.2.0)
  * 10-foot UI, gamepad-first browsing for the local ACG library.
  *
  * Input model
@@ -37,6 +37,102 @@
   };
 
   /* ---------------------------------------------------------------- helpers */
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function compileMermaidToVisualHtml(code) {
+    const lines = String(code || '').split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
+    let subgraphTitle = '剧情分支与路线流程图';
+    const nodeLabels = {};
+    const edges = [];
+
+    const parseNodeToken = function (tok) {
+      if (!tok) return '';
+      const m = tok.match(/^([A-Za-z0-9_]+)\s*(?:\[([^\]]+)\]|\(([^)]+)\)|\{([^}]+)\})?$/);
+      if (m) {
+        const id = m[1];
+        const label = (m[2] || m[3] || m[4] || '').trim().replace(/^"|"$/g, '');
+        if (label) nodeLabels[id] = label;
+        return nodeLabels[id] || id;
+      }
+      return tok.replace(/[\[\]{}()"]/g, '').trim();
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/^(flowchart|graph)\b/i.test(line) || line === 'end') continue;
+      const subMatch = line.match(/^subgraph\s+(.+)$/i);
+      if (subMatch) {
+        subgraphTitle = subMatch[1].trim();
+        continue;
+      }
+      const edgeMatch =
+        line.match(/^(.+?)\s*--(?:\|\s*([^|]+?)\s*\|)?-->\s*(.+)$/) ||
+        line.match(/^(.+?)\s*(?:-->|---|==>)\s*(?:\|\s*([^|]+?)\s*\|\s*)?(.+)$/);
+      if (edgeMatch) {
+        const leftRaw = edgeMatch[1].trim();
+        const cond = (edgeMatch[2] || '').trim();
+        const rightRaw = edgeMatch[3].trim();
+        const leftParts = leftRaw.split(/\s*&\s*/).map(parseNodeToken);
+        const rightParts = rightRaw.split(/\s*&\s*/).map(parseNodeToken);
+        edges.push({
+          from: leftParts.join(' + '),
+          cond: cond,
+          to: rightParts.join(' / ')
+        });
+      }
+    }
+
+    if (edges.length === 0) {
+      return '<pre><code>' + escapeHtml(code) + '</code></pre>';
+    }
+
+    const edgeHtml = edges.map(function (e) {
+      const condBadge = e.cond
+        ? '<span class="mermaid-edge-label">' + escapeHtml(e.cond) + '</span><span class="mermaid-arrow">→</span>'
+        : '<span class="mermaid-arrow">⟶</span>';
+      return '<div class="mermaid-edge-row"><span class="mermaid-node-pill">' + escapeHtml(e.from) + '</span>' +
+             condBadge +
+             '<span class="mermaid-node-pill">' + escapeHtml(e.to) + '</span></div>';
+    }).join('');
+
+    return '<div class="mermaid-flow-container"><div class="mermaid-flow-title"><span>🗺️ ' +
+           escapeHtml(subgraphTitle) + '</span></div><div class="mermaid-flow-steps">' +
+           edgeHtml + '</div></div>';
+  }
+
+  function sanitizeReaderHtml(html) {
+    if (!html) return '';
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(String(html), 'text/html');
+      const forbidden = ['script', 'iframe', 'object', 'embed', 'form', 'style', 'base', 'meta', 'link'];
+      doc.querySelectorAll(forbidden.join(',')).forEach(function (el) { el.remove(); });
+      doc.body.querySelectorAll('*').forEach(function (el) {
+        Array.from(el.attributes).forEach(function (attr) {
+          const nameLow = attr.name.toLowerCase();
+          const valLow = (attr.value || '').trim().toLowerCase();
+          if (nameLow.indexOf('on') === 0 || nameLow === 'srcdoc') {
+            el.removeAttribute(attr.name);
+          } else if ((nameLow === 'href' || nameLow === 'src' || nameLow === 'action') && /^(javascript|vbscript|data):/i.test(valLow)) {
+            el.removeAttribute(attr.name);
+          }
+        });
+      });
+      return doc.body.innerHTML;
+    } catch (e) {
+      return String(html)
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/<(iframe|object|embed|form)\b[^>]*>/gi, '')
+        .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+    }
+  }
+
   function coverFile(g) {
     const u = (g && g.cover_url) || '';
     return u ? String(u).split('/').pop() : '';
@@ -149,7 +245,8 @@
       const themeResolved = ref(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
 
       document.addEventListener('acg-theme-changed', function (e) {
-        themeResolved.value = e && e.detail === 'light' ? 'light' : 'dark';
+        const resolved = (e && e.detail && typeof e.detail === 'object') ? e.detail.resolved : (e && e.detail);
+        themeResolved.value = resolved === 'light' ? 'light' : 'dark';
       });
       const clock = ref('');
 
@@ -228,10 +325,22 @@
         confirm: function () { beep(620, 0.07, 'sine', 0.15); beep(940, 0.1, 'sine', 0.12, 0.06); },
         back: function () { beep(520, 0.07, 'sine', 0.13); beep(360, 0.1, 'sine', 0.1, 0.06); },
         open: function () { beep(880, 0.08, 'sine', 0.11); },
+        launch: function () { beep(587, 0.07, 'triangle', 0.12); beep(880, 0.08, 'triangle', 0.12, 0.06); beep(1174, 0.14, 'sine', 0.14, 0.12); },
         error: function () { beep(220, 0.16, 'sawtooth', 0.12); }
       };
       function play(name) {
         if (!settings.sound) return;
+        if (window.ACGTheme && window.ACGTheme.playSfx && name !== 'error') {
+          const sfxMap = {
+            move: 'focus',
+            confirm: 'select',
+            back: 'back',
+            open: 'select',
+            launch: 'launch'
+          };
+          window.ACGTheme.playSfx(sfxMap[name] || 'focus');
+          return;
+        }
         (SOUNDS[name] || SOUNDS.move)();
       }
 
@@ -456,11 +565,8 @@
           const row = currentRow.value;
           const box = scroller.value;
 
-          // 回到第一条轨道时把页面拉回顶部，Hero 必须重新出现，
-          // 否则焦点在「继续游玩」而 Hero 还在视口外，等于丢了上下文。
           if (box && focus.row === 0 && row && row.type === 'rail') {
             if (box.scrollTop > 4) box.scrollTo({ top: 0, behavior: 'smooth' });
-            // 只补横向：把卡片滚进轨道可视区，不再让 scrollIntoView 改变纵向位置
             const track = card.parentElement;
             if (track) {
               const c = card.getBoundingClientRect();
@@ -483,6 +589,7 @@
         if (!r) return;
         focus.row = ri;
         focus.col = clamp(ci, 0, Math.max(0, r.items.length - 1));
+        play('move');
       }
 
       function clampFocus() {
@@ -636,12 +743,11 @@
             play('error');
             return;
           }
-          // 长按 A 的一次性覆盖不改变该游戏的长期启动偏好（偏好只在操作面板里改）
           const magpieEta = data.magpie_auto && data.magpie_auto.scheduled
-            ? ` · ${data.magpie_auto.delay}s 后 Magpie 全屏`
+            ? ' · ' + data.magpie_auto.delay + 's 后 Magpie 全屏'
             : '';
           showToast((data.message || '已启动') + magpieEta, 'success', 3800);
-          play('confirm');
+          play('launch');
           detailGame.value = null;
           playSession.value = { id: g.id, title: gameTitle(g), start: startedAt, sawRunning: false, pidSeen: false };
           try { await fetch('/api/window/minimize', { method: 'POST' }); } catch (e) { /* browser mode */ }
@@ -668,6 +774,8 @@
       }
 
       let runningTimer = null;
+      let clockTimer = null;
+
       async function pollRunning() {
         try {
           const res = await fetch('/api/games/running', { cache: 'no-store' });
@@ -733,17 +841,24 @@
             full = (data && data.data) || g;
           } catch (e) { /* ignore */ }
         }
-        const md = full.walkthrough_md || '';
-        if (!md.trim()) { showToast('该作品还没有生成攻略', 'error'); return; }
-        let html = md;
+        const rawMd = full.walkthrough_md || '';
+        if (!rawMd.trim()) { showToast('该作品还没有生成攻略', 'error'); return; }
+        // 先将 ```mermaid 分支路线图代码块编译为可视化卡片 HTML，再经由 marked + sanitizeReaderHtml 安全渲染
+        const md = rawMd.replace(/```mermaid\s*\n([\s\S]*?)```/gi, function (_m, code) {
+          return compileMermaidToVisualHtml(code);
+        });
+        let html = escapeHtml(md);
         try {
           if (window.marked) {
-            html = window.marked.parse ? window.marked.parse(md) : window.marked(md);
+            const parsed = window.marked.parse ? window.marked.parse(md) : window.marked(md);
+            html = sanitizeReaderHtml(parsed);
           }
-        } catch (e) { html = md; }
+        } catch (e) {
+          html = sanitizeReaderHtml(md);
+        }
         reader.value = {
           title: gameTitle(g),
-          meta: md.length > 0 ? Math.round(md.length / 100) / 10 + 'k 字 · 只读' : '只读',
+          meta: rawMd.length > 0 ? Math.round(rawMd.length / 100) / 10 + 'k 字 · 只读' : '只读',
           html: html
         };
         play('open');
@@ -816,9 +931,9 @@
           },
           {
             key: 'a_theme',
-            label: '界面主题：' + (themeResolved.value === 'light' ? '日间' : '夜间'),
+            label: '界面主题：' + (themeResolved.value === 'light' ? '日间 (Switch)' : '夜间'),
             action: true,
-            hint: '按 A 在 夜间 / 日间 之间切换'
+            hint: '按 A 在 夜间 / 日间 (Switch) 之间切换'
           },
           {
             key: 'a_magpie_preset',
@@ -861,7 +976,11 @@
             focus.row = 0; focus.col = 0;
             break;
           case 's_bg': settings.bg = Number(val); LS.set('bs_settings', settings); break;
-          case 's_sound': settings.sound = !!val; LS.set('bs_settings', settings); break;
+          case 's_sound':
+            settings.sound = !!val;
+            LS.set('bs_settings', settings);
+            if (window.ACGTheme && window.ACGTheme.setSfx) window.ACGTheme.setSfx(!!val);
+            break;
           case 's_volume': settings.volume = Number(val); LS.set('bs_settings', settings); break;
           case 's_confirm':
             settings.confirmKey = val;
@@ -903,7 +1022,7 @@
           if (window.AcgTheme) {
             const next = themeResolved.value === 'light' ? 'dark' : 'light';
             await window.AcgTheme.set(next);
-            showToast(next === 'light' ? '已切换到日间模式' : '已切换到夜间模式', 'success', 2000);
+            showToast(next === 'light' ? '☀ 已切换到 Switch 日间模式' : '🌙 已切换到夜间模式', 'success', 2000);
           }
           return;
         }
@@ -1135,7 +1254,7 @@
       }
 
       function endConfirmHold() {
-        if (!confirmArmed) return; // 从列表按 A 进详情时，同一次按键的释放不能误触发启动
+        if (!confirmArmed) return;
         confirmArmed = false;
         if (confirmTimer) { clearTimeout(confirmTimer); confirmTimer = null; }
         if (!confirmLong) onAction('confirm');
@@ -1308,7 +1427,7 @@
       onMounted(function () {
         if (window.AcgWindow) {
           window.AcgWindow.mount({
-            title: 'ACG Vault · 大屏模式（手柄 / 方向键可用）',
+            title: 'ACG Vault v3.2.0 · 大屏模式（手柄 / 方向键可用）',
             minWidth: 900,
             minHeight: 600
           });
@@ -1319,7 +1438,7 @@
         document.addEventListener('fullscreenchange', onFullscreenChange);
         window.addEventListener('gamepadconnected', onGamepadConnected);
         runningTimer = setInterval(pollRunning, 2500);
-        setInterval(tickClock, 15000);
+        clockTimer = setInterval(tickClock, 15000);
         padRaf = requestAnimationFrame(pollPad);
         boot();
       });
@@ -1330,6 +1449,7 @@
         document.removeEventListener('fullscreenchange', onFullscreenChange);
         window.removeEventListener('gamepadconnected', onGamepadConnected);
         if (runningTimer) clearInterval(runningTimer);
+        if (clockTimer) clearInterval(clockTimer);
         if (padRaf) cancelAnimationFrame(padRaf);
       });
 
@@ -1434,7 +1554,7 @@
       return { thumb: thumb, title: title, initials: initials, sub: sub };
     },
     template:
-      '<article class="card" :class="{ \'is-focused\': focused, \'tonight-card\': tonight }" ' +
+      '<article class="card" :class="{ \'is-focused\': focused, \'focused\': focused, \'tonight-card\': tonight }" ' +
       '@mouseenter="$emit(\'focus\')" @click="$emit(\'activate\')">' +
         '<div class="card-cover">' +
           '<img v-if="thumb" :src="thumb" :alt="title" loading="lazy" draggable="false">' +

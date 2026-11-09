@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-In-Game Screenshot Gallery & 100% Full CG Save Unlocker / Importer for ACG Vault v2.4.
+In-Game Screenshot Gallery & 100% Full CG Save Unlocker / Importer for ACG Vault v3.2.
 - Captures active game window screenshots via Win32 / PIL ImageGrab when hotkeys (e.g. F12) are pressed
 - Manages gallery images, thumbnails, captions, and deletions
 - Analyzes and unlocks 100% CG / Recall Gallery for RPG Maker MV/MZ and imports external full-CG save archives
@@ -29,6 +29,7 @@ from db.database import (
     delete_game_screenshot
 )
 from core.scraper import is_valid_image_bytes
+from core.mz_patcher import inject_entry_into_plugins_js
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -37,6 +38,9 @@ try:
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
+
+MAX_CG_ARCHIVE_UNCOMPRESSED_BYTES = 250 * 1024 * 1024  # 250 MB
+MAX_SINGLE_CG_SAVE_FILE_BYTES = 64 * 1024 * 1024       # 64 MB
 
 
 def get_game_gallery_dir(game_id: int) -> Path:
@@ -343,14 +347,12 @@ def unlock_game_all_cg(game_id: int) -> Dict[str, Any]:
             if plugins_file.exists():
                 with open(plugins_file, "r", encoding="utf-8-sig", errors="ignore") as f:
                     code = f.read()
-                if '"name":"acg_vault_cg_unlocker"' not in code:
-                    idx = code.rfind("];")
-                    if idx != -1:
-                        prefix_check = code[:idx].rstrip()
-                        comma = "" if prefix_check.endswith("[") else ","
-                        entry = f'{comma}\n{{"name":"acg_vault_cg_unlocker","status":true,"description":"ACG Vault Full CG Unlocker","parameters":{{}}}}\n];'
-                        with open(plugins_file, "w", encoding="utf-8") as f:
-                            f.write(code[:idx] + entry)
+                new_code = inject_entry_into_plugins_js(
+                    code, "acg_vault_cg_unlocker", "ACG Vault Full CG Unlocker"
+                )
+                if new_code != code:
+                    with open(plugins_file, "w", encoding="utf-8") as f:
+                        f.write(new_code)
 
             manual_update_game_metadata(game_id, {"cg_unlocked": 1})
             return {
@@ -376,7 +378,7 @@ def unlock_game_all_cg(game_id: int) -> Dict[str, Any]:
 def import_cg_save_archive(game_id: int, file_bytes: bytes, orig_filename: str) -> Dict[str, Any]:
     """
     Imports an external Full-CG save archive (.zip) or individual save file (.rpgsave, .rmmzsave, .rvdata2, .sav, .dat)
-    into the game's save directory, automatically backing up existing saves first.
+    into the game's save directory, with 250MB decompression bomb protection and Zip Slip path traversal checks.
     """
     game = get_game_by_id(game_id)
     if not game:
@@ -385,6 +387,9 @@ def import_cg_save_archive(game_id: int, file_bytes: bytes, orig_filename: str) 
     folder_path = game.get("folder_path", "")
     if not folder_path or not os.path.exists(folder_path):
         return {"success": False, "message": "游戏本地目录不存在"}
+
+    if len(file_bytes) > MAX_CG_ARCHIVE_UNCOMPRESSED_BYTES:
+        return {"success": False, "message": "上传的存档文件超过最大体积限制 (250MB)"}
 
     from core.launcher import find_game_save_dir, backup_game_saves, get_game_save_status, is_subpath
 
@@ -405,15 +410,21 @@ def import_cg_save_archive(game_id: int, file_bytes: bytes, orig_filename: str) 
         save_dir.mkdir(parents=True, exist_ok=True)
     else:
         save_dir = Path(save_dir_str)
+        save_dir.mkdir(parents=True, exist_ok=True)
 
     target_root = save_dir.resolve()
     ext = Path(orig_filename).suffix.lower() if orig_filename else ""
 
     try:
         imported_count = 0
+        total_written_bytes = 0
         if ext == ".zip" or file_bytes.startswith(b"PK\x03\x04"):
             with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as zf:
                 members = [m for m in zf.infolist() if not m.is_dir()]
+                declared_total = sum(max(0, int(m.file_size)) for m in members)
+                if declared_total > MAX_CG_ARCHIVE_UNCOMPRESSED_BYTES:
+                    return {"success": False, "message": "压缩包解压总大小超过安全上限 (250MB)，已拒绝解压"}
+
                 common_prefix = ""
                 if members:
                     first_parts = [Path(m.filename).parts for m in members if Path(m.filename).parts]
@@ -421,8 +432,9 @@ def import_cg_save_archive(game_id: int, file_bytes: bytes, orig_filename: str) 
                         common_prefix = first_parts[0][0]
 
                 for member in members:
-                    rel_parts = Path(member.filename).parts
-                    if not rel_parts:
+                    raw_norm = member.filename.replace("\\", "/")
+                    rel_parts = [pt for pt in Path(raw_norm).parts if pt not in ("", ".")]
+                    if not rel_parts or any(pt == ".." or ":" in pt for pt in rel_parts):
                         continue
                     if common_prefix and len(rel_parts) > 1 and rel_parts[0] == common_prefix:
                         rel_parts = rel_parts[1:]
@@ -430,16 +442,34 @@ def import_cg_save_archive(game_id: int, file_bytes: bytes, orig_filename: str) 
                             rel_parts = rel_parts[1:]
                     clean_rel = Path(*rel_parts)
                     dest_path = (target_root / clean_rel).resolve()
-                    if not is_subpath(str(dest_path), str(target_root)):
+                    if not is_subpath(str(dest_path), str(target_root)) or dest_path == target_root:
+                        continue
+                    if member.file_size > MAX_SINGLE_CG_SAVE_FILE_BYTES:
                         continue
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(member, "r") as src, open(dest_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+                        while True:
+                            chunk = src.read(65536)
+                            if not chunk:
+                                break
+                            total_written_bytes += len(chunk)
+                            if total_written_bytes > MAX_CG_ARCHIVE_UNCOMPRESSED_BYTES:
+                                dst.close()
+                                try:
+                                    dest_path.unlink()
+                                except Exception:
+                                    pass
+                                return {"success": False, "message": "解压内容超出 250MB 安全限额，已中止导入"}
+                            dst.write(chunk)
                     imported_count += 1
         else:
+            if len(file_bytes) > MAX_SINGLE_CG_SAVE_FILE_BYTES:
+                return {"success": False, "message": "单个存档文件超过 64MB 安全上限"}
             safe_name = Path(orig_filename).name if orig_filename else "global.rmmzsave"
+            if not safe_name or safe_name in (".", ".."):
+                return {"success": False, "message": "非法的文件名"}
             dest_path = (target_root / safe_name).resolve()
-            if not is_subpath(str(dest_path), str(target_root)):
+            if not is_subpath(str(dest_path), str(target_root)) or dest_path == target_root:
                 return {"success": False, "message": "非法的文件名路径"}
             with open(dest_path, "wb") as dst:
                 dst.write(file_bytes)

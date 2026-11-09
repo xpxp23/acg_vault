@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-ACG Vault v2.4 Native Desktop Wrapper, In-Game Companion Overlay & System Tray Daemon.
+ACG Vault v3.2.0 Native Desktop Wrapper, In-Game Companion Overlay & System Tray Daemon.
 Provides:
 1. Standalone Native Desktop Window via PyWebView (with automatic Edge/Chrome --app mode fallback)
 2. Always-on-Top In-Game Companion Overlay Window (default Alt+G) with Win32 Click-Through HUD mode (Alt+T)
-3. Windows System Tray Icon & Context Menu (Minimize to tray, companion overlay, click-through toggle, quick scan, clean exit)
-4. Global Boss/Summon Hotkey (Alt+Space), Global Overlay Hotkey (Alt+G) & Click-Through Toggle (Alt+T) via Win32 RegisterHotKey
+3. High-DPI Precision Unlock Chip Window & 60fps Non-blocking Low-Level Wheel Hook (_MSLLHOOKSTRUCT)
+4. Windows System Tray Icon & Context Menu (Minimize to tray, companion overlay, click-through toggle, quick scan, clean exit)
+5. Global Boss/Summon Hotkey (Alt+Space), Global Overlay Hotkey (Alt+G) & Click-Through Toggle (Alt+T) via Win32 RegisterHotKey
 """
 
 import os
@@ -108,7 +109,6 @@ def _init_taskbar_identity() -> None:
 # 用 `python desktop_app.py` 启动时，本文件是 `__main__`；而 main.py 里
 # `from desktop_app import show_or_toggle_overlay_window` 会把同一个文件再导入
 # 一份全新的模块副本 —— 那份副本的 _overlay_window / _webview_window 永远是 None。
-# 结果就是：按 Alt+G 永远走 Edge 回退、窗口最小化恢复永远是假成功、穿透作用在错误的 HWND 上。
 # 这里把 `desktop_app` 指向 `__main__`，保证全进程只有一份窗口状态。
 if __name__ == "__main__":
     sys.modules.setdefault("desktop_app", sys.modules["__main__"])
@@ -117,11 +117,13 @@ _webview_window = None
 _overlay_window = None
 _main_api = None
 _overlay_api = None
+_unlock_api = None
 _server_should_exit = False
 _shutting_down = False
 _overlay_opacity = 0.92
 _unlock_window = None
 _overlay_click_through = False
+_active_overlay_game_id: Optional[int] = None
 _hotkey_thread_id: Optional[int] = None
 
 OVERLAY_WINDOW_TITLE = "ACG Vault 伴侣悬浮窗 (Alt+G)"
@@ -129,7 +131,7 @@ UNLOCK_WINDOW_TITLE = "ACG Vault 穿透解锁条"
 
 
 # ---------------------------------------------------------
-# Window geometry persistence & frameless window bridge (v2.6.2)
+# Window geometry persistence & frameless window bridge (v3.2.0)
 # ---------------------------------------------------------
 def log_desktop_error(message: str) -> None:
     """把窗口层/前端桥的异常落盘，方便出问题时直接看 data/desktop_error.log。"""
@@ -197,8 +199,6 @@ class WindowBridge:
         self._title = ""
         self._prefix = ""
         self._hwnd_cache = 0
-        # pywebview 创建窗口时传的尺寸 ≠ GetWindowRect 的可见尺寸（DWM 外框差值），
-        # 所以持久化必须存「我们请求的尺寸」，否则每次重启窗口都会缩水一圈。
         self._creation_size = None
         self._requested_size = None
 
@@ -224,11 +224,7 @@ class WindowBridge:
         return self._maximized
 
     def _hwnd(self) -> int:
-        """窗口句柄：带缓存，且用「标题前缀 + 本进程」匹配。
-
-        WebView2 加载完页面后会把窗口标题改成 <title>，所以不能用创建时
-        的完整标题去 FindWindow，否则页面一加载完就再也找不到窗口。
-        """
+        """窗口句柄：带缓存，且用「标题前缀 + 本进程」匹配。"""
         if not IS_WINDOWS:
             return 0
         from ctypes import wintypes
@@ -268,11 +264,7 @@ class WindowBridge:
         return self._hwnd_cache
 
     def apply_maximized(self, maximize: bool = True) -> bool:
-        """用 Win32 ShowWindow 做最大化/还原。
-
-        pywebview 的 FormBorderStyle.None 窗口走 WinForms Maximize 时会把窗口撑到
-        屏幕尺寸却保留原 Location（表现为窗口一半在屏幕外），所以这里直接交给系统。
-        """
+        """用 Win32 ShowWindow 做最大化/还原。"""
         if self._window is None:
             return False
         SW_MAXIMIZE = 3
@@ -360,6 +352,7 @@ class WindowBridge:
         """
         像 Windows 一样：拖拽最大化的标题栏时先还原成窗口，并让光标仍停在标题栏
         的相对位置，然后由前端继续拖拽。
+        支持多显示器虚拟桌面坐标 (GetSystemMetrics 76/77/78/79)，副屏拖拽不跳屏。
         """
         if self._window is None:
             return {"ok": False}
@@ -368,25 +361,38 @@ class WindowBridge:
         if not hwnd or not u.IsZoomed(hwnd):
             return {"ok": False}
 
-        screen_w = u.GetSystemMetrics(0) or 1920
-        screen_h = u.GetSystemMetrics(1) or 1080
-        ratio = max(0.0, min(1.0, float(cursor_x) / float(screen_w)))
+        from ctypes import wintypes
+        wr = wintypes.RECT()
+        u.GetWindowRect(hwnd, ctypes.byref(wr))
+        max_left = int(wr.left)
+        max_w = max(1, int(wr.right - wr.left))
+
+        vx = int(u.GetSystemMetrics(76))  # SM_XVIRTUALSCREEN
+        vy = int(u.GetSystemMetrics(77))  # SM_YVIRTUALSCREEN
+        vw = int(u.GetSystemMetrics(78)) or (int(u.GetSystemMetrics(0)) or 1920)  # SM_CXVIRTUALSCREEN
+        vh = int(u.GetSystemMetrics(79)) or (int(u.GetSystemMetrics(1)) or 1080)  # SM_CYVIRTUALSCREEN
+
+        ratio = max(0.08, min(0.92, float(cursor_x - max_left) / float(max_w)))
 
         try:
             u.ShowWindow(hwnd, 9)  # SW_RESTORE
-            time.sleep(0.06)
+            time.sleep(0.05)
             _, _, width, height = self._geom()
+            if self._restore_box and len(self._restore_box) == 4:
+                _, _, r_w, r_h = self._restore_box
+                if r_w > 200 and r_h > 150:
+                    width, height = int(r_w), int(r_h)
             if width <= 0 or height <= 0:
                 return {"ok": False}
 
             new_x = int(cursor_x - ratio * width)
             new_y = int(cursor_y - 15)
-            new_x = max(120 - width, min(new_x, screen_w - 120))
-            new_y = max(0, min(new_y, screen_h - 80))
+            new_x = max(vx + 100 - width, min(new_x, vx + vw - 100))
+            new_y = max(vy, min(new_y, vy + vh - 60))
 
-            self._window.move(new_x, new_y)
+            self.win_set_bounds(new_x, new_y, width, height)
             self._maximized = False
-            self._persist()
+            self._persist(maximized=False)
             return {"ok": True, "x": new_x, "y": new_y, "width": width, "height": height}
         except Exception as e:
             log_desktop_error("win_restore_for_drag failed: %s" % e)
@@ -410,7 +416,6 @@ class WindowBridge:
             self.apply_maximized(False)
             box = self._restore_box
             if box:
-                # 用最大化之前的尺寸写回，避免把最大化尺寸当成窗口尺寸存下来
                 _save_bounds_cfg(self._bounds_key, box[0], box[1], box[2], box[3], maximized=False)
             else:
                 self._persist(maximized=False)
@@ -444,6 +449,8 @@ class WindowBridge:
             return False
         try:
             self._window.move(int(x), int(y))
+            if self._role == "overlay" and _overlay_click_through:
+                _notify_overlay_page()
             return True
         except Exception:
             return False
@@ -485,23 +492,25 @@ class WindowBridge:
     def win_set_bounds(self, x=0, y=0, width=1024, height=680):
         """
         移动 + 缩放。
-
         必须走 pywebview 的 move/resize（内部是 WinForms 的 Location/Size），
-        WebView2 子窗口才会跟着重排。直接 SetWindowPos 只改宿主窗口，子窗口
-        会停在旧尺寸，表现为内容整体偏移/被裁掉一截。
+        WebView2 子窗口才会跟着重排。
         """
         if self._window is None:
             return False
         try:
             x = int(x)
             y = int(y)
-            width = max(200, int(width))
-            height = max(150, int(height))
+            # 解锁小窗只有几十像素宽，不能被主窗的最小尺寸兜住
+            min_w, min_h = (24, 16) if self._role == "unlock" else (200, 150)
+            width = max(min_w, int(width))
+            height = max(min_h, int(height))
             fw, fh = self._frame_delta(self._hwnd())
             self._window.move(x, y)
             self._window.resize(int(round(width + fw)), int(round(height + fh)))
             self._requested_size = (width, height)
             self._maximized = False
+            if self._role == "overlay" and _overlay_click_through:
+                _notify_overlay_page()
             return True
         except Exception as e:
             log_desktop_error("win_set_bounds failed: %s" % e)
@@ -553,7 +562,6 @@ class WindowBridge:
             return False
 
 
-
 def parse_hotkey_modifiers(hotkey_str: str):
     """Parses hotkey string like 'Alt+Space', 'Alt+G', or 'Ctrl+Alt+V' into Win32 (fsModifiers, vk)."""
     MOD_ALT = 0x0001
@@ -571,6 +579,7 @@ def parse_hotkey_modifiers(hotkey_str: str):
         "F1": 0x70, "F2": 0x71, "F3": 0x72, "F4": 0x73,
         "F5": 0x74, "F6": 0x75, "F7": 0x76, "F8": 0x77,
         "F9": 0x78, "F10": 0x79, "F11": 0x7A, "F12": 0x7B,
+        "INS": 0x2D, "INSERT": 0x2D,
     }
 
     for p in parts:
@@ -591,14 +600,15 @@ def parse_hotkey_modifiers(hotkey_str: str):
 
 
 def _find_overlay_hwnd() -> int:
-    """Locates the Win32 HWND for the In-Game Companion Overlay window.
-
-    多实例（比如源码版 + exe 版同时跑）时按标题找会命中别人的窗口，
-    所以这里优先返回**本进程**拥有的那个。
-    """
+    """Locates the Win32 HWND for the In-Game Companion Overlay window."""
     if not IS_WINDOWS:
         return 0
     try:
+        api = globals().get("_overlay_api")
+        if api is not None:
+            h = api._hwnd()
+            if h:
+                return int(h)
         from ctypes import wintypes
         user32 = ctypes.windll.user32
         my_pid = os.getpid()
@@ -675,14 +685,21 @@ def set_overlay_opacity(value: float) -> Dict[str, Any]:
 
     hwnd = _find_overlay_hwnd()
     applied = _apply_overlay_layered(hwnd, _overlay_click_through, _overlay_opacity)
+    unlock_h = _unlock_hwnd()
+    if unlock_h and _overlay_click_through:
+        _apply_overlay_layered(unlock_h, False, max(0.85, _overlay_opacity))
     return {"success": True, "opacity": _overlay_opacity, "applied_win32": applied}
 
 
 def get_overlay_state() -> Dict[str, Any]:
+    cfg = load_config()
+    overlay_hk = (cfg.get("global_overlay_hotkey") or "Alt+G").strip()
     return {
         "click_through": bool(_overlay_click_through),
         "opacity": float(_overlay_opacity),
         "visible": is_overlay_visible(),
+        "overlay_hotkey": overlay_hk,
+        "active_game_id": _active_overlay_game_id,
     }
 
 
@@ -698,11 +715,7 @@ def _notify_overlay_page() -> None:
 
 
 def _force_relayout(hwnd: int) -> None:
-    """强制窗口和它的子窗口（WebView2）重新计算布局。
-
-    快速连续 SetWindowPos 或隐藏状态下移动窗口后，WebView2 子窗口偶尔会停在
-    旧位置，表现为内容整体偏移/被裁掉一截。SWP_FRAMECHANGED + 重绘可以纠正。
-    """
+    """强制窗口和它的子窗口（WebView2）重新计算布局。"""
     if not IS_WINDOWS or not hwnd:
         return
     try:
@@ -724,17 +737,26 @@ def _force_relayout(hwnd: int) -> None:
 def _unlock_hwnd() -> int:
     api = globals().get("_unlock_api")
     try:
-        return api._hwnd() if api is not None else 0
+        h = api._hwnd() if api is not None else 0
+        if h:
+            return int(h)
+        if IS_WINDOWS:
+            return int(ctypes.windll.user32.FindWindowW(None, UNLOCK_WINDOW_TITLE) or 0)
+        return 0
     except Exception:
         return 0
 
 
 def _position_unlock_chip(x: int, y: int, w: int, h: int) -> None:
-    """把解锁小窗精确盖在「已穿透」按钮的位置上；尺寸为 0 时隐藏。"""
+    """
+    把解锁小窗精确盖在「已穿透 / 点击解锁」按钮的物理像素位置上；
+    尺寸为 0 或未开启穿透时立即隐藏。
+    前端已将 getBoundingClientRect() 乘上 window.devicePixelRatio 转为物理客户端像素。
+    """
     win = _unlock_window
     if win is None:
         return
-    if w <= 0 or h <= 0:
+    if w <= 0 or h <= 0 or not _overlay_click_through:
         _hide_unlock_window()
         return
 
@@ -747,65 +769,99 @@ def _position_unlock_chip(x: int, y: int, w: int, h: int) -> None:
         pt = wintypes.POINT(int(x), int(y))
         user32.ClientToScreen(overlay, ctypes.byref(pt))
         sx, sy = int(pt.x), int(pt.y)
-        sw, sh = max(18, int(w)), max(16, int(h))
-        hwnd = _unlock_hwnd()
-        if hwnd:
-            SWP_NOZORDER = 0x0004
-            SWP_NOACTIVATE = 0x0010
-            user32.SetWindowPos(hwnd, 0, sx, sy, sw, sh, SWP_NOZORDER | SWP_NOACTIVATE)
+        sw, sh = max(48, int(w)), max(20, int(h))
+
         if not getattr(win, "_is_visible", False):
             win.show()
             win._is_visible = True
-        # 保持和伴侣窗一致的层级与不透明度
-        try:
-            _apply_overlay_layered(hwnd, False, _overlay_opacity)
-        except Exception:
-            pass
+
+        hwnd = _unlock_hwnd()
+        if hwnd:
+            try:
+                _apply_overlay_layered(hwnd, False, max(0.88, _overlay_opacity))
+            except Exception:
+                pass
+            # raw SetWindowPos 对这个 pywebview 子窗不管用（WinForms 会按缓存的
+            # Size/Location 摆回去），改走 pywebview 自己的 move/resize。
+            api = globals().get("_unlock_api")
+            if api is not None:
+                api.win_set_bounds(sx, sy, sw, sh)
+            else:
+                HWND_TOPMOST = -1
+                SWP_NOACTIVATE = 0x0010
+                SWP_SHOWWINDOW = 0x0040
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, sx, sy, sw, sh,
+                                    SWP_NOACTIVATE | SWP_SHOWWINDOW)
     except Exception as e:
         print(f"[Desktop] position unlock chip failed: {e}")
 
 
+# ---------------------------------------------------------
+# 痛点 7 终极修复：标准 _MSLLHOOKSTRUCT + 60fps 非阻塞异步滚轮派发线程
+# ---------------------------------------------------------
+if IS_WINDOWS:
+    from ctypes import wintypes
+
+    class _MSLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("pt", wintypes.POINT),
+            ("mouseData", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ctypes.c_size_t),
+        ]
+
 _wheel_hook_started = False
-
-
 _wheel_lock = threading.Lock()
 _wheel_pending = 0
-_wheel_last_sent = 0.0
+_wheel_event = threading.Event()
+
+
+def _wheel_dispatch_worker() -> None:
+    """
+    后台 60fps 异步派发线程：
+    绝不在 WH_MOUSE_LL 低级钩子回调内直接调用 evaluate_js（会跨线程阻塞等待 GUI，
+    导致鼠标卡顿甚至被 Windows 静默摘除钩子）。
+    """
+    global _wheel_pending
+    while not _server_should_exit:
+        _wheel_event.wait()
+        _wheel_event.clear()
+        while not _server_should_exit:
+            with _wheel_lock:
+                delta = _wheel_pending
+                _wheel_pending = 0
+            if not delta:
+                break
+            w = _overlay_window
+            if w is not None and _overlay_click_through:
+                # Windows wheel delta: +120 = 向上滚，-120 = 向下滚
+                # 换算为页面 scrollTop 像素增量（正数向下滚，负数向上滚）
+                px_delta = int(round(-(float(delta) / 120.0) * 96.0))
+                if px_delta == 0:
+                    px_delta = -24 if delta > 0 else 24
+                try:
+                    w.evaluate_js(
+                        "window.__acgScrollBy && window.__acgScrollBy(%d)" % px_delta
+                    )
+                except Exception:
+                    pass
+            time.sleep(0.016)  # ~60fps 合并派发
 
 
 def _forward_overlay_wheel(delta: int) -> None:
-    """把滚轮转发给伴侣窗页面。
-
-    合并 40ms 内的多次滚动，避免高频 evaluate_js 把 pywebview 的回调表冲掉
-    （表现为 win_get_state.<id> is not a function）。
-    """
-    global _wheel_pending, _wheel_last_sent
-
-    w = _overlay_window
-    if w is None:
-        return
-
+    """在 WH_MOUSE_LL 钩子回调内仅做 O(1) 原子累加并唤醒异步派发线程。"""
+    global _wheel_pending
     with _wheel_lock:
         _wheel_pending += int(delta)
-        now = time.time()
-        if now - _wheel_last_sent < 0.04:
-            return
-        total = _wheel_pending
-        _wheel_pending = 0
-        _wheel_last_sent = now
-
-    try:
-        w.evaluate_js("window.__acgScrollBy && window.__acgScrollBy(%d)" % total)
-    except Exception:
-        pass
+    _wheel_event.set()
 
 
 def _wheel_hook_loop() -> None:
-    """WH_MOUSE_LL：只在「穿透锁定」时拦截伴侣窗范围内的滚轮。
-
-    64 位下 WPARAM/LPARAM 是 8 字节，必须显式声明 argtypes，
-    否则 CallNextHookEx 会抛 OverflowError —— 每个鼠标事件都写一条
-    traceback，日志几分钟就能涨到上百 MB。
+    """
+    WH_MOUSE_LL 低级鼠标钩子：只在「穿透锁定」时拦截伴侣窗范围内的滚轮。
+    修复：通过 ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents.mouseData
+    提取高 16 位有符号滚轮增量（原先误把结构体指针地址 l_param 当作 mouseData 位移！）。
     """
     from ctypes import wintypes
 
@@ -826,18 +882,17 @@ def _wheel_hook_loop() -> None:
 
     def _proc(n_code, w_param, l_param):
         try:
-            if n_code == HC_ACTION and w_param == WM_MOUSEWHEEL and _overlay_click_through:
+            if n_code == HC_ACTION and w_param == WM_MOUSEWHEEL and _overlay_click_through and l_param:
                 hwnd = _find_overlay_hwnd()
                 if hwnd:
-                    pt = wintypes.POINT()
-                    user32.GetCursorPos(ctypes.byref(pt))
+                    ms = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
                     rect = wintypes.RECT()
-                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    if rect.left <= pt.x < rect.right and rect.top <= pt.y < rect.bottom:
-                        delta = ctypes.c_short((l_param >> 16) & 0xFFFF).value
-                        if delta:
-                            _forward_overlay_wheel(delta)
-                            return 1  # 吞掉，避免同时缩放游戏
+                    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                        if rect.left <= ms.pt.x < rect.right and rect.top <= ms.pt.y < rect.bottom:
+                            delta = ctypes.c_short((ms.mouseData >> 16) & 0xFFFF).value
+                            if delta:
+                                _forward_overlay_wheel(delta)
+                                return 1  # 吞掉滚轮消息，防止底层全屏游戏画面被意外缩放或翻滚
         except Exception:
             pass
         try:
@@ -845,14 +900,14 @@ def _wheel_hook_loop() -> None:
         except Exception:
             return 0
 
-    proc = HOOKPROC(_proc)  # 必须保持引用，否则会被 GC
+    proc = HOOKPROC(_proc)  # 必须保持引用，防止 GC 回收回调
     hook = user32.SetWindowsHookExW(WH_MOUSE_LL, proc, None, 0)
     if not hook:
         print("[Desktop] wheel hook install failed")
         return
 
     msg = wintypes.MSG()
-    while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
+    while not _server_should_exit and user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
         user32.TranslateMessage(ctypes.byref(msg))
         user32.DispatchMessageW(ctypes.byref(msg))
     user32.UnhookWindowsHookEx(hook)
@@ -863,36 +918,65 @@ def _ensure_wheel_hook() -> None:
     if _wheel_hook_started or not IS_WINDOWS:
         return
     _wheel_hook_started = True
+    threading.Thread(target=_wheel_dispatch_worker, daemon=True).start()
     threading.Thread(target=_wheel_hook_loop, daemon=True).start()
 
 
 def _show_unlock_window() -> None:
-    """穿透锁定时在伴侣窗右上角显示一个可点击的「解锁」小窗。"""
+    """
+    穿透锁定时在伴侣窗「锁定穿透」按钮位置显示可点击的「🔓 解锁」小窗。
+    优先通知前端上报高 DPI 物理像素坐标精确贴合；兜底位置避开右上角 30px 标题栏按钮。
+    """
     w = _unlock_window
     if w is None:
         return
     try:
-        api = _overlay_api
-        if api is not None:
-            ox, oy = api._position()
-            ow, _ = api._current_size()
-            x = max(0, int(ox + ow - 116))
-            y = max(0, int(oy + 4))
+        overlay_hwnd = _find_overlay_hwnd()
+        if overlay_hwnd and IS_WINDOWS:
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            wr = wintypes.RECT()
+            user32.GetWindowRect(overlay_hwnd, ctypes.byref(wr))
+            dpi = 96
+            try:
+                dpi = user32.GetDpiForWindow(overlay_hwnd) or 96
+            except Exception:
+                dpi = 96
+            scale = float(dpi) / 96.0
+            chip_w = int(round(78 * scale))
+            chip_h = int(round(24 * scale))
+            # 默认放在标题栏下方工具栏右侧（绝不遮挡右上角最小化/关闭按钮）
+            sx = max(int(wr.left + 8), int(wr.right - round(154 * scale)))
+            sy = int(wr.top + round(38 * scale))
+            if not getattr(w, "_is_visible", False):
+                w.show()
+                w._is_visible = True
+            uhwnd = _unlock_hwnd()
+            if uhwnd:
+                HWND_TOPMOST = -1
+                SWP_NOACTIVATE = 0x0010
+                SWP_SHOWWINDOW = 0x0040
+                user32.SetWindowPos(uhwnd, HWND_TOPMOST, sx, sy, chip_w, chip_h, SWP_NOACTIVATE | SWP_SHOWWINDOW)
+                _apply_overlay_layered(uhwnd, False, max(0.88, _overlay_opacity))
         else:
-            x, y = 200, 200
-        w.move(x, y)
-        w.show()
-        w._is_visible = True
-        threading.Thread(target=_raise_hwnd_unlock, daemon=True).start()
+            w.show()
+            w._is_visible = True
+            threading.Thread(target=_raise_hwnd_unlock, daemon=True).start()
+        # 立即请求伴侣窗前端上报精确按钮坐标进行二次对齐
+        if _overlay_window is not None:
+            try:
+                _overlay_window.evaluate_js("window.__acgReportUnlockChip && window.__acgReportUnlockChip()")
+            except Exception:
+                pass
     except Exception as e:
         print(f"[Desktop] show unlock window failed: {e}")
 
 
 def _raise_hwnd_unlock() -> None:
     try:
-        hwnd = ctypes.windll.user32.FindWindowW(None, UNLOCK_WINDOW_TITLE)
+        hwnd = _unlock_hwnd()
         if hwnd:
-            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040)
+            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040)
     except Exception:
         pass
 
@@ -920,7 +1004,6 @@ def set_overlay_click_through(enable: Optional[bool] = None) -> Dict[str, Any]:
     hwnd = _find_overlay_hwnd()
     applied_win32 = _apply_overlay_layered(hwnd, target_state, _overlay_opacity)
 
-    # 穿透时给出一个可点击的解锁小窗（整窗穿透后自身无法再响应点击）
     if target_state:
         _show_unlock_window()
         _ensure_wheel_hook()
@@ -928,12 +1011,16 @@ def set_overlay_click_through(enable: Optional[bool] = None) -> Dict[str, Any]:
         _hide_unlock_window()
     _notify_overlay_page()
 
+    cfg = load_config()
+    overlay_hk = (cfg.get("global_overlay_hotkey") or "Alt+G").strip()
+
     return {
         "success": True,
         "click_through": _overlay_click_through,
         "applied_win32": applied_win32,
+        "overlay_hotkey": overlay_hk,
         "message": (
-            "已开启 HUD 鼠标穿透锁定！鼠标点击将直接穿透至下层游戏（按 Alt+G 或 Alt+T 可随时解除锁定）"
+            f"已开启 HUD 鼠标穿透锁定！鼠标点击直达下层游戏，滚轮仍可翻页（按 {overlay_hk} 或 Alt+T 可随时解除锁定）"
             if _overlay_click_through
             else "已解除鼠标穿透锁定，伴侣窗恢复自由交互"
         )
@@ -968,23 +1055,25 @@ def launch_chromium_app_window(url: str, width: int = 1440, height: int = 900) -
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
     ]
+    no_win_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if IS_WINDOWS else 0
     for exe in candidates:
         if exe and os.path.exists(exe):
             try:
-                subprocess.Popen([exe, f"--app={url}", f"--window-size={width},{height}"])
+                subprocess.Popen(
+                    [exe, f"--app={url}", f"--window-size={width},{height}"],
+                    creationflags=no_win_flag,
+                )
                 return True
             except Exception:
                 continue
     return False
 
 
-def _restore_main_window() -> None:
-    """从托盘/最小化恢复主窗口。
+_open_browser_overlay = launch_chromium_app_window
 
-    pywebview 的 Window.restore() 会把 FormWindowState 设成 Normal —— 对最大化过的
-    窗口就是"悄悄降级成窗口态"，但前端按钮还停留在最大化图标、拖拽也被判为不可拖。
-    所以这里只在真的最小化时调用 SW_RESTORE，最大化状态则重新断言。
-    """
+
+def _restore_main_window() -> None:
+    """从托盘/最小化恢复主窗口。"""
     w = _webview_window
     if w is None:
         return
@@ -1082,18 +1171,31 @@ def is_overlay_visible() -> bool:
 def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optional[int] = None) -> bool:
     """
     Restores or toggles the Always-on-Top In-Game Companion Overlay window (default Alt+G).
-    If Click-Through HUD mode is currently locked and the user presses Alt+G, it unlocks
-    Click-Through first so the user can interact with the overlay immediately.
+    - If Click-Through HUD mode is currently locked and the user presses Alt+G, it unlocks
+      Click-Through first so the user can interact with the overlay immediately.
+    - If a new game_id is explicitly requested that differs from _active_overlay_game_id,
+      it switches the overlay to that game while keeping the window open instead of closing it.
     """
-    global _overlay_window
-    suffix = f"?game_id={game_id}" if game_id else ""
+    global _overlay_window, _active_overlay_game_id
+    switching_game = bool(game_id is not None and game_id != _active_overlay_game_id)
+    if game_id is not None:
+        _active_overlay_game_id = int(game_id)
+
+    suffix = f"?game_id={_active_overlay_game_id}" if _active_overlay_game_id else ""
     url = f"http://127.0.0.1:{port}/overlay{suffix}"
 
     if _overlay_window is not None:
         try:
-            if game_id:
+            is_vis = bool(getattr(_overlay_window, "_is_visible", False))
+            if game_id is not None and (switching_game or not is_vis):
                 _overlay_window.load_url(url)
-            if getattr(_overlay_window, "_is_visible", False):
+
+            if is_vis:
+                if switching_game:
+                    if _overlay_click_through:
+                        set_overlay_click_through(False)
+                    threading.Thread(target=_raise_hwnd_topmost, daemon=True).start()
+                    return True
                 if _overlay_click_through and toggle:
                     set_overlay_click_through(False)
                     return True
@@ -1104,6 +1206,7 @@ def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optio
                     _overlay_window.hide()
                     _overlay_window._is_visible = False
                     return True
+
             _overlay_window.show()
             _overlay_window.restore()
             _overlay_window._is_visible = True
@@ -1118,13 +1221,12 @@ def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optio
             threading.Thread(target=_force_relayout, args=(_find_overlay_hwnd(),), daemon=True).start()
             if _overlay_click_through:
                 _show_unlock_window()
-            # 让 WebView2 先完成一次布局，再抢顶层
             threading.Thread(target=_raise_hwnd_topmost, daemon=True).start()
             return True
         except Exception as e:
             print(f"[Desktop] Overlay toggle failed, falling back: {e}")
 
-    if launch_chromium_app_window(url, 460, 740):
+    if _open_browser_overlay(url, 460, 740):
         threading.Thread(target=_edge_overlay_watchdog, args=(port,), daemon=True).start()
         return True
     webbrowser.open(url)
@@ -1211,11 +1313,11 @@ def start_system_tray(port: int, on_exit_callback):
 
         img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        draw.rounded_rectangle((4, 4, 60, 60), radius=16, fill=(99, 102, 241, 255))
-        draw.rounded_rectangle((14, 20, 50, 44), radius=8, fill=(255, 255, 255, 240))
-        draw.ellipse((36, 26, 44, 34), fill=(236, 72, 153, 255))
-        draw.rectangle((20, 28, 28, 32), fill=(99, 102, 241, 255))
-        draw.rectangle((22, 26, 26, 34), fill=(99, 102, 241, 255))
+        draw.rounded_rectangle((4, 4, 60, 60), radius=16, fill=(230, 0, 18, 255))
+        draw.rounded_rectangle((14, 20, 50, 44), radius=8, fill=(255, 255, 255, 245))
+        draw.ellipse((36, 26, 44, 34), fill=(0, 195, 227, 255))
+        draw.rectangle((20, 28, 28, 32), fill=(230, 0, 18, 255))
+        draw.rectangle((22, 26, 26, 34), fill=(230, 0, 18, 255))
 
         def _on_show(icon, item):
             show_or_toggle_desktop_window(port, toggle=False)
@@ -1276,28 +1378,20 @@ def run_desktop_app():
     wait_for_server_ready(port)
 
     def _clean_shutdown():
-        """
-        退出清理。
-
-        注意：这个函数会被 FormClosing / JS API 回调调用，**绝对不能在里面同步
-        destroy() 窗口**——destroy 会再次触发 FormClosing，于是重入到这里，
-        形成无限递归：栈溢出 → pythonnet 再去构造异常类型时二次崩溃，
-        弹出「Failed to create Python type for ExceptionDispatchInfo」。
-        所以这里只置标志位，然后在一个独立线程里延时硬退出。
-        """
+        """退出清理（幂等、防重入递归）。"""
         global _server_should_exit, _shutting_down
 
         if _shutting_down:
             return
         _shutting_down = True
         _server_should_exit = True
+        _wheel_event.set()
 
         try:
             server.should_exit = True
         except Exception:
             pass
 
-        # 托盘 stop() 会等待托盘线程结束，若直接在自己的菜单回调里调用会死锁
         try:
             if tray_icon is not None:
                 threading.Thread(target=tray_icon.stop, daemon=True).start()
@@ -1366,8 +1460,6 @@ def run_desktop_app():
                            prefix="ACG Game Vault")
 
             def _apply_startup_bounds():
-                """create_window 的 width/height 与真实可见尺寸差一圈 DWM 外框，
-                所以启动后直接用 SetWindowPos 把上次的可见几何套回去。"""
                 for _ in range(50):
                     time.sleep(0.2)
                     hwnd = main_api._hwnd()
@@ -1391,16 +1483,13 @@ def run_desktop_app():
             threading.Thread(target=_apply_startup_bounds, daemon=True).start()
 
             if main_maximized:
-                # 启动即最大化时，把配置里的「还原框」先记下来，
-                # 否则用户点还原会把最大化后的 (0,0) 存成窗口位置。
                 main_api._restore_box = (
-                    _opt_int(mb.get("x")) or 0,
-                    _opt_int(mb.get("y")) or 0,
+                    _opt_int(mb.get("x")) or 60,
+                    _opt_int(mb.get("y")) or 60,
                     int(mb.get("width") or 1460),
                     int(mb.get("height") or 920),
                 )
-                # 无边框窗口不能用 WinForms 的 Maximize（会保留原 Location 导致窗口半屏在屏幕外），
-                # 等 HWND 出现后用 Win32 ShowWindow 交给系统处理。
+
                 def _apply_startup_maximize():
                     for _ in range(40):
                         time.sleep(0.25)
@@ -1409,8 +1498,6 @@ def run_desktop_app():
                             return
                 threading.Thread(target=_apply_startup_maximize, daemon=True).start()
 
-            # Hidden always-on-top Companion Overlay, ready for an instant Alt+G summon.
-            # Frameless + on_top is what makes it behave like a real in-game HUD.
             overlay_win = webview.create_window(
                 title=OVERLAY_WINDOW_TITLE,
                 url=overlay_url,
@@ -1434,14 +1521,14 @@ def run_desktop_app():
                               size=(int(ob.get("width") or 460), int(ob.get("height") or 740)),
                               prefix="ACG Vault 伴侣悬浮窗")
 
-            # 穿透锁定时整窗不接收鼠标，必须另开一个不穿透的小窗做「解锁」按钮
+            # 穿透锁定时整窗不接收鼠标，用 78x24 的精准微窗对齐在「🔓 解锁」按钮上
             unlock_api = WindowBridge("unlock")
             unlock_win = webview.create_window(
                 title=UNLOCK_WINDOW_TITLE,
                 url=f"{url}/overlay_unlock",
-                width=112,
-                height=40,
-                min_size=(24, 16),
+                width=78,
+                height=24,
+                min_size=(48, 20),
                 frameless=True,
                 on_top=True,
                 hidden=True,
@@ -1452,6 +1539,7 @@ def run_desktop_app():
             )
             unlock_win._is_visible = False
             unlock_api._bind(unlock_win, True, title=UNLOCK_WINDOW_TITLE,
+                             size=(78, 24),
                              prefix="ACG Vault 穿透解锁条")
             globals()["_unlock_window"] = unlock_win
             globals()["_unlock_api"] = unlock_api
@@ -1500,7 +1588,6 @@ def run_desktop_app():
 
             def on_closing():
                 if _shutting_down:
-                    # 已经在退出流程里，放行关闭，绝不再进一次 _clean_shutdown
                     return True
                 try:
                     latest_cfg = load_config()
@@ -1520,8 +1607,6 @@ def run_desktop_app():
 
             window.events.closing += on_closing
 
-            # private_mode=False + storage_path 才能让 localStorage（大屏设置、
-            # 攻略布局记忆、视图模式）跨重启保留。
             webview.start(
                 private_mode=False,
                 storage_path=str(DATA_DIR / "webview_profile"),

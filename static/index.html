@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>ACG Game Vault v3.1.1 - 本地游戏资产、大屏模式、AI攻略与数据馆藏中心</title>
+  <title>ACG Game Vault v3.2.0 - 本地游戏资产、大屏模式、AI攻略与数据馆藏中心</title>
 
   <!-- Global Diagnostic & Error Interceptor -->
   <script>
@@ -21,6 +21,7 @@
       } catch(e) {}
     }
     function showGlobalErrorBanner(errTitle, detail) {
+      if (window.__ACG_BOOTED) return;
       var box = document.getElementById('boot-error-box');
       var text = document.getElementById('boot-error-text');
       if (box && text) {
@@ -67,11 +68,11 @@
     };
   </script>
   <!-- Local Vendor Libraries (100% Offline, Zero External CDN) -->
-  <script src="/static/vendor/tailwindcss.js?v=2.4"></script>
-  <script src="/static/vendor/vue.global.prod.js?v=2.4"></script>
-  <script src="/static/vendor/lucide.min.js?v=2.4"></script>
-  <script src="/static/vendor/marked.min.js?v=2.4"></script>
-  <link rel="stylesheet" href="/static/style.css?v=2.4">
+  <script src="/static/vendor/tailwindcss.js?v=3.2"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=3.2"></script>
+  <script src="/static/vendor/lucide.min.js?v=3.2"></script>
+  <script src="/static/vendor/marked.min.js?v=3.2"></script>
+  <link rel="stylesheet" href="/static/style.css?v=3.2">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
@@ -84,9 +85,9 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.0">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.1">
-  <script src="/static/theme.js?v=3.0"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.2">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.2">
+  <script src="/static/theme.js?v=3.2"></script>
 </head>
 <body class="bg-[#070a12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
   <!-- Boot / Crash Emergency Fallback Banner -->
@@ -96,7 +97,7 @@
         <span style="font-size:20px;">⚠️</span>
         <span>页面加载或执行遇到异常</span>
       </div>
-      <button onclick="location.reload(true)" style="background:linear-gradient(to right, #6366f1, #ec4899); color:#fff; border:none; border-radius:10px; padding:8px 18px; cursor:pointer; font-weight:bold; font-size:13px;">强制清除缓存刷新 (Ctrl+F5)</button>
+      <button onclick="location.reload()" style="background:linear-gradient(to right, #6366f1, #ec4899); color:#fff; border:none; border-radius:10px; padding:8px 18px; cursor:pointer; font-weight:bold; font-size:13px;">强制清除缓存刷新 (Ctrl+F5)</button>
     </div>
     <p style="font-size:12px; color:#cbd5e1; margin:0 0 10px 0; line-height:1.5;">
       如果界面长时间空白或只显示背景色，通常是因为浏览器缓存了旧版脚本。点击上方按钮或按键盘 <strong>Ctrl + F5</strong> 即可一键恢复。
@@ -239,7 +240,7 @@
           <div>
             <div class="flex items-center space-x-2">
               <h1 class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-indigo-300 bg-clip-text text-transparent">ACG Vault</h1>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v3.1.1</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v3.2.0</span>
             </div>
             <p class="text-[11px] text-slate-400 font-medium">本地 ACG 资产、AI 攻略与馆藏中心</p>
           </div>
@@ -1006,7 +1007,7 @@
             :key="game.id"
             @click="isBatchMode ? toggleGameSelect(game.id) : openGameDetail(game)"
             :class="[
-              'glass-card rounded-2xl overflow-hidden cursor-pointer group flex flex-col justify-between relative',
+              'game-card glass-card rounded-2xl overflow-hidden cursor-pointer group flex flex-col justify-between relative',
               cardHoverStyle === 'classic' ? 'hover-classic' : 'hover-minimal',
               isGameSelected(game.id) ? 'ring-2 ring-indigo-500 bg-slate-800/90' : '',
               isGameRunning(game.id) ? 'is-running-card' : ''
@@ -3131,7 +3132,7 @@
           <div class="flex items-center justify-between border-b border-slate-800 pb-3">
             <h2 class="text-base font-bold text-white flex items-center space-x-2">
               <i data-lucide="settings" class="w-5 h-5 text-indigo-400"></i>
-              <span>ACG Vault v3.1.1 系统与个性化定制中心</span>
+              <span>ACG Vault v3.2.0 系统与个性化定制中心</span>
             </h2>
             <button @click="showSettingsModal = false" class="text-slate-400 hover:text-white cursor-pointer">
               <i data-lucide="x" class="w-5 h-5"></i>
@@ -3332,6 +3333,19 @@
                     :style="{ background: a.color }"
                   ></button>
                 </div>
+              </div>
+
+              <div class="mt-3 pt-3 border-t border-slate-700/60 flex items-center justify-between gap-3">
+                <div>
+                  <div class="text-slate-300 font-semibold">Switch Horizon OS 微音效反馈</div>
+                  <div class="text-[10px] text-slate-500 mt-0.5">焦点移动、确认、启动游戏与锁定伴侣窗时播放合成音效</div>
+                </div>
+                <input
+                  type="checkbox"
+                  :checked="uiSfxEnabled"
+                  @change="toggleUiSfx($event.target.checked)"
+                  class="w-4 h-4 rounded border-slate-700 text-indigo-600 bg-slate-800 cursor-pointer"
+                />
               </div>
             </div>
 
@@ -4464,13 +4478,19 @@
 
   </div>
 
-  <script src="/static/windowbar.js?v=2.6.3"></script>
-  <script src="/static/app.js?v=2.6.2"></script>
+  <script src="/static/windowbar.js?v=3.2"></script>
+  <script src="/static/app.js?v=3.2"></script>
   <!-- Watchdog: Check if Vue mounted correctly -->
   <script>
     setTimeout(function() {
       var app = document.getElementById('app');
-      if (app && !app.hasAttribute('data-v-app')) {
+      if (app && app.hasAttribute('data-v-app')) {
+        window.__ACG_BOOTED = true;
+        var box = document.getElementById('boot-error-box');
+        if (box) box.style.display = 'none';
+        return;
+      }
+      if (app && !app.hasAttribute('data-v-app') && !window.__ACG_BOOTED) {
         showGlobalErrorBanner(
           'Vue 界面初始化超时',
           'Vue 应用未能正常挂载到页面 (#app 未就绪)。\n' +

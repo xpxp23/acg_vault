@@ -213,7 +213,6 @@ def get_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA busy_timeout=25000;")
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
     except Exception:
@@ -242,6 +241,10 @@ def db_session(commit: bool = False):
 
 def init_db():
     with db_session(commit=True) as (conn, cursor):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            pass
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS games (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -721,11 +724,56 @@ def get_all_games(
         return [row_to_dict(r) for r in rows]
 
 
+def get_overlay_switcher_games(running_ids: List[int], active_id: Optional[int], limit: int = 40) -> List[Dict[str, Any]]:
+    """
+    Lightweight query for the Companion Overlay switcher list: selects only the 5 needed columns
+    and sorts directly without loading full rows or parsing JSON/tags across all games.
+    """
+    running_set = {int(x) for x in running_ids if x}
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute(f"""
+            SELECT id, display_title, folder_name, last_played_at,
+                   CASE WHEN {HAS_WALKTHROUGH_SQL_COND} THEN 1 ELSE 0 END AS has_walkthrough
+            FROM games
+            WHERE is_archived = 0 AND is_tool = 0
+        """)
+        rows = [dict(r) for r in cursor.fetchall()]
+
+    rows.sort(
+        key=lambda g: (
+            1 if g["id"] in running_set else 0,
+            1 if (active_id and g["id"] == active_id) else 0,
+            int(g.get("has_walkthrough") or 0),
+            g.get("last_played_at") or ""
+        ),
+        reverse=True
+    )
+    return [{
+        "id": g["id"],
+        "display_title": g.get("display_title") or g.get("folder_name"),
+        "folder_name": g.get("folder_name"),
+        "has_walkthrough": bool(g.get("has_walkthrough")),
+        "is_running": g["id"] in running_set
+    } for g in rows[:limit]]
+
+
 def get_game_by_id(game_id: int) -> Optional[Dict[str, Any]]:
     with db_session(commit=False) as (_, cursor):
         cursor.execute("SELECT * FROM games WHERE id = ?", (game_id,))
         row = cursor.fetchone()
         return row_to_dict(row) if row else None
+
+
+def get_games_by_ids(game_ids: List[int]) -> List[Dict[str, Any]]:
+    if not game_ids:
+        return []
+    clean_ids = [int(x) for x in game_ids if x is not None]
+    if not clean_ids:
+        return []
+    placeholders = ",".join(["?"] * len(clean_ids))
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute(f"SELECT {LIGHTWEIGHT_GAME_COLUMNS} FROM games WHERE id IN ({placeholders})", clean_ids)
+        return [row_to_dict(r) for r in cursor.fetchall()]
 
 
 def get_game_by_path(folder_path: str) -> Optional[Dict[str, Any]]:
@@ -873,82 +921,102 @@ def upsert_game(game_data: Dict[str, Any]) -> int:
 
 
 def batch_upsert_games(games_list: List[Dict[str, Any]]):
-    """Performs fast transaction batch upsert for scanned games, protecting user-customized fields."""
+    """
+    Performs fast transaction batch upsert for scanned games, protecting user-customized fields.
+    Preprocesses disk existence checks (os.path.exists) and tag normalization outside the write transaction
+    so the SQLite write lock is held for minimal time.
+    """
     if not games_list:
         return
     now = datetime.now().isoformat()
 
-    with db_session(commit=True) as (_, cursor):
+    # Step 1: Read existing rows in a read-only session
+    with db_session(commit=False) as (_, cursor):
         cursor.execute("SELECT id, folder_path, folder_name, clean_title, display_title, engine_type, executable_path, downloaded_at FROM games")
         existing_map = {row["folder_path"]: dict(row) for row in cursor.fetchall()}
 
-        for g in games_list:
-            fpath = g["folder_path"]
-            norm_tags = normalize_and_localize_tags(g.get("tags", []), localize=True)
-            tags_str = json.dumps(norm_tags, ensure_ascii=False)
-            va_str = json.dumps(g.get("voice_actors", []), ensure_ascii=False)
-            has_trs = int(g.get("has_translation", 0))
+    # Step 2: Preprocess os.path.exists and normalize_and_localize_tags outside the write transaction
+    update_params: List[Tuple[Any, ...]] = []
+    insert_params: List[Tuple[Any, ...]] = []
 
-            if fpath in existing_map:
-                ex = existing_map[fpath]
-                gid = ex["id"]
-                prev_exe = ex.get("executable_path") or ""
-                final_exe = prev_exe if (prev_exe and os.path.exists(prev_exe)) else (g.get("executable_path") or prev_exe)
+    for g in games_list:
+        fpath = g["folder_path"]
+        norm_tags = normalize_and_localize_tags(g.get("tags", []), localize=True)
+        tags_str = json.dumps(norm_tags, ensure_ascii=False)
+        va_str = json.dumps(g.get("voice_actors", []), ensure_ascii=False)
+        has_trs = int(g.get("has_translation", 0))
 
-                prev_clean = ex.get("clean_title") or ""
-                new_clean = g.get("clean_title") or prev_clean
-                if prev_clean and prev_clean != ex.get("folder_name") and g["folder_name"] == ex.get("folder_name"):
-                    final_clean = prev_clean
-                else:
-                    final_clean = new_clean
+        if fpath in existing_map:
+            ex = existing_map[fpath]
+            gid = ex["id"]
+            prev_exe = ex.get("executable_path") or ""
+            final_exe = prev_exe if (prev_exe and os.path.exists(prev_exe)) else (g.get("executable_path") or prev_exe)
 
-                prev_disp = ex.get("display_title") or ""
-                if not prev_disp or prev_disp == ex.get("folder_name"):
-                    final_disp = final_clean or g["folder_name"]
-                else:
-                    final_disp = prev_disp
-
-                cursor.execute("""
-                    UPDATE games SET
-                        folder_name = ?,
-                        clean_title = ?,
-                        display_title = ?,
-                        engine_type = ?,
-                        executable_path = ?,
-                        folder_size_bytes = ?,
-                        folder_size_str = ?,
-                        folder_modified_at = ?,
-                        downloaded_at = COALESCE(NULLIF(downloaded_at, ''), ?),
-                        is_tool = ?,
-                        has_translation = CASE WHEN has_translation = 1 THEN 1 ELSE ? END,
-                        is_missing = 0,
-                        rj_code = CASE WHEN (rj_code IS NULL OR rj_code = '') AND ? != '' THEN ? ELSE rj_code END,
-                        updated_at = ?
-                    WHERE id = ?
-                """, (
-                    g["folder_name"], final_clean, final_disp, g.get("engine_type"), final_exe,
-                    g.get("folder_size_bytes", 0), g.get("folder_size_str", ""), g.get("folder_modified_at", ""),
-                    g.get("downloaded_at", ""), g.get("is_tool", 0), has_trs,
-                    g.get("rj_code", ""), g.get("rj_code", ""), now, gid
-                ))
+            prev_clean = ex.get("clean_title") or ""
+            new_clean = g.get("clean_title") or prev_clean
+            if prev_clean and prev_clean != ex.get("folder_name") and g["folder_name"] == ex.get("folder_name"):
+                final_clean = prev_clean
             else:
-                fields = [
-                    "folder_name", "folder_path", "clean_title", "display_title", "original_title",
-                    "rj_code", "engine_type", "executable_path", "folder_size_bytes", "folder_size_str",
-                    "folder_modified_at", "downloaded_at", "cover_url", "banner_url", "sample_images",
-                    "synopsis", "circle_name", "release_date", "voice_actors", "tags", "source_url",
-                    "source_type", "rating_score", "play_status", "user_rating", "user_notes",
-                    "walkthrough_md", "user_tags", "is_favorite", "is_tool", "has_translation",
-                    "is_missing", "created_at", "updated_at"
-                ]
-                cursor.execute(f"INSERT INTO games ({', '.join(fields)}) VALUES ({', '.join(['?']*len(fields))})", (
-                    g["folder_name"], g["folder_path"], g.get("clean_title", g["folder_name"]),
-                    g.get("display_title", g.get("clean_title", g["folder_name"])), "",
-                    g.get("rj_code", ""), g.get("engine_type", "Unknown"), g.get("executable_path", ""),
-                    g.get("folder_size_bytes", 0), g.get("folder_size_str", "0 MB"), g.get("folder_modified_at", ""),
-                    g.get("downloaded_at", ""), "", "", "[]", "", "", "", va_str, tags_str, "", "none", 0.0,
-                    "unplayed", 0, "", "", "[]", 0, g.get("is_tool", 0), has_trs, 0, now, now
-                ))
+                final_clean = new_clean
+
+            prev_disp = ex.get("display_title") or ""
+            if not prev_disp or prev_disp == ex.get("folder_name"):
+                final_disp = final_clean or g["folder_name"]
+            else:
+                final_disp = prev_disp
+
+            rj_val = g.get("rj_code", "")
+            update_params.append((
+                g["folder_name"], final_clean, final_disp, g.get("engine_type"), final_exe,
+                g.get("folder_size_bytes", 0), g.get("folder_size_str", ""), g.get("folder_modified_at", ""),
+                g.get("downloaded_at", ""), g.get("is_tool", 0), has_trs,
+                rj_val, rj_val, now, gid
+            ))
+        else:
+            insert_params.append((
+                g["folder_name"], g["folder_path"], g.get("clean_title", g["folder_name"]),
+                g.get("display_title", g.get("clean_title", g["folder_name"])), "",
+                g.get("rj_code", ""), g.get("engine_type", "Unknown"), g.get("executable_path", ""),
+                g.get("folder_size_bytes", 0), g.get("folder_size_str", "0 MB"), g.get("folder_modified_at", ""),
+                g.get("downloaded_at", ""), "", "", "[]", "", "", "", va_str, tags_str, "", "none", 0.0,
+                "unplayed", 0, "", "", "[]", 0, g.get("is_tool", 0), has_trs, 0, now, now
+            ))
+
+    # Step 3: Execute pure memory-bound batch SQL writes inside write transaction
+    insert_fields = [
+        "folder_name", "folder_path", "clean_title", "display_title", "original_title",
+        "rj_code", "engine_type", "executable_path", "folder_size_bytes", "folder_size_str",
+        "folder_modified_at", "downloaded_at", "cover_url", "banner_url", "sample_images",
+        "synopsis", "circle_name", "release_date", "voice_actors", "tags", "source_url",
+        "source_type", "rating_score", "play_status", "user_rating", "user_notes",
+        "walkthrough_md", "user_tags", "is_favorite", "is_tool", "has_translation",
+        "is_missing", "created_at", "updated_at"
+    ]
+    with db_session(commit=True) as (_, cursor):
+        if update_params:
+            cursor.executemany("""
+                UPDATE games SET
+                    folder_name = ?,
+                    clean_title = ?,
+                    display_title = ?,
+                    engine_type = ?,
+                    executable_path = ?,
+                    folder_size_bytes = ?,
+                    folder_size_str = ?,
+                    folder_modified_at = ?,
+                    downloaded_at = COALESCE(NULLIF(downloaded_at, ''), ?),
+                    is_tool = ?,
+                    has_translation = CASE WHEN has_translation = 1 THEN 1 ELSE ? END,
+                    is_missing = 0,
+                    rj_code = CASE WHEN (rj_code IS NULL OR rj_code = '') AND ? != '' THEN ? ELSE rj_code END,
+                    updated_at = ?
+                WHERE id = ?
+            """, update_params)
+        if insert_params:
+            cursor.executemany(
+                f"INSERT OR IGNORE INTO games ({', '.join(insert_fields)}) VALUES ({', '.join(['?']*len(insert_fields))})",
+                insert_params
+            )
 
 
 def manual_update_game_metadata(game_id: int, data: Dict[str, Any]) -> bool:
@@ -1688,6 +1756,21 @@ def batch_update_duplicates(dup_updates: List[Tuple[Optional[str], int, int]]):
         )
 
 
+def get_games_by_duplicate_group(group_id: str) -> List[Dict[str, Any]]:
+    """O(1) index lookup via idx_duplicate_group for all games sharing duplicate_group_id."""
+    if not group_id:
+        return []
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute(f"""
+            SELECT {LIGHTWEIGHT_GAME_COLUMNS} FROM games
+            WHERE is_archived = 0 AND is_tool = 0 AND duplicate_group_id = ?
+            ORDER BY folder_modified_at DESC
+        """, (group_id,))
+        rows = cursor.fetchall()
+    items = [row_to_dict(r) for r in rows]
+    return items if len(items) > 1 else []
+
+
 def get_duplicate_groups() -> Dict[str, List[Dict[str, Any]]]:
     with db_session(commit=False) as (_, cursor):
         cursor.execute(f"""
@@ -1800,6 +1883,28 @@ def add_ignored_path(folder_path: str, folder_name: str = "", clean_title: str =
             INSERT OR REPLACE INTO ignored_paths (folder_path, folder_name, clean_title, reason, created_at)
             VALUES (?, ?, ?, ?, ?)
         """, (norm_p, fname, clean_title or fname, reason, now))
+
+
+def add_ignored_paths_batch(items: List[Tuple[str, str, str]]) -> int:
+    """Batch inserts ignored paths in a single transaction (avoiding N+1 transactions during batch delete)."""
+    if not items:
+        return 0
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    params = []
+    for folder_path, folder_name, clean_title in items:
+        if not folder_path:
+            continue
+        norm_p = os.path.normpath(folder_path.strip())
+        fname = folder_name or os.path.basename(norm_p)
+        params.append((norm_p, fname, clean_title or fname, "user_removed", now))
+    if not params:
+        return 0
+    with db_session(commit=True) as (_, cursor):
+        cursor.executemany("""
+            INSERT OR REPLACE INTO ignored_paths (folder_path, folder_name, clean_title, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, params)
+        return len(params)
 
 
 def remove_ignored_path(path_or_id: Any) -> bool:

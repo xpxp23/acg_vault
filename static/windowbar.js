@@ -1,5 +1,5 @@
 /*
- * ACG Vault · Frameless Window Chrome (v2.6.3)
+ * ACG Vault · Frameless Window Chrome (v3.2.0)
  *
  * 在无边框 WebView2 窗口里重建一条「全局标题栏」：
  *   - 永远置顶（z-index 高于页面内所有全屏层），所以攻略全屏、大屏模式、伴侣窗里都能看到；
@@ -36,8 +36,8 @@
   }
   .acg-tb-dot {
     width: 8px; height: 8px; border-radius: 50%;
-    background: linear-gradient(135deg, #6366f1, #ec4899);
-    box-shadow: 0 0 8px rgba(99, 102, 241, 0.7);
+    background: linear-gradient(135deg, var(--ax-500, #6366f1), #ec4899);
+    box-shadow: 0 0 8px rgba(var(--ax-500-rgb, 99, 102, 241), 0.7);
     flex: 0 0 auto;
   }
   .acg-tb-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -57,6 +57,10 @@
   html.acg-frameless #app { min-height: calc(100vh - var(--acg-tb-h)) !important; }
   html.acg-frameless #app-header { top: var(--acg-tb-h) !important; }
   html.acg-frameless .bs-shell { height: calc(100vh - var(--acg-tb-h)) !important; }
+  html.acg-frameless .bs-top { top: 0 !important; }
+  html.acg-frameless .bs-detail,
+  html.acg-frameless .bs-sheet-mask,
+  html.acg-frameless .bs-reader { top: var(--acg-tb-h) !important; }
   html.acg-frameless #overlay-app { height: calc(100vh - var(--acg-tb-h)) !important; }
   html.acg-frameless .fixed.inset-0 { top: var(--acg-tb-h) !important; }
   `;
@@ -73,7 +77,6 @@
   let cssInjected = false;
   let state = null;
   let mounted = false;
-  // 伴侣窗这类没有最大化按钮的窗口，不应响应「拖到顶部最大化」和双击最大化
   let allowMax = true;
 
   function isDesktop() {
@@ -110,7 +113,7 @@
     };
 
     // 日间/夜间切换（四端通用）
-    const themeBtn = make('theme', '切换日间 / 夜间', '<span data-acg-theme-icon>☀</span>', function () {
+    const themeBtn = make('theme', '切换日间 / 夜间 (Switch 主题)', '<span data-acg-theme-icon>☀</span>', function () {
       if (window.AcgTheme) window.AcgTheme.toggle();
     });
     themeBtn.style.width = '32px';
@@ -146,7 +149,6 @@
       if (!st || !st.ok || !st.frameless) return;
 
       if (st.maximized) {
-        // Windows 行为：拖最大化的标题栏 -> 先还原，并让光标留在标题栏相对位置
         let r = null;
         try { r = await api().win_restore_for_drag(ev.screenX, ev.screenY); } catch (e) { r = null; }
         if (!r || !r.ok) return;
@@ -167,6 +169,7 @@
       const flush = function () {
         raf = null;
         api().win_move(Math.round(nx), Math.round(ny));
+        if (window.__acgReportUnlockChip) window.__acgReportUnlockChip();
       };
       const onMove = function (e) {
         nx = ox + (e.screenX - startX);
@@ -182,7 +185,7 @@
         if (raf) { cancelAnimationFrame(raf); flush(); }
         if (moved) {
           api().win_save_bounds();
-          // Windows 行为：拖到屏幕顶部松手 -> 最大化
+          if (window.__acgReportUnlockChip) window.__acgReportUnlockChip();
           if (allowMax && lastScreenY <= 4) {
             setTimeout(function () { api().win_toggle_maximize(); }, 30);
           }
@@ -246,6 +249,7 @@
         const flush = function () {
           raf = null;
           api().win_set_bounds(Math.round(nx), Math.round(ny), Math.round(nw), Math.round(nh));
+          if (window.__acgReportUnlockChip) window.__acgReportUnlockChip();
         };
         const onMove = function (e) {
           const dx = e.screenX - sx;
@@ -272,6 +276,7 @@
           el.removeEventListener('pointercancel', onUp);
           if (raf) { cancelAnimationFrame(raf); flush(); }
           api().win_save_bounds();
+          if (window.__acgReportUnlockChip) window.__acgReportUnlockChip();
         };
 
         try { el.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }

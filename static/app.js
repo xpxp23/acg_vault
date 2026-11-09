@@ -78,15 +78,16 @@ createApp({
       toasts.value = toasts.value.filter(t => t.id !== id);
     };
 
-    // Coalesced RAF Icon Refresh (Prevents full-DOM jitter during frequent state updates)
+    // Coalesced Idle/RAF Icon Refresh (Only runs when unconverted i[data-lucide] exists, eliminating search/filter frame drops)
     let iconRefreshQueued = false;
     const refreshIcons = () => {
       if (iconRefreshQueued) return;
       iconRefreshQueued = true;
       nextTick(() => {
-        requestAnimationFrame(() => {
+        const schedule = window.requestIdleCallback || requestAnimationFrame;
+        schedule(() => {
           iconRefreshQueued = false;
-          if (window.lucide) {
+          if (window.lucide && document.querySelector('i[data-lucide]')) {
             window.lucide.createIcons();
           }
         });
@@ -978,7 +979,7 @@ createApp({
         drawRoundRect(48, 42, width - 96, 110, 22, 'rgba(19, 27, 46, 0.92)', 'rgba(99, 102, 241, 0.4)');
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
-        ctx.fillText('🎮 ACG Vault v2.4 · 个人游戏馆藏与通关总结长图', 80, 92);
+        ctx.fillText('🎮 ACG Vault v3.2.0 · 个人游戏馆藏与通关总结长图', 80, 92);
         ctx.fillStyle = '#94a3b8';
         ctx.font = '15px "Microsoft YaHei", sans-serif';
         const nowStr = new Date().toISOString().slice(0, 10);
@@ -1194,15 +1195,30 @@ createApp({
       }
     };
 
-    // ---------------------------------------------------------------- 主题 (v3.0)
+    // ---------------------------------------------------------------- 主题与 Switch 微音效 (v3.2.0)
     const themeMode = ref((window.AcgTheme && window.AcgTheme.mode) || 'auto');
+    const uiSfxEnabled = ref(window.AcgTheme ? Boolean(window.AcgTheme.sfx) : (localStorage.getItem('acg_ui_sfx') !== 'false'));
+    const playUiSfx = (type) => {
+      if (window.ACGTheme && window.ACGTheme.playSfx) {
+        window.ACGTheme.playSfx(type);
+      }
+    };
+    const toggleUiSfx = (enabled) => {
+      const next = typeof enabled === 'boolean' ? enabled : !uiSfxEnabled.value;
+      uiSfxEnabled.value = next;
+      if (window.ACGTheme && window.ACGTheme.setSfx) {
+        window.ACGTheme.setSfx(next);
+      } else {
+        localStorage.setItem('acg_ui_sfx', next ? 'true' : 'false');
+      }
+    };
 
     const accentOptions = [
-      { id: 'nintendo', name: '任天堂红', color: '#e60012' },
-      { id: 'indigo', name: '靛蓝（原色）', color: '#6366f1' },
-      { id: 'emerald', name: '翡翠绿', color: '#10b981' },
-      { id: 'amber', name: '琥珀金', color: '#f59e0b' },
-      { id: 'violet', name: '紫罗兰', color: '#8b5cf6' }
+      { id: 'nintendo', name: '任系霓虹红 (Switch)', color: '#e60012' },
+      { id: 'indigo', name: '电光靛蓝 (原色)', color: '#6366f1' },
+      { id: 'emerald', name: '赛博翠绿', color: '#10b981' },
+      { id: 'amber', name: '鎏金琥珀', color: '#f59e0b' },
+      { id: 'violet', name: '幻想紫罗兰', color: '#8b5cf6' }
     ];
     const themeAccent = ref((window.AcgTheme && window.AcgTheme.accent) || 'nintendo');
 
@@ -1220,6 +1236,7 @@ createApp({
       if (window.AcgTheme) {
         themeMode.value = window.AcgTheme.mode;
         themeAccent.value = window.AcgTheme.accent;
+        uiSfxEnabled.value = Boolean(window.AcgTheme.sfx);
       }
     });
 
@@ -1400,6 +1417,7 @@ createApp({
     let gamepadPollTimer = null;
 
     const fetchGamepadStatus = async () => {
+      if (document.hidden) return;
       try {
         const res = await fetch('/api/gamepad/status');
         if (res.ok) gamepadStatus.value = await res.json();
@@ -1409,7 +1427,7 @@ createApp({
     const startGamepadStatusPoll = () => {
       if (gamepadPollTimer) return;
       fetchGamepadStatus();
-      gamepadPollTimer = setInterval(fetchGamepadStatus, 300);
+      gamepadPollTimer = setInterval(fetchGamepadStatus, 400);
     };
 
     const stopGamepadStatusPoll = () => {
@@ -1838,10 +1856,12 @@ createApp({
         await saveGameNotes(true);
       }
       selectedGame.value = null;
+      playUiSfx('back');
     };
 
     const openGameDetail = async (game, silentRefresh = false, targetTab = null) => {
       if (!silentRefresh) {
+        playUiSfx('select');
         selectedGame.value = { walkthrough_md: '', user_notes: '', sample_images: [], ...game };
         drawerActiveTab.value = targetTab || 'overview';
         selectedGameVariants.value = [];
@@ -3096,6 +3116,7 @@ createApp({
           };
           startRunningGamesPoll();
           fetchStats();
+          playUiSfx('launch');
           showToast(data.message || '游戏正在启动...', 'success', 2000);
         } else if (data.already_running) {
           showToast(data.message || '游戏已在运行中', 'info', 2000);
@@ -3127,6 +3148,7 @@ createApp({
           };
           startRunningGamesPoll();
           fetchStats();
+          playUiSfx('launch');
           showToast(data.message || 'MTool 辅助环境已就绪，正在拉起游戏...', 'success', 3000);
 
           // MTool 关联是异步完成的：hook 注入 + MTool 面板识别需要几秒，这里回访一次结果
@@ -3171,6 +3193,7 @@ createApp({
           };
           startRunningGamesPoll();
           fetchStats();
+          playUiSfx('launch');
           showToast(data.message || '已通过 Locale Emulator 转区启动', 'success', 2500);
         } else {
           showToast(data.message || '转区启动失败', 'warning', 3200);
@@ -4064,6 +4087,7 @@ createApp({
     };
 
     onMounted(() => {
+      window.__ACG_BOOTED = true;
       fetchConfig();
       fetchGames();
       fetchStats();
@@ -4116,6 +4140,8 @@ createApp({
       openBigScreen,
       themeMode,
       themeAccent,
+      uiSfxEnabled,
+      toggleUiSfx,
       accentOptions,
       setThemeMode,
       setThemeAccent,

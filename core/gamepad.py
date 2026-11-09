@@ -1,5 +1,5 @@
 """
-手柄支持 (v2.5) —— XInput → 键盘注入，面向 RPG Maker 系列优化。
+手柄支持 (v3.2) —— XInput → 键盘注入，面向 RPG Maker 系列优化。
 
 为什么不是"游戏原生支持"
 ------------------------
@@ -98,13 +98,22 @@ XINPUT, XINPUT_DLL = _load_xinput()
 ERROR_DEVICE_NOT_CONNECTED = 1167
 XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE = 7849  # 官方默认值，仅作参考
 
+
+def _norm_stick(val: int) -> float:
+    """对称归一化摇杆轴 (-32768 ~ 32767 -> -1.0 ~ 1.0)。"""
+    v = int(val)
+    if v >= 0:
+        return max(-1.0, min(1.0, v / 32767.0))
+    return max(-1.0, min(1.0, v / 32768.0))
+
+
 # ---------------------------------------------------------
 # 虚拟键
 # ---------------------------------------------------------
 VK = {
     "BACK": 0x08, "TAB": 0x09, "ENTER": 0x0D, "SHIFT": 0x10, "CTRL": 0x11, "ALT": 0x12,
     "ESC": 0x1B, "SPACE": 0x20, "PAGEUP": 0x21, "PAGEDOWN": 0x22, "END": 0x23, "HOME": 0x24,
-    "LEFT": 0x25, "UP": 0x26, "RIGHT": 0x27, "DOWN": 0x28, "INS": 0x2D, "DEL": 0x2E,
+    "LEFT": 0x25, "UP": 0x26, "RIGHT": 0x27, "DOWN": 0x28, "PRTSC": 0x2C, "INS": 0x2D, "DEL": 0x2E,
 }
 for _i in range(1, 13):
     VK[f"F{_i}"] = 0x6F + _i
@@ -279,7 +288,6 @@ def _descendant_pids(root_pids: Set[int]) -> Set[int]:
     """把游戏进程派生的子进程也算作"游戏"，避免启动器把 PID 交给子进程后失焦。"""
     TH32CS_SNAPPROCESS = 0x00000002
     INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-    # 复用 launcher 里已注册过 argtypes 的结构体，避免 ctypes 原型冲突
     from core.launcher import PROCESSENTRY32W
 
     kernel32 = ctypes.windll.kernel32
@@ -327,6 +335,7 @@ class GamepadEngine:
         self._last_active: Optional[bool] = None
         self._pid_cache: Tuple[float, Set[int]] = (0.0, set())
         self._pid_map_cache: Tuple[float, Dict[int, Dict[str, Any]]] = (0.0, {})
+        self._game_meta_cache: Dict[int, Tuple[float, str, str]] = {}
         self._target_cache: Tuple[float, Optional[Dict[str, Any]]] = (0.0, None)
         self._edge_state: Set[str] = set()
         self._target: Optional[Dict[str, Any]] = None
@@ -437,32 +446,55 @@ class GamepadEngine:
             buttons["back"] = ""
         return buttons
 
+    def _get_cached_game_meta(self, gid: int) -> Tuple[str, str]:
+        """Lightweight TTL cache for game_id -> (display_title, engine_type) to avoid frequent SQLite opens."""
+        now = time.time()
+        cached_item = self._game_meta_cache.get(gid)
+        if cached_item and now - cached_item[0] < 30.0:
+            return cached_item[1], cached_item[2]
+        try:
+            from core.launcher import get_game_by_id
+            game = get_game_by_id(gid) or {}
+            title = game.get("display_title") or game.get("clean_title") or game.get("folder_name") or ""
+            eng = game.get("engine_type") or ""
+            self._game_meta_cache[gid] = (now, title, eng)
+            return title, eng
+        except Exception:
+            return "", ""
+
     def _pid_game_map(self) -> Dict[int, Dict[str, Any]]:
         """
         PID -> 游戏信息。包含每个游戏派生的子进程（启动器把 PID 交给子进程后
-        前台窗口属于子进程，不能因此判定"不是在玩游戏"）。缓存 1 秒。
+        前台窗口属于子进程，不能因此判定"不是在玩游戏"）。进程树快照 TTL 缓存 2.5 秒。
         """
         now = time.time()
         cached_ts, cached = self._pid_map_cache
-        if now - cached_ts < 1.0:
+        if now - cached_ts < 2.5:
             return cached
 
         mapping: Dict[int, Dict[str, Any]] = {}
         try:
-            from core.launcher import get_running_games_info, get_game_by_id
+            from core.launcher import get_running_games_info
             running = get_running_games_info()
+            root_to_entry: Dict[int, Dict[str, Any]] = {}
             for gid, info in running.items():
                 root = info.get("pid")
                 if not root:
                     continue
-                game = get_game_by_id(gid) or {}
+                title, eng = self._get_cached_game_meta(int(gid))
+                root_pid = int(root)
                 entry = {
-                    "game_id": gid,
-                    "title": game.get("display_title") or game.get("clean_title") or game.get("folder_name") or "",
-                    "engine_type": game.get("engine_type") or "",
-                    "pid": int(root),
+                    "game_id": int(gid),
+                    "title": title,
+                    "engine_type": eng,
+                    "pid": root_pid,
                 }
-                for pid in _descendant_pids({int(root)}):
+                root_to_entry[root_pid] = entry
+                mapping[root_pid] = entry
+
+            # 只在存在运行中游戏时做一次进程树快照
+            for root_pid, entry in root_to_entry.items():
+                for pid in _descendant_pids({root_pid}):
                     mapping[pid] = entry
         except Exception:
             pass
@@ -551,8 +583,8 @@ class GamepadEngine:
         if rt > dz:
             pressed.add("rt")
 
-        lx, ly = gp.sThumbLX / 32768.0, gp.sThumbLY / 32768.0
-        rx, ry = gp.sThumbRX / 32768.0, gp.sThumbRY / 32768.0
+        lx, ly = _norm_stick(gp.sThumbLX), _norm_stick(gp.sThumbLY)
+        rx, ry = _norm_stick(gp.sThumbRX), _norm_stick(gp.sThumbRY)
 
         # 摇杆补方向（十字键优先）
         if not ({"up", "down", "left", "right"} & pressed):
@@ -610,6 +642,42 @@ class GamepadEngine:
         self._target_cache = (now, target)
         return target
 
+    def _trigger_screenshot_action(self, profile_id: str) -> None:
+        """
+        触发手柄截图：优先直接调用 capture_game_window_screenshot(target_gid, pid=target_pid)
+        避免 200ms 轮询漏检；若直接抓图失败再回退读取用户自定义 screenshot_hotkey 发送按键。
+        """
+        target_info = self._target or {}
+        target_gid = target_info.get("game_id")
+        target_pid = _foreground_pid() or target_info.get("pid")
+
+        captured = False
+        if target_gid:
+            try:
+                from core.gallery_cg import capture_game_window_screenshot
+                res = capture_game_window_screenshot(int(target_gid), pid=int(target_pid) if target_pid else None)
+                captured = bool(res and res.get("success"))
+            except Exception:
+                captured = False
+
+        if not captured:
+            try:
+                from config import load_config
+                hk_name = str(load_config().get("screenshot_hotkey") or "F12").strip().upper()
+            except Exception:
+                hk_name = str(PROFILES.get(profile_id, PROFILES["generic"]).get("screenshot", "F12")).upper()
+            vk = VK.get(hk_name) or VK.get("F12")
+            if vk:
+                try:
+                    _send_vk(vk, keyup=False)
+                    time.sleep(0.08)
+                    _send_vk(vk, keyup=True)
+                except Exception:
+                    pass
+
+        with self._lock:
+            self._state["last_action"] = ACTION_LABELS.get("screenshot", "游戏截图")
+
     def _apply_actions(self, desired_actions: Set[str], profile_id: str) -> None:
         keys = PROFILES.get(profile_id, PROFILES["generic"])
         desired_vks: Set[int] = set()
@@ -643,12 +711,19 @@ class GamepadEngine:
 
         # 边沿动作（截图）只触发一次，避免按住连拍
         for action in edge_actions - prev_edges:
+            if action == "screenshot":
+                threading.Thread(
+                    target=self._trigger_screenshot_action,
+                    args=(profile_id,),
+                    daemon=True,
+                ).start()
+                continue
             key_name = keys.get(action)
             vk = VK.get(str(key_name).upper()) if key_name else None
             if vk:
                 try:
                     _send_vk(vk, keyup=False)
-                    time.sleep(0.04)
+                    time.sleep(0.06)
                     _send_vk(vk, keyup=True)
                     with self._lock:
                         self._state["last_action"] = ACTION_LABELS.get(action, action)

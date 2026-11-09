@@ -13,6 +13,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, Query, UploadFile, 
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from config import (
@@ -23,7 +24,9 @@ from config import (
     THUMBS_DIR,
     GALLERY_DIR,
     load_config,
-    save_config
+    save_config,
+    mask_sensitive_config,
+    merge_masked_secrets
 )
 import ctypes
 
@@ -33,14 +36,17 @@ from core import mtool_link
 from db.database import (
     init_db,
     get_all_games,
+    get_overlay_switcher_games,
     get_filtered_status_counts,
     get_game_by_id,
+    get_games_by_ids,
     batch_upsert_games,
     update_game_user_state,
     manual_update_game_metadata,
     get_stats,
     get_analytics_data,
     get_duplicate_groups,
+    get_games_by_duplicate_group,
     upsert_game,
     delete_game_by_id,
     mark_game_missing,
@@ -59,6 +65,7 @@ from db.database import (
     delete_collection_by_id,
     update_collection_games,
     add_ignored_path,
+    add_ignored_paths_batch,
     remove_ignored_path,
     clear_all_ignored_paths,
     get_all_ignored_paths,
@@ -126,6 +133,9 @@ from core.dedup import (
     dismiss_duplicate
 )
 
+MAX_UPLOAD_IMAGE_BYTES = 30 * 1024 * 1024        # 30 MB
+MAX_UPLOAD_CG_ARCHIVE_BYTES = 250 * 1024 * 1024  # 250 MB
+
 if sys.platform == "win32":
     from ctypes import wintypes
 
@@ -140,6 +150,24 @@ if sys.platform == "win32":
             ("hNameMappings", wintypes.LPVOID),
             ("lpszProgressTitle", wintypes.LPCWSTR)
         ]
+
+
+async def _read_upload_bounded(file: UploadFile, max_bytes: int, label: str = "文件") -> bytes:
+    """Streams UploadFile in chunks and aborts immediately if size exceeds max_bytes."""
+    chunks: List[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"上传的{label}超过最大体积限制 ({max_bytes // (1024 * 1024)}MB)"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def send_to_recycle_bin(path_str: str) -> bool:
@@ -206,9 +234,10 @@ app = FastAPI(title="ACG Game Vault", version=APP_VERSION, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -443,14 +472,15 @@ def window_restore_api():
 def get_overlay_context(game_id: Optional[int] = Query(None)):
     """Returns active/running game walkthrough, personal memo, F9 variable table, and click-through HUD state."""
     running_map = get_running_games_info()
+    running_ids = list(running_map.keys())
     target_id = game_id
     if not target_id:
         target_id = get_last_active_game_id()
 
-    all_games = get_all_games(status="all", is_tool=False, include_full_notes=False)
-    if not target_id and all_games:
-        with_guide = [g for g in all_games if g.get("has_walkthrough")]
-        target_id = with_guide[0]["id"] if with_guide else all_games[0]["id"]
+    switcher_list = get_overlay_switcher_games(running_ids=running_ids, active_id=target_id, limit=40)
+    if not target_id and switcher_list:
+        with_guide = [g for g in switcher_list if g.get("has_walkthrough")]
+        target_id = with_guide[0]["id"] if with_guide else switcher_list[0]["id"]
 
     active_game = get_game_by_id(target_id) if target_id else None
     f9_cheats = extract_f9_debug_cheats(active_game["id"]) if active_game else {"supported": False, "variables": [], "switches": []}
@@ -461,26 +491,6 @@ def get_overlay_context(game_id: Optional[int] = Query(None)):
         click_through_state = get_overlay_click_through_state()
     except Exception:
         pass
-
-    # Build compact switcher list prioritizing running games and games with walkthroughs
-    sorted_for_switcher = sorted(
-        all_games,
-        key=lambda g: (
-            1 if g["id"] in running_map else 0,
-            1 if (active_game and g["id"] == active_game["id"]) else 0,
-            int(g.get("has_walkthrough") or 0),
-            g.get("last_played_at") or ""
-        ),
-        reverse=True
-    )[:40]
-
-    switcher_list = [{
-        "id": g["id"],
-        "display_title": g.get("display_title") or g.get("folder_name"),
-        "folder_name": g.get("folder_name"),
-        "has_walkthrough": bool(g.get("has_walkthrough")),
-        "is_running": g["id"] in running_map
-    } for g in sorted_for_switcher]
 
     return {
         "game": active_game,
@@ -494,21 +504,74 @@ def get_overlay_context(game_id: Optional[int] = Query(None)):
 
 @app.post("/api/overlay/summon")
 def summon_overlay_window_api(game_id: Optional[int] = Query(None)):
-    """Toggles the native Always-on-Top Companion Overlay window (or opens popup fallback)."""
+    """
+    Toggles or switches the native Always-on-Top Companion Overlay window:
+    accurately distinguishes between unlocking click-through, switching target game,
+    hiding the companion overlay, and summoning the companion overlay.
+    """
+    prev_active_id = get_last_active_game_id()
     if game_id:
         set_last_active_game_id(game_id)
     try:
-        from desktop_app import show_or_toggle_overlay_window, is_overlay_visible
+        from desktop_app import show_or_toggle_overlay_window, is_overlay_visible, get_overlay_click_through_state
         was_visible = is_overlay_visible()
+        was_click_through = get_overlay_click_through_state()
         cfg = load_config()
         port = int(cfg.get("port", 8000))
-        # toggle=True：再点一次「伴侣小窗」就是关闭，符合直觉
-        threading.Thread(target=show_or_toggle_overlay_window, args=(port, True, game_id), daemon=True).start()
+
+        # 1. 解除穿透锁定
+        if was_visible and was_click_through:
+            threading.Thread(target=show_or_toggle_overlay_window, args=(port, True, game_id), daemon=True).start()
+            return {
+                "success": True,
+                "visible": True,
+                "click_through": False,
+                "action": "unlock_click_through",
+                "message": "已解除伴侣窗穿透锁定，恢复自由交互"
+            }
+
+        # 2. 切换游戏伴侣窗（当前已打开伴侣窗且切换到另一部游戏）
+        if was_visible and game_id and prev_active_id and int(game_id) != int(prev_active_id):
+            threading.Thread(target=show_or_toggle_overlay_window, args=(port, False, game_id), daemon=True).start()
+            return {
+                "success": True,
+                "visible": True,
+                "action": "switch_game",
+                "message": "已切换游戏伴侣窗内容"
+            }
+
+        # 3. 隐藏伴侣窗
         if was_visible:
-            return {"success": True, "visible": False, "message": "已关闭伴侣小窗（Alt+G 可再次呼出）"}
-        return {"success": True, "visible": True, "message": "已呼出游戏内攻略伴侣悬浮窗 (Alt+G)"}
+            threading.Thread(target=show_or_toggle_overlay_window, args=(port, True, game_id), daemon=True).start()
+            return {
+                "success": True,
+                "visible": False,
+                "action": "hide",
+                "message": "已隐藏伴侣小窗（Alt+G 可再次呼出）"
+            }
+
+        # 4. 呼出伴侣窗
+        threading.Thread(target=show_or_toggle_overlay_window, args=(port, True, game_id), daemon=True).start()
+        return {
+            "success": True,
+            "visible": True,
+            "action": "summon",
+            "message": "已呼出游戏内攻略伴侣悬浮窗 (Alt+G)"
+        }
     except Exception:
         return {"success": False, "message": "请在浏览器新窗口打开伴侣视图"}
+
+
+@app.post("/api/overlay/unlock_chip")
+def overlay_unlock_chip_api(req: dict):
+    """伴侣窗上报解锁小锁的物理像素矩形（不经过 pywebview 桥，避免回调表碰撞）。"""
+    try:
+        from desktop_app import _position_unlock_chip
+        _position_unlock_chip(int(req.get("x", 0)), int(req.get("y", 0)),
+                              int(req.get("w", 0)), int(req.get("h", 0)))
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 
 @app.get("/api/overlay/state")
@@ -733,8 +796,7 @@ def get_game_detail(game_id: int):
     set_last_active_game_id(game_id)
     variants = []
     if game.get("duplicate_group_id"):
-        all_dups = get_duplicate_groups()
-        variants = all_dups.get(game["duplicate_group_id"], [])
+        variants = get_games_by_duplicate_group(game["duplicate_group_id"])
 
     mtool_status = get_game_mtool_status(game_id)
     save_status = get_game_save_status(game_id)
@@ -799,14 +861,14 @@ def update_game(game_id: int, req: UpdateGameStateRequest):
     return {"success": True, "data": get_game_by_id(game_id)}
 
 
-@app.post("/api/games/{game_id}/upload_cover")
-async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
-    """Uploads a local image file, sets it as the game cover, and builds a WebP thumbnail."""
+def _sync_save_uploaded_cover(game_id: int, filename: Optional[str], content: bytes) -> Dict[str, Any]:
     game = get_game_by_id(game_id)
     if not game:
         raise HTTPException(status_code=404, detail="Game not found")
+    if not is_valid_image_bytes(content):
+        raise HTTPException(status_code=400, detail="上传的文件不是有效的图片格式")
 
-    ext = Path(file.filename).suffix.lower() if file.filename else ".jpg"
+    ext = Path(filename).suffix.lower() if filename else ".jpg"
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"):
         ext = ".jpg"
 
@@ -814,21 +876,25 @@ async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
     target_filename = f"custom_{game_id}_{timestamp}{ext}"
     target_path = COVERS_DIR / target_filename
 
-    try:
-        content = await file.read()
-        if not is_valid_image_bytes(content):
-            raise HTTPException(status_code=400, detail="上传的文件不是有效的图片格式")
-        with open(target_path, "wb") as f:
-            f.write(content)
+    with open(target_path, "wb") as f:
+        f.write(content)
 
-        generate_cover_thumbnail(target_path)
-        cleanup_old_custom_covers(game_id, keep_filename=target_filename)
-        cover_url = f"/api/covers/{target_filename}"
-        manual_update_game_metadata(game_id, {
-            "cover_url": cover_url,
-            "banner_url": cover_url
-        })
-        return {"success": True, "cover_url": cover_url, "data": get_game_by_id(game_id)}
+    generate_cover_thumbnail(target_path)
+    cleanup_old_custom_covers(game_id, keep_filename=target_filename)
+    cover_url = f"/api/covers/{target_filename}"
+    manual_update_game_metadata(game_id, {
+        "cover_url": cover_url,
+        "banner_url": cover_url
+    })
+    return {"success": True, "cover_url": cover_url, "data": get_game_by_id(game_id)}
+
+
+@app.post("/api/games/{game_id}/upload_cover")
+async def upload_game_cover(game_id: int, file: UploadFile = File(...)):
+    """Uploads a local image file, sets it as the game cover, and builds a WebP thumbnail inside threadpool."""
+    try:
+        content = await _read_upload_bounded(file, MAX_UPLOAD_IMAGE_BYTES, label="封面图片")
+        return await run_in_threadpool(_sync_save_uploaded_cover, game_id, file.filename, content)
     except HTTPException:
         raise
     except Exception as e:
@@ -950,26 +1016,27 @@ def scrape_single_game(game_id: int, req: ScrapeGameRequest):
     if not meta:
         return {"success": False, "message": "未能刮削到匹配的元数据，您可以切换数据源(如Steam/Bangumi/DLsite)或点击【多源预览候选】"}
 
-    final_disp = resolve_best_display_title(game, meta.get("title"), fallback_title=game.get("clean_title") or game["folder_name"])
-    localized_tags = normalize_and_localize_tags((meta.get("tags") or []) + (game.get("tags") or []), localize=True)
+    latest_game = get_game_by_id(game_id) or game
+    final_disp = resolve_best_display_title(latest_game, meta.get("title"), fallback_title=latest_game.get("clean_title") or latest_game["folder_name"])
+    localized_tags = normalize_and_localize_tags((meta.get("tags") or []) + (latest_game.get("tags") or []), localize=True)
 
     update_dict = {
-        "folder_name": game["folder_name"],
-        "folder_path": game["folder_path"],
-        "rj_code": meta.get("rj_code") or rj_code or game.get("rj_code", ""),
+        "folder_name": latest_game["folder_name"],
+        "folder_path": latest_game["folder_path"],
+        "rj_code": meta.get("rj_code") or rj_code or latest_game.get("rj_code", ""),
         "display_title": final_disp,
-        "original_title": meta.get("original_title") or game.get("original_title", ""),
-        "cover_url": meta.get("cover_url") or game.get("cover_url", ""),
-        "banner_url": meta.get("banner_url") or meta.get("cover_url") or game.get("banner_url", ""),
-        "sample_images": meta.get("sample_images") or game.get("sample_images") or [],
-        "synopsis": meta.get("synopsis") or game.get("synopsis", ""),
-        "circle_name": meta.get("circle_name") or game.get("circle_name", ""),
-        "release_date": meta.get("release_date") or game.get("release_date", ""),
-        "voice_actors": meta.get("voice_actors") or game.get("voice_actors") or [],
+        "original_title": meta.get("original_title") or latest_game.get("original_title", ""),
+        "cover_url": meta.get("cover_url") or latest_game.get("cover_url", ""),
+        "banner_url": meta.get("banner_url") or meta.get("cover_url") or latest_game.get("banner_url", ""),
+        "sample_images": meta.get("sample_images") or latest_game.get("sample_images") or [],
+        "synopsis": meta.get("synopsis") or latest_game.get("synopsis", ""),
+        "circle_name": meta.get("circle_name") or latest_game.get("circle_name", ""),
+        "release_date": meta.get("release_date") or latest_game.get("release_date", ""),
+        "voice_actors": meta.get("voice_actors") or latest_game.get("voice_actors") or [],
         "tags": localized_tags,
-        "source_url": meta.get("source_url") or game.get("source_url", ""),
+        "source_url": meta.get("source_url") or latest_game.get("source_url", ""),
         "source_type": meta.get("source_type") or preferred_source,
-        "rating_score": meta.get("rating_score") or game.get("rating_score") or 0.0
+        "rating_score": meta.get("rating_score") or latest_game.get("rating_score") or 0.0
     }
     upsert_game(update_dict)
     return {"success": True, "data": get_game_by_id(game_id)}
@@ -1040,8 +1107,14 @@ def capture_screenshot_api(game_id: int):
 
 @app.post("/api/games/{game_id}/screenshots/upload")
 async def upload_screenshot_api(game_id: int, file: UploadFile = File(...), caption: str = Form("")):
-    content = await file.read()
-    return save_uploaded_screenshot(game_id, content, orig_filename=file.filename or "shot.png", caption=caption)
+    content = await _read_upload_bounded(file, MAX_UPLOAD_IMAGE_BYTES, label="画廊截图")
+    return await run_in_threadpool(
+        save_uploaded_screenshot,
+        game_id,
+        content,
+        file.filename or "shot.png",
+        caption
+    )
 
 
 @app.post("/api/games/{game_id}/screenshots/{shot_id}/caption")
@@ -1062,8 +1135,13 @@ def unlock_cg_api(game_id: int):
 
 @app.post("/api/games/{game_id}/import_cg_save")
 async def import_cg_save_api(game_id: int, file: UploadFile = File(...)):
-    content = await file.read()
-    return import_cg_save_archive(game_id, content, orig_filename=file.filename or "cg_save.zip")
+    content = await _read_upload_bounded(file, MAX_UPLOAD_CG_ARCHIVE_BYTES, label="全CG存档")
+    return await run_in_threadpool(
+        import_cg_save_archive,
+        game_id,
+        content,
+        file.filename or "cg_save.zip"
+    )
 
 
 class LaunchGameRequest(BaseModel):
@@ -1337,23 +1415,33 @@ class BatchDeleteRequest(BaseModel):
 
 @app.post("/api/games/batch_delete")
 def batch_delete_api(req: BatchDeleteRequest, bg_tasks: BackgroundTasks):
+    """Batch deletes/removes games in bulk transactions (eliminating N+1 queries and N+1 write transactions)."""
+    if not req.game_ids:
+        return {"success": True, "count": 0, "message": "未选择任何游戏"}
+
+    games_map = {g["id"]: g for g in get_games_by_ids(req.game_ids)}
     failed_paths = []
     deletable_ids = []
+    ignored_batch: List[Tuple[str, str, str]] = []
+
     for gid in req.game_ids:
-        g = get_game_by_id(gid)
+        g = games_map.get(gid)
         if req.delete_local:
             if g and g.get("folder_path") and os.path.exists(g["folder_path"]):
                 if not send_to_recycle_bin(g["folder_path"]):
                     failed_paths.append(g.get("folder_name") or str(gid))
                     continue
         elif g and g.get("folder_path"):
-            add_ignored_path(
+            ignored_batch.append((
                 g["folder_path"],
                 g.get("folder_name", ""),
                 g.get("display_title") or g.get("clean_title") or ""
-            )
+            ))
         cleanup_old_custom_covers(gid, cleanup_gallery=True)
         deletable_ids.append(gid)
+
+    if ignored_batch:
+        add_ignored_paths_batch(ignored_batch)
 
     count = batch_delete_games_by_ids(deletable_ids)
     bg_tasks.add_task(compute_duplicates_and_update_db)
@@ -1601,12 +1689,14 @@ def get_analytics_api():
 
 @app.get("/api/config")
 def get_system_config():
-    return load_config()
+    return mask_sensitive_config(load_config())
 
 
 @app.post("/api/config")
 def update_system_config(cfg: dict):
-    saved = save_config(cfg)
+    current_cfg = load_config()
+    merged_cfg = merge_masked_secrets(cfg, current_cfg)
+    saved = save_config(merged_cfg)
     try:
         from desktop_app import reload_global_hotkeys
         reload_global_hotkeys()
@@ -1616,7 +1706,7 @@ def update_system_config(cfg: dict):
         gamepad_bridge.reload_config(saved)
     except Exception as e:
         print(f"[Gamepad] 配置应用失败: {e}")
-    return {"success": True, "data": saved}
+    return {"success": True, "data": mask_sensitive_config(saved)}
 
 
 @app.get("/api/gamepad/status")

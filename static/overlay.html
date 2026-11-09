@@ -4,25 +4,29 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ACG Vault 伴侣悬浮窗 (Alt+G)</title>
-  <script src="/static/vendor/tailwindcss.js?v=2.4"></script>
-  <script src="/static/vendor/vue.global.prod.js?v=2.4"></script>
-  <script src="/static/vendor/marked.min.js?v=2.4"></script>
-  <link rel="stylesheet" href="/static/style.css?v=2.4">
+  <script src="/static/vendor/tailwindcss.js?v=3.2"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=3.2"></script>
+  <script src="/static/vendor/marked.min.js?v=3.2"></script>
+  <link rel="stylesheet" href="/static/style.css?v=3.2">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
       try {
         var mode = 'auto';
         var raw = localStorage.getItem('acg_theme');
-        if (raw) { var o = JSON.parse(raw); if (o && o.mode) mode = o.mode; if (o && o.accent) document.documentElement.dataset.accent = o.accent; }
+        if (raw) {
+          var o = JSON.parse(raw);
+          if (o && o.mode) mode = o.mode;
+          if (o && o.accent) document.documentElement.dataset.accent = o.accent;
+        }
         var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
         document.documentElement.dataset.theme = (mode === 'light' || mode === 'dark') ? mode : (dark ? 'dark' : 'light');
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.0">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.1">
-  <script src="/static/theme.js?v=3.0"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.2">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.2">
+  <script src="/static/theme.js?v=3.2"></script>
   <style>
     html, body {
       height: 100%;
@@ -31,23 +35,30 @@
       background: transparent;
       user-select: text;
     }
-    /* #overlay-app 是 Vue 的挂载容器，写在上面的 :class/:style 不会被处理，
-       所以真正的壳要放在容器内部，尺寸也由容器控制。 */
     #overlay-app { height: 100%; width: 100%; overflow: hidden; }
     .overlay-shell {
       height: 100%;
       display: flex;
       flex-direction: column;
       background: #070a12;
-      border: 1px solid rgba(99, 102, 241, 0.35);
+      border: 1px solid rgba(var(--ax-500-rgb, 99, 102, 241), 0.35);
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
-      transition: border-color 0.25s ease, background-color 0.25s ease;
+      transition: border-color 0.2s ease, background-color 0.2s ease;
     }
-    /* flex 列里可滚动区域必须允许收缩，否则内容会把容器撑高、永远不出现滚动条 */
     #overlay-app .overflow-y-auto { min-height: 0; }
     .overlay-shell.hud-click-through {
-      border-color: rgba(6, 182, 212, 0.55);
-      box-shadow: 0 0 28px rgba(6, 182, 212, 0.2);
+      border-color: rgba(0, 195, 227, 0.72);
+      box-shadow: 0 0 28px rgba(0, 195, 227, 0.24);
+    }
+    .hud-lock-banner {
+      background: linear-gradient(90deg, rgba(8, 145, 178, 0.28) 0%, rgba(6, 182, 212, 0.16) 100%);
+      border-bottom: 1px solid rgba(0, 195, 227, 0.45);
+      color: #a5f3fc;
+    }
+    html[data-theme="light"] .hud-lock-banner {
+      background: linear-gradient(90deg, rgba(0, 195, 227, 0.18) 0%, rgba(0, 195, 227, 0.08) 100%);
+      border-bottom: 1px solid rgba(0, 195, 227, 0.55);
+      color: #005f73;
     }
   </style>
 </head>
@@ -55,7 +66,6 @@
   <div id="overlay-app">
    <div :class="['overlay-shell', isClickThrough ? 'hud-click-through' : '']">
 
-    <!-- Click-Through HUD Active Banner -->
     <!-- Top Compact Header Bar -->
     <header id="ov-header" class="px-3 py-2 bg-slate-950/90 border-b border-slate-800/90 flex items-center justify-between gap-1.5 shrink-0">
       <div class="flex items-center space-x-2 min-w-0 flex-1">
@@ -63,7 +73,7 @@
         <select
           v-model="selectedGameId"
           @change="loadOverlayContext(selectedGameId, false)"
-          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-xs font-bold text-slate-100 focus:outline-none focus:border-indigo-500 truncate max-w-[150px] cursor-pointer"
+          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-xs font-bold text-slate-100 focus:outline-none focus:border-indigo-500 truncate max-w-[148px] cursor-pointer"
         >
           <option v-for="g in gameList" :key="g.id" :value="g.id">
             {{ g.is_running ? '▶ ' : (g.has_walkthrough ? '📖 ' : '') }}{{ g.display_title || g.folder_name }}
@@ -85,22 +95,26 @@
             class="w-10 accent-indigo-500 cursor-pointer h-1"
           />
         </div>
+        <!-- 固定 78x24 尺寸，无宽高 transition，保证高分屏 getBoundingClientRect 100% 精准 -->
         <button
+          id="ov-unlock-chip-btn"
           ref="unlockChip"
           @click="toggleClickThrough"
-          :class="['rounded-lg border text-[11px] font-semibold cursor-pointer transition-all',
-                   isClickThrough
-                     ? 'w-[40px] h-[22px] flex items-center justify-center bg-cyan-600/20 border-cyan-500/40 text-cyan-200 opacity-0 pointer-events-none'
-                     : 'px-2 py-1 bg-cyan-600/20 border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white']"
-          :title="isClickThrough ? '已锁定穿透：点右上角的小锁即可解锁' : '开启后鼠标点击将直接穿透到下层全屏游戏窗口（按 Alt+G 或 Alt+T 解除锁定）'"
+          :class="[
+            'w-[78px] h-[24px] flex items-center justify-center gap-0.5 rounded-lg border text-[11px] font-semibold cursor-pointer transition-colors shrink-0',
+            isClickThrough
+              ? 'bg-cyan-600/30 border-cyan-400 text-cyan-200 opacity-0 pointer-events-none'
+              : 'bg-cyan-600/20 border-cyan-500/40 hover:bg-cyan-600 text-cyan-200 hover:text-white'
+          ]"
+          :title="isClickThrough ? '已锁定穿透：点此按钮或按 ' + overlayHotkey + ' / Alt+T 即可解锁' : '开启后鼠标点击将直接穿透到下层全屏游戏窗口（按 ' + overlayHotkey + ' 或 Alt+T 解除锁定）'"
         >
-          <span v-if="isClickThrough">🔓</span>
+          <span v-if="isClickThrough">🔓 点此解锁</span>
           <span v-else>📌 锁定穿透</span>
         </button>
         <button
           @click="captureShot"
           :disabled="isCapturing || !game"
-          class="px-2 py-1 rounded-lg bg-pink-600/25 border border-pink-500/40 hover:bg-pink-600 text-pink-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
+          class="h-[24px] px-2 rounded-lg bg-pink-600/25 border border-pink-500/40 hover:bg-pink-600 text-pink-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
           title="立即截取当前游戏窗口画面 (F12)"
         >
           📸
@@ -108,7 +122,7 @@
         <button
           @click="quickBackupSave"
           :disabled="isBackingUp || !game"
-          class="px-2 py-1 rounded-lg bg-emerald-600/25 border border-emerald-500/40 hover:bg-emerald-600 text-emerald-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
+          class="h-[24px] px-2 rounded-lg bg-emerald-600/25 border border-emerald-500/40 hover:bg-emerald-600 text-emerald-200 hover:text-white text-[11px] font-semibold cursor-pointer transition-colors"
           title="一键备份当前游戏存档快照"
         >
           💾
@@ -116,38 +130,60 @@
       </div>
     </header>
 
-    <!-- Toast Mini Banner -->
+    <!-- 常驻穿透锁定状态横幅（痛点 5：清晰提示穿透状态、滚轮翻页与解锁方式） -->
+    <div
+      v-if="isClickThrough"
+      class="hud-lock-banner px-3 py-1.5 text-[11px] font-medium flex items-center justify-between gap-2 shrink-0"
+    >
+      <div class="flex items-center space-x-1.5 truncate">
+        <span class="inline-block w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shrink-0"></span>
+        <span class="font-bold">🔒 鼠标穿透已锁定</span>
+        <span class="opacity-85 truncate">· 点击直达下层游戏，滚轮仍可翻页</span>
+      </div>
+      <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/35 shrink-0">
+        {{ overlayHotkey }} / Alt+T 解锁
+      </span>
+    </div>
+
+    <!-- Toast Mini Banner (移除穿透模式下无法点击的 ✕ 按钮，自动消失) -->
     <div v-if="toastMsg" class="px-3 py-1.5 bg-indigo-950/95 border-b border-indigo-500/40 text-[11px] text-indigo-200 flex items-center justify-between shrink-0">
-      <span>{{ toastMsg }}</span>
-      <button @click="toastMsg = ''" class="text-slate-400 hover:text-white">✕</button>
+      <span class="truncate">{{ toastMsg }}</span>
+      <span class="text-[10px] opacity-60 font-mono shrink-0 ml-2">自动收起</span>
     </div>
 
     <!-- Navigation Tabs -->
     <div class="px-3 py-2 bg-slate-900/80 border-b border-slate-800/80 flex items-center justify-between gap-2 shrink-0">
       <div class="flex items-center space-x-1 bg-slate-950 p-0.5 rounded-xl border border-slate-800 text-xs">
         <button
-          @click="activeTab = 'walkthrough'"
-          :class="['px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer', activeTab === 'walkthrough' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
+          @click="switchTab('walkthrough')"
+          :class="['px-2.5 py-1 rounded-lg font-semibold transition-colors cursor-pointer', activeTab === 'walkthrough' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
         >
           📖 全结局攻略
         </button>
         <button
-          @click="activeTab = 'f9'"
-          :class="['px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center space-x-1', activeTab === 'f9' ? 'bg-purple-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
+          @click="switchTab('f9')"
+          :class="['px-2.5 py-1 rounded-lg font-semibold transition-colors cursor-pointer flex items-center space-x-1', activeTab === 'f9' ? 'bg-purple-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
         >
-          <span>⚡ F9 变量表</span>
+          <span>⚡ F9 透视</span>
           <span v-if="f9Count > 0" class="px-1 rounded bg-white/15 text-[10px] font-mono">{{ f9Count }}</span>
         </button>
         <button
-          @click="activeTab = 'memo'"
-          :class="['px-2.5 py-1 rounded-lg font-semibold transition-all cursor-pointer flex items-center space-x-1', activeTab === 'memo' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
+          @click="switchTab('screenshots')"
+          :class="['px-2.5 py-1 rounded-lg font-semibold transition-colors cursor-pointer flex items-center space-x-1', activeTab === 'screenshots' ? 'bg-pink-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
+        >
+          <span>🖼 截图</span>
+          <span v-if="screenshotsList.length > 0" class="px-1 rounded bg-white/15 text-[10px] font-mono">{{ screenshotsList.length }}</span>
+        </button>
+        <button
+          @click="switchTab('memo')"
+          :class="['px-2.5 py-1 rounded-lg font-semibold transition-colors cursor-pointer flex items-center space-x-1', activeTab === 'memo' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-slate-200']"
         >
           <span>📝 随手记</span>
           <span v-if="game && game.user_notes && game.user_notes.trim()" class="w-1.5 h-1.5 rounded-full bg-emerald-300"></span>
         </button>
       </div>
 
-      <span v-if="saveState !== 'idle'" class="text-[10px] font-mono" :class="saveState === 'saved' ? 'text-emerald-400' : 'text-amber-300'">
+      <span v-if="saveState !== 'idle'" class="text-[10px] font-mono shrink-0" :class="saveState === 'saved' ? 'text-emerald-400' : 'text-amber-300'">
         {{ saveState === 'saved' ? '✓ 已同步' : '保存中...' }}
       </span>
     </div>
@@ -165,19 +201,19 @@
           type="text"
           v-model="guideSearch"
           placeholder="搜索攻略关键词 / 结局 / 选项..."
-          class="flex-1 min-w-[140px] bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+          class="flex-1 min-w-[130px] bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500"
         />
         <button
           @click="checklistOnly = !checklistOnly"
           :class="['px-2.5 py-1 rounded-lg text-[11px] font-medium border cursor-pointer transition-colors', checklistOnly ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200' : 'bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200']"
           title="仅显示攻略中的结局与全收集复选框清单"
         >
-          ☑️ 仅看清单 ({{ checklistItems.length }})
+          ☑️ 清单 ({{ checklistItems.length }})
         </button>
         <select
           v-if="!checklistOnly && tocList.length > 0"
           @change="jumpToHeading($event.target.value); $event.target.value = ''"
-          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-[11px] text-indigo-300 max-w-[130px] cursor-pointer"
+          class="bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-[11px] text-indigo-300 max-w-[125px] cursor-pointer"
         >
           <option value="">📑 章节跳转...</option>
           <option v-for="(h, idx) in tocList" :key="idx" :value="idx">
@@ -187,7 +223,7 @@
       </div>
 
       <!-- Checklist-Only Filtered View -->
-      <div v-if="checklistOnly" class="flex-1 overflow-y-auto p-3.5 space-y-2 text-xs">
+      <div v-if="checklistOnly" id="overlay-checklist-container" data-overlay-scroll class="flex-1 overflow-y-auto p-3.5 space-y-2 text-xs">
         <div v-if="checklistItems.length === 0" class="text-center py-12 text-slate-500">
           当前攻略中未检测到 `- [ ]` 任务复选框。
         </div>
@@ -206,6 +242,7 @@
       <div
         v-else
         id="overlay-guide-container"
+        data-overlay-scroll
         class="flex-1 overflow-y-auto p-4 notes-markdown-body notes-size-sm"
         @click="handleMarkdownClick"
       >
@@ -240,7 +277,7 @@
         </button>
       </div>
 
-      <div class="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+      <div id="overlay-f9-container" data-overlay-scroll class="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
         <div v-if="filteredVars.length === 0 && filteredSwitches.length === 0" class="text-center py-12 text-slate-500 space-y-2">
           <div>未检测到匹配的 RPG Maker 内部变量或开关数据</div>
           <div class="text-[11px] text-slate-600">（仅支持包含 System.json 的 RPG Maker MV/MZ 游戏或已生成变量表的攻略）</div>
@@ -288,12 +325,45 @@
       </div>
     </div>
 
-    <!-- TAB 3: Personal Clearance Sticky Memo (user_notes) -->
+    <!-- TAB 3: Game Screenshots & Official Samples Quick Gallery -->
+    <div v-else-if="activeTab === 'screenshots'" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <div class="px-3 py-2 border-b border-slate-800/70 bg-slate-950/50 flex items-center justify-between gap-2 shrink-0 text-xs">
+        <span class="text-slate-400">📸 游戏实机截图与预览画廊 ({{ screenshotsList.length }})</span>
+        <button
+          @click="captureShot"
+          :disabled="isCapturing || !game"
+          class="px-2.5 py-1 rounded-lg bg-pink-600/25 border border-pink-500/40 hover:bg-pink-600 text-pink-200 hover:text-white text-[11px] font-semibold cursor-pointer"
+        >
+          {{ isCapturing ? '抓拍中...' : '+ 立即抓拍 (F12)' }}
+        </button>
+      </div>
+      <div id="overlay-shots-container" data-overlay-scroll class="flex-1 overflow-y-auto p-3 space-y-2.5 text-xs">
+        <div v-if="screenshotsList.length === 0" class="text-center py-12 text-slate-500 space-y-1.5">
+          <div>暂无游戏实机截图或商店预览图</div>
+          <div class="text-[11px] text-slate-600">游玩时按下 F12 或点击右上角 📸 即可随时抓拍归档</div>
+        </div>
+        <div
+          v-for="(shot, sIdx) in screenshotsList"
+          :key="shot.id || sIdx"
+          class="rounded-xl overflow-hidden bg-slate-900/90 border border-slate-800 space-y-1.5 p-2"
+        >
+          <img :src="shot.url" class="w-full rounded-lg object-contain max-h-56 bg-slate-950" loading="lazy" />
+          <div class="flex items-center justify-between text-[11px] px-1 text-slate-400">
+            <span class="truncate">{{ shot.caption || (shot.is_sample ? '官方预览图' : '实机截图') }}</span>
+            <span class="font-mono text-[10px] shrink-0">{{ shot.created_at || '' }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: Personal Clearance Sticky Memo (user_notes) -->
     <div v-else-if="activeTab === 'memo'" class="flex-1 flex flex-col p-3.5 space-y-2.5 min-h-0">
       <div class="flex items-center justify-between text-xs text-slate-400">
         <span>💡 个人通关随手记（自动保存，独立于全结局攻略，适合记密码/存档槽位/吐槽）</span>
       </div>
       <textarea
+        id="overlay-memo-textarea"
+        data-overlay-scroll
         v-model="game.user_notes"
         @input="debounceSaveMemo"
         placeholder="随便打一打：例如 3号存档是分支点、保险箱密码 1024、二周目继承提示..."
@@ -303,7 +373,7 @@
 
     <!-- Footer Status Bar -->
     <footer class="px-3.5 py-1.5 bg-slate-950/95 border-t border-slate-800/90 flex items-center justify-between text-[10px] text-slate-500 font-mono shrink-0">
-      <span>快捷键: Alt+G 呼出/解锁 · Alt+T 穿透锁定 · F12 截图</span>
+      <span>快捷键: {{ overlayHotkey }} 呼出/解锁 · Alt+T 穿透锁定 · F12 截图</span>
       <span v-if="game">{{ game.engine_type }} · {{ game.rj_code || 'LOCAL' }}</span>
     </footer>
    </div>
@@ -321,7 +391,8 @@
     }
 
     function compileMermaidToVisualHtml(code) {
-      const lines = String(code || '').split('\n').map(l => l.trim()).filter(l => l && !/^(graph|flowchart)\s+/i.test(l));
+      const lines = String(code || '').split('\n').map(l => l.trim()).filter(l => l && !/^(graph|flowchart)\s+/i.test(l) && l !== 'end');
+      let subgraphTitle = '剧情分支路线图 (离线可视化引擎)';
       const nodes = {};
       const edges = [];
       const parseNodeToken = (tok) => {
@@ -333,7 +404,12 @@
         return { id, label };
       };
       for (const line of lines) {
-        const arrowMatch = line.match(/^(.+?)\s*--(?:\|\s*([^|]+?)\s*\|)?-->\s*(.+)$/) || line.match(/^(.+?)\s*-->\s*(?:\|\s*([^|]+?)\s*\|)?\s*(.+)$/);
+        const subMatch = line.match(/^subgraph\s+(.+)$/i);
+        if (subMatch) {
+          subgraphTitle = subMatch[1].trim();
+          continue;
+        }
+        const arrowMatch = line.match(/^(.+?)\s*--(?:\|\s*([^|]+?)\s*\|)?-->\s*(.+)$/) || line.match(/^(.+?)\s*(?:-->|---|==>)\s*(?:\|\s*([^|]+?)\s*\|)?\s*(.+)$/);
         if (arrowMatch) {
           const fromNode = parseNodeToken(arrowMatch[1].trim());
           const cond = (arrowMatch[2] || '').trim();
@@ -346,21 +422,21 @@
         }
       }
       if (edges.length === 0) {
-        return `<pre class="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs font-mono text-indigo-300 overflow-x-auto">${escapeHtmlText(code)}</pre>`;
+        return `<pre><code>${escapeHtmlText(code)}</code></pre>`;
       }
       const rowsHtml = edges.map(e => {
-        const isTrueEnd = /true|真结局|完美|good|he\b/i.test(e.to);
-        const isBadEnd = /bad|be\b|坏结局|战败|堕落/i.test(e.to);
-        const toClass = isTrueEnd ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200' : (isBadEnd ? 'border-rose-500/50 bg-rose-500/15 text-rose-200' : 'border-indigo-500/40 bg-indigo-500/15 text-indigo-100');
-        return `<div class="flex flex-wrap items-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-slate-900/90 border border-slate-800/90 text-[11px]">
-          <span class="px-2 py-0.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 font-semibold">${escapeHtmlText(e.from)}</span>
-          <span class="text-indigo-400 font-mono">──${e.cond ? `<span class="px-1.5 py-0.5 mx-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 text-[10px]">${escapeHtmlText(e.cond)}</span>` : ''}──▶</span>
-          <span class="px-2 py-0.5 rounded-lg border font-bold ${toClass}">${escapeHtmlText(e.to)}</span>
+        const condBadge = e.cond
+          ? `<span class="mermaid-edge-label">${escapeHtmlText(e.cond)}</span><span class="mermaid-arrow">→</span>`
+          : `<span class="mermaid-arrow">⟶</span>`;
+        return `<div class="mermaid-edge-row">
+          <span class="mermaid-node-pill">${escapeHtmlText(e.from)}</span>
+          ${condBadge}
+          <span class="mermaid-node-pill">${escapeHtmlText(e.to)}</span>
         </div>`;
       }).join('');
-      return `<div class="my-3 p-3 rounded-2xl bg-slate-950/90 border border-indigo-500/30 space-y-1.5">
-        <div class="text-[10px] font-bold text-indigo-400 uppercase tracking-wider mb-1">🗺️ 剧情分支路线图 (离线可视化引擎)</div>
-        ${rowsHtml}
+      return `<div class="mermaid-flow-container">
+        <div class="mermaid-flow-title"><span>🗺️ ${escapeHtmlText(subgraphTitle)}</span></div>
+        <div class="mermaid-flow-steps">${rowsHtml}</div>
       </div>`;
     }
 
@@ -379,25 +455,51 @@
         const selectedGameId = ref(null);
         const isRunning = ref(false);
         const isClickThrough = ref(false);
+        const overlayHotkey = ref('Alt+G');
         const activeTab = ref('walkthrough');
         const panelOpacity = ref(parseFloat(localStorage.getItem('acg_overlay_opacity') || '0.92'));
         const unlockChip = ref(null);
+        const screenshotsList = ref([]);
+        const localChecklistMap = ref({});
 
-        // 锁定穿透后整窗不接收鼠标，用独立小窗覆盖在这个小锁的位置上
+        // 痛点 6 终极修复：乘以 window.devicePixelRatio 换算为 Win32 ClientToScreen 所需的物理客户端像素
+        let _lastChipSig = '';
         const reportUnlockChip = () => {
           try {
-            const api = window.pywebview && window.pywebview.api;
-            if (!api || !api.win_set_unlock_chip) return;
-            // 不用模板 ref（v-if 重建时会拿到 null），直接按标题找这个按钮
-            const el = document.querySelector('#overlay-app button[title*="穿透"]') || unlockChip.value;
+            const el = document.getElementById('ov-unlock-chip-btn') || unlockChip.value;
+            let payload;
             if (!el || !isClickThrough.value) {
-              api.win_set_unlock_chip(0, 0, 0, 0);
-              return;
+              payload = { x: 0, y: 0, w: 0, h: 0 };
+            } else {
+              const r = el.getBoundingClientRect();
+              const dpr = window.devicePixelRatio || 1;
+              payload = {
+                x: Math.round(r.left * dpr),
+                y: Math.round(r.top * dpr),
+                w: Math.round(r.width * dpr),
+                h: Math.round(r.height * dpr)
+              };
             }
-            const r = el.getBoundingClientRect();
-            api.win_set_unlock_chip(Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height));
+            // 走 HTTP 而不是 pywebview 桥：高频调用会把桥的回调表冲掉
+            const sig = payload.x + ',' + payload.y + ',' + payload.w + ',' + payload.h;
+            if (sig === _lastChipSig) return;
+            _lastChipSig = sig;
+            fetch('/api/overlay/unlock_chip', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            }).catch(function () {});
           } catch (e) { /* ignore */ }
         };
+        window.__acgReportUnlockChip = reportUnlockChip;
+
+        const scheduleReportUnlockChip = () => {
+          nextTick(() => {
+            reportUnlockChip();
+            setTimeout(reportUnlockChip, 80);
+          });
+        };
+
         const guideSearch = ref('');
         const checklistOnly = ref(false);
         const f9Data = ref({ variables: [], switches: [] });
@@ -413,6 +515,36 @@
         const showToast = (msg) => {
           toastMsg.value = msg;
           setTimeout(() => { if (toastMsg.value === msg) toastMsg.value = ''; }, 2800);
+        };
+
+        const switchTab = (tabName) => {
+          activeTab.value = tabName;
+          if (window.ACGTheme && window.ACGTheme.playSfx) {
+            window.ACGTheme.playSfx('tab');
+          }
+          if (tabName === 'screenshots' && game.value) {
+            loadScreenshots(game.value.id);
+          }
+        };
+
+        const loadLocalChecklist = (gid) => {
+          if (!gid) { localChecklistMap.value = {}; return; }
+          try {
+            const raw = localStorage.getItem('acg_checklist_' + gid);
+            localChecklistMap.value = raw ? (JSON.parse(raw) || {}) : {};
+          } catch (e) {
+            localChecklistMap.value = {};
+          }
+        };
+
+        const saveLocalChecklist = (gid, idx, checked) => {
+          if (!gid) return;
+          try {
+            const next = { ...(localChecklistMap.value || {}) };
+            next[String(idx)] = Boolean(checked);
+            localChecklistMap.value = next;
+            localStorage.setItem('acg_checklist_' + gid, JSON.stringify(next));
+          } catch (e) { /* ignore */ }
         };
 
         const applyOpacity = () => {
@@ -437,9 +569,14 @@
             });
             const d = await r.json();
             if (d.success) {
-              isClickThrough.value = Boolean(d.click_through);
-              showToast(d.message || (isClickThrough.value ? '已开启鼠标穿透锁定' : '已解除鼠标穿透锁定'));
-              nextTick(reportUnlockChip);
+              const nextState = Boolean(d.click_through);
+              isClickThrough.value = nextState;
+              if (d.overlay_hotkey) overlayHotkey.value = d.overlay_hotkey;
+              if (window.ACGTheme && window.ACGTheme.playSfx) {
+                window.ACGTheme.playSfx(nextState ? 'lock' : 'unlock');
+              }
+              showToast(d.message || (nextState ? '🔒 已开启鼠标穿透锁定' : '🔓 已解除鼠标穿透锁定'));
+              scheduleReportUnlockChip();
             }
           } catch (e) {
             showToast('切换穿透锁定失败');
@@ -476,6 +613,7 @@
           let inFence = false;
           let idx = 0;
           const q = guideSearch.value.trim().toLowerCase();
+          const savedMap = localChecklistMap.value || {};
           for (const line of lines) {
             if (/^\s*(```|~~~)/.test(line)) {
               inFence = !inFence;
@@ -485,8 +623,10 @@
             const m = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/);
             if (m) {
               const textClean = m[2].replace(/\*\*/g, '').replace(/`/g, '').trim();
+              const mdChecked = m[1].toLowerCase() === 'x';
+              const checked = savedMap[String(idx)] !== undefined ? Boolean(savedMap[String(idx)]) : mdChecked;
               if (!q || textClean.toLowerCase().includes(q)) {
-                res.push({ idx, checked: m[1].toLowerCase() === 'x', text: textClean });
+                res.push({ idx, checked, text: textClean });
               }
               idx++;
             }
@@ -518,15 +658,16 @@
             const matched = blocks.filter(b => b.toLowerCase().includes(q.toLowerCase()));
             if (matched.length > 0) md = matched.join('\n\n');
           }
-          // Replace ```mermaid blocks with visual route cards before marked parsing
           md = md.replace(/```mermaid\s*\n([\s\S]*?)```/gi, (m, code) => compileMermaidToVisualHtml(code));
 
           if (typeof marked !== 'undefined' && marked.parse) {
             let html = sanitizeRenderedHtml(marked.parse(md));
             let boxIdx = 0;
+            const savedMap = localChecklistMap.value || {};
             html = html.replace(/<input([^>]*?)type="checkbox"([^>]*?)>/gi, (m) => {
-              const isChecked = /checked/i.test(m);
+              const mdChecked = /checked/i.test(m);
               const idx = boxIdx++;
+              const isChecked = savedMap[String(idx)] !== undefined ? Boolean(savedMap[String(idx)]) : mdChecked;
               return `<input type="checkbox" data-checkbox-idx="${idx}" ${isChecked ? 'checked' : ''} class="notes-interactive-checkbox" />`;
             });
             return html;
@@ -550,18 +691,26 @@
           const lines = game.value.walkthrough_md.split('\n');
           let inFence = false;
           let curr = 0;
+          let nextCheckedState = true;
           for (let i = 0; i < lines.length; i++) {
             if (/^\s*(```|~~~)/.test(lines[i])) { inFence = !inFence; continue; }
             if (inFence) continue;
             if (/^\s*[-*+]\s+\[([ xX])\]/.test(lines[i])) {
               if (curr === targetIdx) {
-                lines[i] = lines[i].replace(/^(\s*[-*+]\s+\[)([ xX])(\])/, (m, p1, st, p3) => `${p1}${st === ' ' ? 'x' : ' '}${p3}`);
+                lines[i] = lines[i].replace(/^(\s*[-*+]\s+\[)([ xX])(\])/, (m, p1, st, p3) => {
+                  nextCheckedState = (st === ' ');
+                  return `${p1}${nextCheckedState ? 'x' : ' '}${p3}`;
+                });
                 break;
               }
               curr++;
             }
           }
+          saveLocalChecklist(game.value.id, targetIdx, nextCheckedState);
           game.value.walkthrough_md = lines.join('\n');
+          if (window.ACGTheme && window.ACGTheme.playSfx) {
+            window.ACGTheme.playSfx('select');
+          }
           savePayload({ walkthrough_md: game.value.walkthrough_md });
         };
 
@@ -569,7 +718,9 @@
           const cb = e.target.closest('input.notes-interactive-checkbox');
           if (cb) {
             const idx = parseInt(cb.getAttribute('data-checkbox-idx'), 10);
-            if (!isNaN(idx)) toggleChecklistByIndex(idx);
+            if (!isNaN(idx)) {
+              toggleChecklistByIndex(idx);
+            }
           }
         };
 
@@ -603,7 +754,19 @@
         const copyText = async (txt) => {
           try {
             await navigator.clipboard.writeText(txt);
+            if (window.ACGTheme && window.ACGTheme.playSfx) window.ACGTheme.playSfx('select');
             showToast(`已复制: ${txt}`);
+          } catch (e) {}
+        };
+
+        const loadScreenshots = async (gid) => {
+          if (!gid) return;
+          try {
+            const r = await fetch(`/api/games/${gid}/screenshots`);
+            const d = await r.json();
+            if (d && Array.isArray(d.screenshots)) {
+              screenshotsList.value = d.screenshots;
+            }
           } catch (e) {}
         };
 
@@ -614,6 +777,7 @@
             const r = await fetch(`/api/games/${game.value.id}/screenshots/capture`, { method: 'POST' });
             const d = await r.json();
             showToast(d.message || '截图完成');
+            loadScreenshots(game.value.id);
           } catch (e) {
             showToast('截图失败');
           } finally {
@@ -671,9 +835,10 @@
             if (typeof d.click_through === 'boolean') {
               isClickThrough.value = d.click_through;
             }
+            if (d.overlay_hotkey) {
+              overlayHotkey.value = d.overlay_hotkey;
+            }
             if (d.game) {
-              // Incremental poll check: only replace walkthrough_md if game changed or updated_at changed,
-              // so expanded <details> spoiler blocks are never reset while reading!
               if (
                 isPolling &&
                 game.value &&
@@ -682,10 +847,15 @@
               ) {
                 isRunning.value = Boolean(d.is_running);
               } else {
+                const prevId = game.value ? game.value.id : null;
                 game.value = d.game;
                 selectedGameId.value = d.game.id;
                 isRunning.value = Boolean(d.is_running);
                 f9Data.value = d.f9_cheats || { variables: [], switches: [] };
+                if (prevId !== d.game.id) {
+                  loadLocalChecklist(d.game.id);
+                  loadScreenshots(d.game.id);
+                }
               }
             }
             if (d.game_list) {
@@ -698,9 +868,23 @@
           try {
             const r = await fetch('/api/overlay/state', { cache: 'no-store' });
             const d = await r.json();
-            if (d && typeof d.click_through === 'boolean') {
-              isClickThrough.value = d.click_through;
-              if (d.click_through) reportUnlockChip();
+            if (d) {
+              if (d.overlay_hotkey) overlayHotkey.value = d.overlay_hotkey;
+              if (typeof d.click_through === 'boolean') {
+                const prev = isClickThrough.value;
+                isClickThrough.value = d.click_through;
+                if (prev !== d.click_through) {
+                  if (window.ACGTheme && window.ACGTheme.playSfx) {
+                    window.ACGTheme.playSfx(d.click_through ? 'lock' : 'unlock');
+                  }
+                  showToast(
+                    d.click_through
+                      ? `🔒 已开启穿透锁定（滚轮可翻页，按 ${overlayHotkey.value} 或 Alt+T 解锁）`
+                      : '🔓 已解除鼠标穿透锁定，恢复自由交互'
+                  );
+                }
+                scheduleReportUnlockChip();
+              }
             }
           } catch (e) { /* ignore */ }
         };
@@ -710,7 +894,7 @@
           const tick = () => {
             if (window.pywebview && window.pywebview.api && window.pywebview.api.win_set_opacity) {
               applyOpacity();
-              reportUnlockChip();
+              scheduleReportUnlockChip();
               return;
             }
             if (++tries < 40) setTimeout(tick, 250);
@@ -718,24 +902,28 @@
           tick();
         };
 
-        watch(isClickThrough, () => { nextTick(reportUnlockChip); });
+        watch(isClickThrough, () => {
+          scheduleReportUnlockChip();
+        });
 
-        // 锁定状态下滚轮由全局钩子转发进来
-        window.__acgScrollBy = (delta) => {
-          // Windows 的 wheel delta：负 = 向下滚，所以 scrollTop 要减去它
-          const pixels = (delta / 120) * 96;
-          const list = Array.from(document.querySelectorAll('#overlay-app [class*="overflow-y-auto"]'))
-            .filter(el => el.scrollHeight > el.clientHeight + 4 && el.offsetParent !== null);
-          if (!list.length) return;
-          list[0].scrollTop -= pixels;
+        // 痛点 7 终极修复：支持全面板（攻略阅读区 / 清单 / F9 透视 / 游戏截图 / 随手记）即时无延迟滚轮滚动
+        window.__acgScrollBy = (pxDelta) => {
+          const amount = Number(pxDelta) || 0;
+          if (!amount) return;
+          const candidates = Array.from(
+            document.querySelectorAll('#overlay-app [data-overlay-scroll], #overlay-app .overflow-y-auto, #overlay-app textarea')
+          ).filter(el => el.offsetParent !== null && el.scrollHeight > el.clientHeight + 2);
+          if (candidates.length > 0) {
+            candidates[0].scrollTop += amount;
+          }
         };
 
         onMounted(() => {
           loadOverlayContext(null, false);
           applyOpacityWhenReady();
           syncOverlayState();
-          // 热键解锁后立即刷新 UI，轮询只是兜底
           window.__acgSyncOverlay = syncOverlayState;
+          window.addEventListener('resize', scheduleReportUnlockChip);
           setInterval(syncOverlayState, 1200);
           setInterval(() => {
             if (!document.hidden && activeTab.value !== 'memo') {
@@ -745,8 +933,8 @@
         });
 
         return {
-          game, gameList, selectedGameId, isRunning, isClickThrough, toggleClickThrough,
-          activeTab, panelOpacity, saveOpacity,
+          game, gameList, selectedGameId, isRunning, isClickThrough, overlayHotkey, toggleClickThrough,
+          activeTab, switchTab, panelOpacity, saveOpacity, screenshotsList,
           guideSearch, checklistOnly, checklistItems, tocList, renderedWalkthrough,
           jumpToHeading, toggleChecklistByIndex, handleMarkdownClick,
           f9Data, f9Query, f9KeyOnly, f9Count, filteredVars, filteredSwitches,
@@ -756,7 +944,7 @@
       }
     }).mount('#overlay-app');
   </script>
-  <script src="/static/windowbar.js?v=2.6.3"></script>
+  <script src="/static/windowbar.js?v=3.2"></script>
   <script>
     if (window.AcgWindow) {
       window.AcgWindow.mount({

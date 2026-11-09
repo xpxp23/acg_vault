@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ACG Vault 2.4 - Collector's Edition Glassmorphic & Ambient Dark UI
+   ACG Vault v3.2.0 - Collector's Edition Glassmorphic & Ambient UI
    GPU-Optimized Compositing, Unobstructed Artwork Hover, Smart Footer & Save Editor
    ========================================================================== */
 
@@ -15,6 +15,7 @@
   --accent-glow: rgba(99, 102, 241, 0.28);
   --accent-pink: #ec4899;
   --accent-cyan: #06b6d4;
+  --switch-cyan: #00c3e3;
 }
 
 * {
@@ -25,7 +26,7 @@
 body {
   background-color: var(--bg-main);
   background-image:
-    radial-gradient(circle at 8% 0%, rgba(99, 102, 241, 0.15) 0px, transparent 45%),
+    radial-gradient(circle at 8% 0%, rgba(var(--ax-500-rgb, 99, 102, 241), 0.14) 0px, transparent 45%),
     radial-gradient(circle at 92% 5%, rgba(236, 72, 153, 0.10) 0px, transparent 42%),
     radial-gradient(circle at 50% 95%, rgba(14, 165, 233, 0.09) 0px, transparent 50%),
     linear-gradient(180deg, #070a12 0%, #0b101e 100%);
@@ -46,7 +47,8 @@ body {
 }
 
 /* GPU-Optimized Collector Card (No per-card backdrop-filter to prevent scroll frame drops) */
-.glass-card {
+.glass-card,
+.game-card {
   background: linear-gradient(165deg, rgba(22, 31, 52, 0.92) 0%, rgba(13, 19, 34, 0.96) 100%);
   border: 1px solid var(--border-glass);
   box-shadow:
@@ -60,7 +62,10 @@ body {
               background 0.24s ease;
 }
 
-.glass-card:hover {
+.glass-card:hover,
+.game-card:hover,
+.glass-card:focus-visible,
+.game-card:focus-visible {
   background: linear-gradient(165deg, rgba(30, 42, 70, 0.96) 0%, rgba(18, 26, 46, 0.98) 100%);
   border-color: var(--border-glow);
   transform: translateY(-4px);
@@ -68,16 +73,18 @@ body {
     0 16px 32px -10px rgba(0, 0, 0, 0.7),
     0 0 22px -4px var(--accent-glow),
     inset 0 1px 0 0 rgba(255, 255, 255, 0.18);
+  outline: none;
 }
 
-.glass-card.is-running-card {
+.glass-card.is-running-card,
+.game-card.is-running-card {
   border-color: rgba(16, 185, 129, 0.68);
   box-shadow:
     0 10px 28px -6px rgba(16, 185, 129, 0.28),
     inset 0 1px 0 0 rgba(52, 211, 153, 0.25);
 }
 
-/* Unified Top-Left Glassmorphic Capsule Pill on Cards (Collector's UI v2.4) */
+/* Unified Top-Left Glassmorphic Capsule Pill on Cards (Collector's UI) */
 .card-unified-badge {
   display: inline-flex;
   align-items: center;
@@ -126,7 +133,7 @@ body {
   filter: brightness(1.2);
 }
 
-/* Smart Card Footer Info Slot Micro-Capsules (v2.4) */
+/* Smart Card Footer Info Slot Micro-Capsules */
 .card-smart-tag {
   display: inline-flex;
   align-items: center;
@@ -135,9 +142,9 @@ body {
   font-size: 0.64rem;
   font-weight: 600;
   line-height: 1.25;
-  background: rgba(99, 102, 241, 0.13);
-  border: 1px solid rgba(129, 140, 248, 0.26);
-  color: #c7d2fe;
+  background: rgba(var(--ax-500-rgb, 99, 102, 241), 0.13);
+  border: 1px solid rgba(var(--ax-400-rgb, 129, 140, 248), 0.26);
+  color: var(--ax-200, #c7d2fe);
   max-width: 5.5rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -146,8 +153,8 @@ body {
 }
 
 .card-smart-tag:hover {
-  background: rgba(99, 102, 241, 0.28);
-  border-color: rgba(129, 140, 248, 0.55);
+  background: rgba(var(--ax-500-rgb, 99, 102, 241), 0.28);
+  border-color: rgba(var(--ax-400-rgb, 129, 140, 248), 0.55);
   color: #ffffff;
 }
 
@@ -201,7 +208,7 @@ body {
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.85);
+  background: rgba(var(--ax-500-rgb, 99, 102, 241), 0.85);
 }
 
 .scrollbar-none::-webkit-scrollbar {
@@ -280,7 +287,7 @@ body {
 .poster-fallback-pattern {
   background-color: #0d1323;
   background-image:
-    radial-gradient(rgba(99, 102, 241, 0.14) 1px, transparent 1px),
+    radial-gradient(rgba(var(--ax-500-rgb, 99, 102, 241), 0.14) 1px, transparent 1px),
     linear-gradient(145deg, rgba(30, 27, 75, 0.55) 0%, rgba(15, 23, 42, 0.9) 100%);
   background-size: 16px 16px, 100% 100%;
 }
@@ -360,11 +367,11 @@ body {
   transition: border-color 0.2s ease, background-color 0.2s ease, transform 0.2s ease;
 }
 .bento-card:hover {
-  border-color: rgba(99, 102, 241, 0.42);
+  border-color: rgba(var(--ax-500-rgb, 99, 102, 241), 0.42);
   background: rgba(30, 41, 59, 0.58);
 }
 
-/* Lightweight Personal Clearance Sticky Memo Card (v2.3 / v2.4) */
+/* Lightweight Personal Clearance Sticky Memo Card */
 .sticky-memo-card {
   background: linear-gradient(145deg, rgba(6, 78, 59, 0.22) 0%, rgba(15, 23, 42, 0.75) 100%);
   border: 1px solid rgba(16, 185, 129, 0.32);
@@ -393,7 +400,7 @@ body {
 }
 .split-resizer:hover,
 .split-resizer.is-dragging {
-  background: rgba(99, 102, 241, 0.85);
+  background: rgba(var(--ax-500-rgb, 99, 102, 241), 0.85);
 }
 .split-resizer::after {
   content: "";
@@ -445,7 +452,7 @@ body {
 }
 
 /* ==========================================================================
-   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v2.4)
+   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v3.2.0)
    ========================================================================== */
 .notes-markdown-body {
   line-height: 1.74;
@@ -470,7 +477,7 @@ body {
   margin-top: 1.25rem;
   margin-bottom: 0.75rem;
   padding-bottom: 0.55rem;
-  border-bottom: 2px solid rgba(99, 102, 241, 0.45);
+  border-bottom: 2px solid rgba(var(--ax-500-rgb, 99, 102, 241), 0.45);
   letter-spacing: -0.01em;
 }
 
@@ -482,15 +489,15 @@ body {
   margin-top: 1.35rem;
   margin-bottom: 0.6rem;
   padding: 0.38rem 0.75rem;
-  border-left: 4px solid #6366f1;
-  background: linear-gradient(90deg, rgba(99, 102, 241, 0.14) 0%, transparent 100%);
+  border-left: 4px solid var(--ax-500, #6366f1);
+  background: linear-gradient(90deg, rgba(var(--ax-500-rgb, 99, 102, 241), 0.14) 0%, transparent 100%);
   border-radius: 0 8px 8px 0;
 }
 
 .notes-markdown-body h3 {
   font-size: 1.0em;
   font-weight: 700;
-  color: #a5b4fc;
+  color: var(--ax-300, #a5b4fc);
   margin-top: 1rem;
   margin-bottom: 0.4rem;
   display: flex;
@@ -501,7 +508,7 @@ body {
 .notes-markdown-body h3::before {
   content: "◆";
   font-size: 0.7rem;
-  color: #818cf8;
+  color: var(--ax-400, #818cf8);
 }
 
 .notes-markdown-body h4 {
@@ -548,7 +555,7 @@ body {
 }
 
 .notes-markdown-body tr:hover td {
-  background: rgba(99, 102, 241, 0.12);
+  background: rgba(var(--ax-500-rgb, 99, 102, 241), 0.12);
 }
 
 .notes-markdown-body ul {
@@ -562,7 +569,7 @@ body {
 }
 
 .notes-markdown-body input[type="checkbox"] {
-  accent-color: #6366f1;
+  accent-color: var(--ax-500, #6366f1);
   width: 0.95rem;
   height: 0.95rem;
   margin-right: 0.45rem;
@@ -572,7 +579,7 @@ body {
 
 .notes-markdown-body details {
   background: rgba(15, 23, 42, 0.75);
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  border: 1px solid rgba(var(--ax-500-rgb, 99, 102, 241), 0.3);
   border-radius: 10px;
   padding: 0.55rem 0.9rem;
   margin: 0.65rem 0;
@@ -580,7 +587,7 @@ body {
 
 .notes-markdown-body summary {
   font-weight: 700;
-  color: #a5b4fc;
+  color: var(--ax-300, #a5b4fc);
   cursor: pointer;
   user-select: none;
 }
@@ -592,7 +599,7 @@ body {
 .notes-markdown-body hr {
   border: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(99, 102, 241, 0.45), transparent);
+  background: linear-gradient(90deg, transparent, rgba(var(--ax-500-rgb, 99, 102, 241), 0.45), transparent);
   margin: 1rem 0;
 }
 
@@ -606,7 +613,7 @@ body {
 }
 
 .notes-markdown-body a {
-  color: #818cf8;
+  color: var(--ax-400, #818cf8);
   text-decoration: underline;
   text-underline-offset: 3px;
   cursor: pointer;
@@ -614,12 +621,12 @@ body {
 }
 
 .notes-markdown-body a:hover {
-  color: #c7d2fe;
-  background-color: rgba(99, 102, 241, 0.18);
+  color: var(--ax-200, #c7d2fe);
+  background-color: rgba(var(--ax-500-rgb, 99, 102, 241), 0.18);
   border-radius: 4px;
 }
 
-.notes-markdown-body code {
+.notes-markdown-body :not(pre) > code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   background: rgba(30, 41, 59, 0.9);
   border: 1px solid rgba(71, 85, 105, 0.65);
@@ -639,16 +646,18 @@ body {
 }
 
 .notes-markdown-body pre code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   background: transparent;
   border: none;
   padding: 0;
+  font-size: 0.85em;
   color: #e2e8f0;
 }
 
-/* Native Offline Mermaid Flowchart Diagram Card (v2.3 / v2.4) */
+/* Native Offline Mermaid Flowchart Diagram Card */
 .mermaid-flow-container {
   background: linear-gradient(145deg, rgba(15, 23, 42, 0.9) 0%, rgba(9, 13, 24, 0.95) 100%);
-  border: 1px solid rgba(99, 102, 241, 0.32);
+  border: 1px solid rgba(var(--ax-500-rgb, 99, 102, 241), 0.32);
   border-radius: 14px;
   padding: 1rem 1.15rem;
   margin: 0.95rem 0;
@@ -658,7 +667,7 @@ body {
 .mermaid-flow-title {
   font-size: 0.75rem;
   font-weight: 700;
-  color: #a5b4fc;
+  color: var(--ax-300, #a5b4fc);
   margin-bottom: 0.65rem;
   display: flex;
   align-items: center;
@@ -688,8 +697,8 @@ body {
 .mermaid-node-pill {
   padding: 0.2rem 0.55rem;
   border-radius: 6px;
-  background: rgba(99, 102, 241, 0.18);
-  border: 1px solid rgba(129, 140, 248, 0.4);
+  background: rgba(var(--ax-500-rgb, 99, 102, 241), 0.18);
+  border: 1px solid rgba(var(--ax-400-rgb, 129, 140, 248), 0.4);
   color: #e0e7ff;
   font-weight: 600;
 }
@@ -704,7 +713,7 @@ body {
 }
 
 .mermaid-arrow {
-  color: #818cf8;
+  color: var(--ax-400, #818cf8);
   font-weight: 700;
   font-family: monospace;
 }
@@ -733,7 +742,7 @@ body {
 }
 
 @keyframes headingFlash {
-  0% { background-color: rgba(99, 102, 241, 0.45); border-radius: 6px; box-shadow: 0 0 16px rgba(99, 102, 241, 0.65); }
+  0% { background-color: rgba(var(--ax-500-rgb, 99, 102, 241), 0.45); border-radius: 6px; box-shadow: 0 0 16px rgba(var(--ax-500-rgb, 99, 102, 241), 0.65); }
   100% { background-color: transparent; box-shadow: none; }
 }
 .heading-highlight-flash {

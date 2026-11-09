@@ -2,6 +2,7 @@ import re
 import os
 import shutil
 import difflib
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Set
 from datetime import datetime
@@ -128,9 +129,9 @@ def has_different_sequel_number(t1: str, t2: str) -> bool:
     return _sequel_markers_conflict(extract_sequel_marker(t1), extract_sequel_marker(t2))
 
 
-def _get_game_norm_candidates(g: Dict[str, Any]) -> List[Tuple[str, str, Optional[str]]]:
-    """Returns list of (raw_title, normalized_title, precomputed_sequel_marker) from title fields."""
-    candidates: List[Tuple[str, str, Optional[str]]] = []
+def _get_game_norm_candidates(g: Dict[str, Any]) -> List[Tuple[str, str, Optional[str], Set[str]]]:
+    """Returns list of (raw_title, normalized_title, precomputed_sequel_marker, char_set) from title fields."""
+    candidates: List[Tuple[str, str, Optional[str], Set[str]]] = []
     seen_norms: Set[str] = set()
     for field in ("clean_title", "display_title", "original_title", "folder_name"):
         raw = (g.get(field) or "").strip()
@@ -139,14 +140,28 @@ def _get_game_norm_candidates(g: Dict[str, Any]) -> List[Tuple[str, str, Optiona
         norm = normalize_title_for_comparison(raw)
         if norm and len(norm) >= 2 and norm not in seen_norms:
             seen_norms.add(norm)
-            candidates.append((raw, norm, extract_sequel_marker(raw)))
+            candidates.append((raw, norm, extract_sequel_marker(raw), set(norm)))
     return candidates
+
+
+def _extract_bigrams(s: str) -> Set[str]:
+    """Extracts 2-grams (adjacent bigrams + sorted-char adjacent bigrams) for fast inverted index candidate pruning."""
+    if len(s) < 2:
+        return set()
+    grams = {s[i:i + 2] for i in range(len(s) - 1)}
+    sorted_s = "".join(sorted(set(s)))
+    if len(sorted_s) >= 2:
+        grams.update(sorted_s[i:i + 2] for i in range(len(sorted_s) - 1))
+    return grams
 
 
 def compute_duplicates_and_update_db() -> int:
     """
-    Analyzes all active games in database across clean_title, display_title, original_title, and rj_code,
-    clusters duplicates with precomputed O(N) sequel markers and cluster-level ignore conflict protection.
+    Analyzes all active games in database across clean_title, display_title, original_title, and rj_code.
+    Accelerates clustering via:
+      1. Exact rj_code bucketing
+      2. Exact normalized title bucketing
+      3. Character 2-gram (Bigram) inverted index & length/charset pruning before fuzzy matching
     """
     games = get_all_games(status="all", is_tool=False, include_full_notes=False)
     if not games:
@@ -181,24 +196,40 @@ def compute_duplicates_and_update_db() -> int:
             cluster_members[root_j].update(cluster_members[root_i])
 
     precomputed = []
-    for g in games:
+    rj_buckets: Dict[str, List[int]] = defaultdict(list)
+    norm_buckets: Dict[str, List[Tuple[int, Optional[str], Optional[str]]]] = defaultdict(list)
+    bigram_index: Dict[str, Set[int]] = defaultdict(set)
+
+    for idx, g in enumerate(games):
         rj = (g.get("rj_code") or "").strip().upper()
         primary_t = g.get("clean_title") or g.get("display_title") or g.get("folder_name") or ""
         primary_seq = extract_sequel_marker(primary_t)
         cands = _get_game_norm_candidates(g)
         precomputed.append((g["id"], rj, primary_seq, cands))
 
-    for i in range(n):
-        id1, rj1, seq1, cands1 = precomputed[i]
+        if rj:
+            rj_buckets[rj].append(idx)
+        for _, norm, c_seq, _ in cands:
+            norm_buckets[norm].append((idx, primary_seq, c_seq))
+            if len(norm) >= 4:
+                for bg in _extract_bigrams(norm):
+                    bigram_index[bg].add(idx)
 
-        for j in range(i + 1, n):
-            id2, rj2, seq2, cands2 = precomputed[j]
-
-            pair = (min(id1, id2), max(id1, id2))
-            if pair in ignores:
-                continue
-
-            if rj1 and rj2 and rj1 == rj2:
+    # 1. Exact RJ code bucket clustering
+    for rj, indices in rj_buckets.items():
+        if len(indices) < 2:
+            continue
+        m = len(indices)
+        for a in range(m):
+            i = indices[a]
+            id1, _, _, cands1 = precomputed[i]
+            for b in range(a + 1, m):
+                j = indices[b]
+                if find(i) == find(j):
+                    continue
+                id2, _, _, cands2 = precomputed[j]
+                if (min(id1, id2), max(id1, id2)) in ignores:
+                    continue
                 if cands1 and cands2:
                     n1 = cands1[0][1]
                     n2 = cands2[0][1]
@@ -206,31 +237,74 @@ def compute_duplicates_and_update_db() -> int:
                         if max(fuzz.ratio(n1, n2), fuzz.token_sort_ratio(n1, n2)) < 20:
                             continue
                 union(i, j)
-                continue
 
-            if _sequel_markers_conflict(seq1, seq2):
-                continue
-
-            matched = False
-            for _, norm1, c_seq1 in cands1:
-                for _, norm2, c_seq2 in cands2:
-                    if _sequel_markers_conflict(c_seq1, c_seq2):
-                        continue
-                    if norm1 == norm2:
-                        matched = True
-                        break
-                    l1, l2 = len(norm1), len(norm2)
-                    if l1 >= 4 and l2 >= 4:
-                        if abs(l1 - l2) / max(l1, l2) > 0.32:
-                            continue
-                        if max(fuzz.ratio(norm1, norm2), fuzz.token_sort_ratio(norm1, norm2)) >= 88:
-                            matched = True
-                            break
-                if matched:
-                    break
-
-            if matched:
+    # 2. Exact normalized title bucket clustering
+    for norm, items in norm_buckets.items():
+        if len(items) < 2:
+            continue
+        m = len(items)
+        for a in range(m):
+            i, seq1, c_seq1 = items[a]
+            id1 = precomputed[i][0]
+            for b in range(a + 1, m):
+                j, seq2, c_seq2 = items[b]
+                if i == j or find(i) == find(j):
+                    continue
+                id2 = precomputed[j][0]
+                if (min(id1, id2), max(id1, id2)) in ignores:
+                    continue
+                if _sequel_markers_conflict(seq1, seq2) or _sequel_markers_conflict(c_seq1, c_seq2):
+                    continue
                 union(i, j)
+
+    # 3. Bigram inverted index candidate generation for fuzzy matching (length >= 4)
+    candidate_pairs: Set[Tuple[int, int]] = set()
+    for bg, idx_set in bigram_index.items():
+        if len(idx_set) < 2:
+            continue
+        idx_list = sorted(idx_set)
+        m = len(idx_list)
+        for a in range(m):
+            i = idx_list[a]
+            for b in range(a + 1, m):
+                j = idx_list[b]
+                if find(i) != find(j):
+                    candidate_pairs.add((i, j))
+
+    for i, j in candidate_pairs:
+        if find(i) == find(j):
+            continue
+        id1, _, seq1, cands1 = precomputed[i]
+        id2, _, seq2, cands2 = precomputed[j]
+
+        if (min(id1, id2), max(id1, id2)) in ignores:
+            continue
+        if _sequel_markers_conflict(seq1, seq2):
+            continue
+
+        matched = False
+        for _, norm1, c_seq1, chars1 in cands1:
+            l1 = len(norm1)
+            if l1 < 4:
+                continue
+            for _, norm2, c_seq2, chars2 in cands2:
+                l2 = len(norm2)
+                if l2 < 4:
+                    continue
+                if abs(l1 - l2) / max(l1, l2) > 0.32:
+                    continue
+                if len(chars1 & chars2) < 2:
+                    continue
+                if _sequel_markers_conflict(c_seq1, c_seq2):
+                    continue
+                if max(fuzz.ratio(norm1, norm2), fuzz.token_sort_ratio(norm1, norm2)) >= 88:
+                    matched = True
+                    break
+            if matched:
+                break
+
+        if matched:
+            union(i, j)
 
     clusters: Dict[int, List[Dict[str, Any]]] = {}
     for i in range(n):

@@ -1,5 +1,5 @@
 """
-Magpie integration (v2.7)
+Magpie integration (v3.2)
 
 Magpie 是一款 GPLv3 的窗口放大/全屏工具，没有对外的"缩放指定窗口"命令行。
 但它把全局热键注册在一个消息窗口（窗口类名 Magpie_Hotkey）上，而该窗口的
@@ -25,7 +25,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-IS_WINDOWS = sys.platform == "win32"
+_IS_WIN = sys.platform == "win32"
+IS_WINDOWS = _IS_WIN
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000) if _IS_WIN else 0
 
 WM_HOTKEY = 0x0312
 SHORTCUT_SCALE = 0
@@ -33,9 +35,11 @@ MAGPIE_HOTKEY_CLASS = "Magpie_Hotkey"
 MAGPIE_PROCESS = "Magpie.exe"
 
 SW_RESTORE = 9
+TH32CS_SNAPPROCESS = 0x00000002
 
 _exe_cache: Optional[str] = None
 _exe_checked = False
+_exe_cache_cfg: Optional[str] = None
 
 
 # ---------------------------------------------------------------- win32 helpers
@@ -87,21 +91,56 @@ def find_hotkey_window() -> int:
 
 
 def _magpie_pids() -> Set[int]:
+    """
+    微秒级纯内存枚举 Magpie.exe 进程 PID（优先使用 CreateToolhelp32Snapshot，
+    彻底避免频繁拉起 tasklist.exe 子进程导致的阻塞与闪黑窗）。
+    """
     pids: Set[int] = set()
+    if not IS_WINDOWS:
+        return pids
     h = find_hotkey_window()
     if h:
         pids.add(_window_pid(h))
+
+    snap_ok = False
     try:
-        out = subprocess.run(
-            ["tasklist", "/FI", f"IMAGENAME eq {MAGPIE_PROCESS}", "/FO", "CSV", "/NH"],
-            capture_output=True, timeout=6,
-        ).stdout.decode("gbk", errors="ignore")
-        for line in out.splitlines():
-            parts = [p.strip('"') for p in line.split('","')]
-            if len(parts) >= 2 and parts[1].isdigit():
-                pids.add(int(parts[1]))
+        from core.launcher import PROCESSENTRY32W, INVALID_HANDLE_VALUE
+        k32 = ctypes.windll.kernel32
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if snap and snap != INVALID_HANDLE_VALUE:
+            try:
+                pe = PROCESSENTRY32W()
+                pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+                target_low = MAGPIE_PROCESS.lower()
+                if k32.Process32FirstW(snap, ctypes.byref(pe)):
+                    snap_ok = True
+                    while True:
+                        if pe.szExeFile.lower() == target_low:
+                            pids.add(int(pe.th32ProcessID))
+                        if not k32.Process32NextW(snap, ctypes.byref(pe)):
+                            break
+            finally:
+                try:
+                    k32.CloseHandle(snap)
+                except Exception:
+                    pass
     except Exception:
         pass
+
+    if not snap_ok and not pids:
+        try:
+            out = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {MAGPIE_PROCESS}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                timeout=6,
+                creationflags=_NO_WINDOW,
+            ).stdout.decode("gbk", errors="ignore")
+            for line in out.splitlines():
+                parts = [p.strip('"') for p in line.split('","')]
+                if len(parts) >= 2 and parts[1].isdigit():
+                    pids.add(int(parts[1]))
+        except Exception:
+            pass
     return pids
 
 
@@ -175,13 +214,15 @@ def _candidate_dirs() -> List[Path]:
 
 
 def detect_magpie(configured_path: str = "", refresh: bool = False) -> Optional[str]:
-    """定位 Magpie.exe。configured_path 可以是 exe 或所在目录。"""
-    global _exe_cache, _exe_checked
-    if _exe_checked and not refresh:
+    """定位 Magpie.exe。configured_path 可以是 exe 或所在目录。当 configured_path 变化时自动刷新缓存。"""
+    global _exe_cache, _exe_checked, _exe_cache_cfg
+    norm_cfg = (configured_path or "").strip()
+    if _exe_checked and not refresh and norm_cfg == _exe_cache_cfg:
         if _exe_cache and Path(_exe_cache).is_file():
             return _exe_cache
         return None
     _exe_checked = True
+    _exe_cache_cfg = norm_cfg
     _exe_cache = None
 
     def _accept(p: Optional[Path]) -> Optional[str]:
@@ -196,8 +237,8 @@ def detect_magpie(configured_path: str = "", refresh: bool = False) -> Optional[
             return None
         return None
 
-    if configured_path:
-        got = _accept(Path(configured_path))
+    if norm_cfg:
+        got = _accept(Path(norm_cfg))
         if got:
             _exe_cache = got
             return got
@@ -267,6 +308,7 @@ def ensure_running(configured_path: str = "", timeout: float = 12.0) -> Dict[str
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
+            creationflags=_NO_WINDOW,
         )
     except Exception as e:
         return {"success": False, "message": f"启动 Magpie 失败: {e}"}
@@ -340,7 +382,7 @@ def _wait_foreground(hwnd: int, timeout: float = 1.2) -> bool:
 
 
 def focus_window(hwnd: int) -> bool:
-    """把窗口拉到前台，成功返回 True。"""
+    """把窗口拉到前台，成功返回 True。使用 try...finally 保证 AttachThreadInput 必然解绑。"""
     if not hwnd:
         return False
     u = _user32()
@@ -362,10 +404,13 @@ def focus_window(hwnd: int) -> bool:
         tid_fg = u.GetWindowThreadProcessId(fg, None)
         tid_cur = k.GetCurrentThreadId()
         if tid_fg and tid_fg != tid_cur:
-            u.AttachThreadInput(tid_cur, tid_fg, True)
-            u.BringWindowToTop(hwnd)
-            u.SetForegroundWindow(hwnd)
-            u.AttachThreadInput(tid_cur, tid_fg, False)
+            attached = bool(u.AttachThreadInput(tid_cur, tid_fg, True))
+            try:
+                u.BringWindowToTop(hwnd)
+                u.SetForegroundWindow(hwnd)
+            finally:
+                if attached:
+                    u.AttachThreadInput(tid_cur, tid_fg, False)
 
         return _wait_foreground(hwnd, 1.0)
     except Exception:
@@ -636,7 +681,12 @@ def stop_magpie(timeout: float = 8.0) -> bool:
     if not IS_WINDOWS:
         return False
     try:
-        subprocess.run(["taskkill", "/IM", MAGPIE_PROCESS, "/F"], capture_output=True, timeout=6)
+        subprocess.run(
+            ["taskkill", "/IM", MAGPIE_PROCESS, "/F"],
+            capture_output=True,
+            timeout=6,
+            creationflags=_NO_WINDOW,
+        )
     except Exception:
         pass
     end = time.time() + timeout
@@ -645,6 +695,12 @@ def stop_magpie(timeout: float = 8.0) -> bool:
             return True
         time.sleep(0.25)
     return not find_hotkey_window()
+
+
+def restart_tray(configured_path: str = "", timeout: float = 10.0) -> Dict[str, Any]:
+    """重启 Magpie 托盘进程（先无窗口终止旧进程再以 -st 拉起）。"""
+    stop_magpie(timeout=min(6.0, timeout))
+    return ensure_running(configured_path=configured_path, timeout=timeout)
 
 
 def get_presets() -> Dict[str, Any]:

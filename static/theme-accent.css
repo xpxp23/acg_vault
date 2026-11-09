@@ -1,20 +1,38 @@
 /* ==========================================================================
-   强调色（夜间 / 日间同时生效）—— 由 tools 生成，勿手改
-   html[data-accent] 切换整套 --ax-*，再把 indigo 族映射上去
+   ACG Vault v3.2.0 — 5 套高定强调色系统（夜间 / 日间全场景 Alpha 通道与渐变接管）
+   预设：
+     - nintendo : 任系霓虹红 (#E60012 / Switch Horizon OS 标志色)
+     - indigo   : 电光靛蓝   (#6366F1 / Collector's 经典原色)
+     - emerald  : 赛博翠绿   (#10B981 / 掌机清透绿)
+     - amber    : 鎏金琥珀   (#F59E0B / 典藏暖金)
+     - violet   : 幻想紫罗兰 (#8B5CF6 / 霓虹幻紫)
+   核心改进：
+     1. 引入 --ax-300-rgb / --ax-400-rgb / --ax-500-rgb / --ax-600-rgb / --ax-950-rgb，
+        严格保留 .bg-indigo-500/10 ~ /85、.border-indigo-500/20 ~ /60 的真实 Alpha 透明度阶梯，
+        彻底根除“半透明微光标签变成 100% 刺眼纯色块”与“暗红底配褐红字”的对比度灾难！
+     2. 全面接管 Tailwind 渐变变量 (.from-indigo-500 / .from-indigo-600 / .to-indigo-500 等)
+        以及发光阴影与复选框强调色，使整站随主题色丝滑联动。
    ========================================================================== */
 
-:root {
+:root,
+html[data-accent="nintendo"] {
   --ax-50: #fff1f2;
-  --ax-100: #ffe0e2;
-  --ax-200: #ffc2c7;
-  --ax-300: #ff9aa2;
-  --ax-400: #ff5c69;
+  --ax-100: #ffe4e6;
+  --ax-200: #fecdd3;
+  --ax-300: #fda4af;
+  --ax-400: #fb7185;
   --ax-500: #e60012;
-  --ax-600: #c4000f;
-  --ax-700: #a3000c;
-  --ax-800: #7d0009;
-  --ax-900: #5c0007;
-  --ax-950: #330004;
+  --ax-600: #d00010;
+  --ax-700: #b0000d;
+  --ax-800: #8f000b;
+  --ax-900: #6e0008;
+  --ax-950: #3b0409;
+  --ax-300-rgb: 253, 164, 175;
+  --ax-400-rgb: 251, 113, 133;
+  --ax-500-rgb: 230, 0, 18;
+  --ax-600-rgb: 208, 0, 16;
+  --ax-700-rgb: 176, 0, 13;
+  --ax-950-rgb: 59, 4, 9;
 }
 
 html[data-accent="indigo"] {
@@ -29,6 +47,12 @@ html[data-accent="indigo"] {
   --ax-800: #3730a3;
   --ax-900: #312e81;
   --ax-950: #1e1b4b;
+  --ax-300-rgb: 165, 180, 252;
+  --ax-400-rgb: 129, 140, 248;
+  --ax-500-rgb: 99, 102, 241;
+  --ax-600-rgb: 79, 70, 229;
+  --ax-700-rgb: 67, 56, 202;
+  --ax-950-rgb: 30, 27, 75;
 }
 
 html[data-accent="emerald"] {
@@ -43,6 +67,12 @@ html[data-accent="emerald"] {
   --ax-800: #065f46;
   --ax-900: #064e3b;
   --ax-950: #022c22;
+  --ax-300-rgb: 110, 231, 183;
+  --ax-400-rgb: 52, 211, 153;
+  --ax-500-rgb: 16, 185, 129;
+  --ax-600-rgb: 5, 150, 105;
+  --ax-700-rgb: 4, 120, 87;
+  --ax-950-rgb: 2, 44, 34;
 }
 
 html[data-accent="amber"] {
@@ -57,6 +87,12 @@ html[data-accent="amber"] {
   --ax-800: #92400e;
   --ax-900: #78350f;
   --ax-950: #451a03;
+  --ax-300-rgb: 252, 211, 77;
+  --ax-400-rgb: 251, 191, 36;
+  --ax-500-rgb: 245, 158, 11;
+  --ax-600-rgb: 217, 119, 6;
+  --ax-700-rgb: 180, 83, 9;
+  --ax-950-rgb: 69, 26, 3;
 }
 
 html[data-accent="violet"] {
@@ -71,118 +107,223 @@ html[data-accent="violet"] {
   --ax-800: #5b21b6;
   --ax-900: #4c1d95;
   --ax-950: #2e1065;
+  --ax-300-rgb: 196, 181, 253;
+  --ax-400-rgb: 167, 139, 250;
+  --ax-500-rgb: 139, 92, 246;
+  --ax-600-rgb: 124, 58, 237;
+  --ax-700-rgb: 109, 40, 217;
+  --ax-950-rgb: 46, 16, 101;
 }
-html[data-theme="light"] .bg-indigo-400 { background-color: var(--ax-400); }
-html[data-theme="dark"] .bg-indigo-400 { background-color: var(--ax-400); }
-html[data-theme="light"] .hover\:bg-indigo-400:hover { background-color: var(--ax-400); }
-html[data-theme="dark"] .hover\:bg-indigo-400:hover { background-color: var(--ax-400); }
-html[data-theme="light"] .bg-indigo-500 { background-color: var(--ax-500); }
-html[data-theme="dark"] .bg-indigo-500 { background-color: var(--ax-500); }
-html[data-theme="light"] .hover\:bg-indigo-500:hover { background-color: var(--ax-500); }
-html[data-theme="dark"] .hover\:bg-indigo-500:hover { background-color: var(--ax-500); }
-html[data-theme="light"] .bg-indigo-500\/10 { background-color: var(--ax-500); }
-html[data-theme="dark"] .bg-indigo-500\/10 { background-color: var(--ax-500); }
-html[data-theme="light"] .bg-indigo-500\/15 { background-color: var(--ax-500); }
-html[data-theme="dark"] .bg-indigo-500\/15 { background-color: var(--ax-500); }
-html[data-theme="light"] .bg-indigo-500\/20 { background-color: var(--ax-500); }
-html[data-theme="dark"] .bg-indigo-500\/20 { background-color: var(--ax-500); }
-html[data-theme="light"] .bg-indigo-500\/25 { background-color: var(--ax-500); }
-html[data-theme="dark"] .bg-indigo-500\/25 { background-color: var(--ax-500); }
-html[data-theme="light"] .hover\:bg-indigo-500\/30:hover { background-color: var(--ax-500); }
-html[data-theme="dark"] .hover\:bg-indigo-500\/30:hover { background-color: var(--ax-500); }
-html[data-theme="light"] .bg-indigo-500\/40 { background-color: var(--ax-500); }
-html[data-theme="dark"] .bg-indigo-500\/40 { background-color: var(--ax-500); }
-html[data-theme="light"] .hover\:bg-indigo-500\/40:hover { background-color: var(--ax-500); }
-html[data-theme="dark"] .hover\:bg-indigo-500\/40:hover { background-color: var(--ax-500); }
-html[data-theme="light"] .bg-indigo-500\/85 { background-color: var(--ax-500); }
-html[data-theme="dark"] .bg-indigo-500\/85 { background-color: var(--ax-500); }
-html[data-theme="light"] .bg-indigo-600 { background-color: var(--ax-600); }
-html[data-theme="dark"] .bg-indigo-600 { background-color: var(--ax-600); }
-html[data-theme="light"] .hover\:bg-indigo-600:hover { background-color: var(--ax-600); }
-html[data-theme="dark"] .hover\:bg-indigo-600:hover { background-color: var(--ax-600); }
-html[data-theme="light"] .bg-indigo-600\/20 { background-color: var(--ax-600); }
-html[data-theme="dark"] .bg-indigo-600\/20 { background-color: var(--ax-600); }
-html[data-theme="light"] .bg-indigo-600\/25 { background-color: var(--ax-600); }
-html[data-theme="dark"] .bg-indigo-600\/25 { background-color: var(--ax-600); }
-html[data-theme="light"] .bg-indigo-600\/30 { background-color: var(--ax-600); }
-html[data-theme="dark"] .bg-indigo-600\/30 { background-color: var(--ax-600); }
-html[data-theme="light"] .hover\:bg-indigo-600\/35:hover { background-color: var(--ax-600); }
-html[data-theme="dark"] .hover\:bg-indigo-600\/35:hover { background-color: var(--ax-600); }
-html[data-theme="light"] .hover\:bg-indigo-600\/40:hover { background-color: var(--ax-600); }
-html[data-theme="dark"] .hover\:bg-indigo-600\/40:hover { background-color: var(--ax-600); }
-html[data-theme="light"] .bg-indigo-600\/50 { background-color: var(--ax-600); }
-html[data-theme="dark"] .bg-indigo-600\/50 { background-color: var(--ax-600); }
-html[data-theme="light"] .bg-indigo-600\/80 { background-color: var(--ax-600); }
-html[data-theme="dark"] .bg-indigo-600\/80 { background-color: var(--ax-600); }
-html[data-theme="light"] .bg-indigo-950 { background-color: var(--ax-50); }
-html[data-theme="dark"] .bg-indigo-950 { background-color: var(--ax-950); }
-html[data-theme="light"] .bg-indigo-950\/40 { background-color: var(--ax-50); }
-html[data-theme="dark"] .bg-indigo-950\/40 { background-color: var(--ax-950); }
-html[data-theme="light"] .bg-indigo-950\/60 { background-color: var(--ax-50); }
-html[data-theme="dark"] .bg-indigo-950\/60 { background-color: var(--ax-950); }
-html[data-theme="light"] .hover\:bg-indigo-950\/60:hover { background-color: var(--ax-50); }
-html[data-theme="dark"] .hover\:bg-indigo-950\/60:hover { background-color: var(--ax-950); }
-html[data-theme="light"] .bg-indigo-950\/85 { background-color: var(--ax-50); }
-html[data-theme="dark"] .bg-indigo-950\/85 { background-color: var(--ax-950); }
-html[data-theme="light"] .bg-indigo-950\/90 { background-color: var(--ax-50); }
-html[data-theme="dark"] .bg-indigo-950\/90 { background-color: var(--ax-950); }
-html[data-theme="light"] .bg-indigo-950\/95 { background-color: var(--ax-50); }
-html[data-theme="dark"] .bg-indigo-950\/95 { background-color: var(--ax-950); }
-html[data-theme="light"] .border-indigo-400 { border-color: var(--ax-600); }
-html[data-theme="dark"] .border-indigo-400 { border-color: var(--ax-400); }
-html[data-theme="light"] .border-indigo-400\/30 { border-color: var(--ax-600); }
-html[data-theme="dark"] .border-indigo-400\/30 { border-color: var(--ax-400); }
-html[data-theme="light"] .border-indigo-400\/70 { border-color: var(--ax-600); }
-html[data-theme="dark"] .border-indigo-400\/70 { border-color: var(--ax-400); }
-html[data-theme="light"] .hover\:border-indigo-400\/70:hover { border-color: var(--ax-600); }
-html[data-theme="dark"] .hover\:border-indigo-400\/70:hover { border-color: var(--ax-400); }
-html[data-theme="light"] .border-indigo-500 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500 { border-color: var(--ax-500); }
-html[data-theme="light"] .hover\:border-indigo-500:hover { border-color: var(--ax-500); }
-html[data-theme="dark"] .hover\:border-indigo-500:hover { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-500\/20 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500\/20 { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-500\/25 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500\/25 { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-500\/30 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500\/30 { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-500\/35 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500\/35 { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-500\/40 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500\/40 { border-color: var(--ax-500); }
-html[data-theme="light"] .hover\:border-indigo-500\/40:hover { border-color: var(--ax-500); }
-html[data-theme="dark"] .hover\:border-indigo-500\/40:hover { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-500\/50 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500\/50 { border-color: var(--ax-500); }
-html[data-theme="light"] .hover\:border-indigo-500\/50:hover { border-color: var(--ax-500); }
-html[data-theme="dark"] .hover\:border-indigo-500\/50:hover { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-500\/60 { border-color: var(--ax-500); }
-html[data-theme="dark"] .border-indigo-500\/60 { border-color: var(--ax-500); }
-html[data-theme="light"] .hover\:border-indigo-500\/60:hover { border-color: var(--ax-500); }
-html[data-theme="dark"] .hover\:border-indigo-500\/60:hover { border-color: var(--ax-500); }
-html[data-theme="light"] .border-indigo-700\/50 { border-color: var(--ax-300); }
-html[data-theme="dark"] .border-indigo-700\/50 { border-color: var(--ax-700); }
-html[data-theme="light"] .border-indigo-800\/60 { border-color: var(--ax-200); }
-html[data-theme="dark"] .border-indigo-800\/60 { border-color: var(--ax-800); }
-html[data-theme="light"] .text-indigo-100 { color: var(--ax-900); }
-html[data-theme="dark"] .text-indigo-100 { color: var(--ax-100); }
-html[data-theme="light"] .hover\:text-indigo-100:hover { color: var(--ax-900); }
-html[data-theme="dark"] .hover\:text-indigo-100:hover { color: var(--ax-100); }
-html[data-theme="light"] .text-indigo-200 { color: var(--ax-800); }
-html[data-theme="dark"] .text-indigo-200 { color: var(--ax-200); }
-html[data-theme="light"] .hover\:text-indigo-200:hover { color: var(--ax-800); }
-html[data-theme="dark"] .hover\:text-indigo-200:hover { color: var(--ax-200); }
-html[data-theme="light"] .text-indigo-300 { color: var(--ax-700); }
-html[data-theme="dark"] .text-indigo-300 { color: var(--ax-300); }
-html[data-theme="light"] .hover\:text-indigo-300:hover { color: var(--ax-700); }
-html[data-theme="dark"] .hover\:text-indigo-300:hover { color: var(--ax-300); }
-html[data-theme="light"] .text-indigo-400 { color: var(--ax-600); }
-html[data-theme="dark"] .text-indigo-400 { color: var(--ax-400); }
-html[data-theme="light"] .text-indigo-400\/70 { color: var(--ax-600); }
-html[data-theme="dark"] .text-indigo-400\/70 { color: var(--ax-400); }
-html[data-theme="light"] .text-indigo-400\/90 { color: var(--ax-600); }
-html[data-theme="dark"] .text-indigo-400\/90 { color: var(--ax-400); }
-html[data-theme="light"] .text-indigo-500 { color: var(--ax-500); }
-html[data-theme="dark"] .text-indigo-500 { color: var(--ax-500); }
-html[data-theme="light"] .text-indigo-600 { color: var(--ax-400); }
-html[data-theme="dark"] .text-indigo-600 { color: var(--ax-600); }
+
+/* 全局 CSS 变量联动 */
+html[data-accent] {
+  --accent-primary: var(--ax-500);
+  --border-glow: rgba(var(--ax-500-rgb), 0.62);
+  --accent-glow: rgba(var(--ax-500-rgb), 0.28);
+  --accent: var(--ax-500);
+  --accent-hi: var(--ax-400);
+}
+
+/* ==========================================================================
+   1. 实心背景色 (Solid Backgrounds)
+   ========================================================================== */
+html[data-theme] .bg-indigo-400,
+html[data-theme] .hover\:bg-indigo-400:hover {
+  background-color: var(--ax-400) !important;
+}
+
+html[data-theme] .bg-indigo-500,
+html[data-theme] .hover\:bg-indigo-500:hover {
+  background-color: var(--ax-500) !important;
+}
+
+html[data-theme] .bg-indigo-600 {
+  background-color: var(--ax-600) !important;
+  color: #ffffff !important;
+}
+html[data-theme] .hover\:bg-indigo-600:hover {
+  background-color: var(--ax-600) !important;
+  color: #ffffff !important;
+}
+
+/* ==========================================================================
+   2. 半透明背景色阶梯 (Alpha Translucent Backgrounds — 绝不变成 100% 实心块)
+   ========================================================================== */
+html[data-theme="dark"] .bg-indigo-500\/10 { background-color: rgba(var(--ax-500-rgb), 0.10) !important; }
+html[data-theme="dark"] .bg-indigo-500\/15 { background-color: rgba(var(--ax-500-rgb), 0.15) !important; }
+html[data-theme="dark"] .bg-indigo-500\/20 { background-color: rgba(var(--ax-500-rgb), 0.20) !important; }
+html[data-theme="dark"] .bg-indigo-500\/25 { background-color: rgba(var(--ax-500-rgb), 0.25) !important; }
+html[data-theme="dark"] .hover\:bg-indigo-500\/30:hover { background-color: rgba(var(--ax-500-rgb), 0.30) !important; }
+html[data-theme="dark"] .bg-indigo-500\/40,
+html[data-theme="dark"] .hover\:bg-indigo-500\/40:hover { background-color: rgba(var(--ax-500-rgb), 0.40) !important; }
+html[data-theme="dark"] .bg-indigo-500\/85 { background-color: rgba(var(--ax-500-rgb), 0.85) !important; }
+
+html[data-theme="light"] .bg-indigo-500\/10 { background-color: rgba(var(--ax-500-rgb), 0.08) !important; }
+html[data-theme="light"] .bg-indigo-500\/15 { background-color: rgba(var(--ax-500-rgb), 0.11) !important; }
+html[data-theme="light"] .bg-indigo-500\/20 { background-color: rgba(var(--ax-500-rgb), 0.13) !important; }
+html[data-theme="light"] .bg-indigo-500\/25 { background-color: rgba(var(--ax-500-rgb), 0.16) !important; }
+html[data-theme="light"] .hover\:bg-indigo-500\/30:hover { background-color: rgba(var(--ax-500-rgb), 0.20) !important; }
+html[data-theme="light"] .bg-indigo-500\/40,
+html[data-theme="light"] .hover\:bg-indigo-500\/40:hover { background-color: rgba(var(--ax-500-rgb), 0.24) !important; }
+html[data-theme="light"] .bg-indigo-500\/85 { background-color: rgba(var(--ax-500-rgb), 0.88) !important; color: #ffffff !important; }
+
+html[data-theme="dark"] .bg-indigo-600\/20 { background-color: rgba(var(--ax-600-rgb), 0.20) !important; }
+html[data-theme="dark"] .bg-indigo-600\/25 { background-color: rgba(var(--ax-600-rgb), 0.25) !important; }
+html[data-theme="dark"] .bg-indigo-600\/30 { background-color: rgba(var(--ax-600-rgb), 0.30) !important; }
+html[data-theme="dark"] .hover\:bg-indigo-600\/35:hover { background-color: rgba(var(--ax-600-rgb), 0.35) !important; }
+html[data-theme="dark"] .hover\:bg-indigo-600\/40:hover { background-color: rgba(var(--ax-600-rgb), 0.40) !important; }
+html[data-theme="dark"] .bg-indigo-600\/50 { background-color: rgba(var(--ax-600-rgb), 0.50) !important; }
+html[data-theme="dark"] .bg-indigo-600\/80 { background-color: rgba(var(--ax-600-rgb), 0.80) !important; }
+
+html[data-theme="light"] .bg-indigo-600\/20 { background-color: rgba(var(--ax-500-rgb), 0.11) !important; }
+html[data-theme="light"] .bg-indigo-600\/25 { background-color: rgba(var(--ax-500-rgb), 0.14) !important; }
+html[data-theme="light"] .bg-indigo-600\/30 { background-color: rgba(var(--ax-500-rgb), 0.17) !important; }
+html[data-theme="light"] .hover\:bg-indigo-600\/35:hover { background-color: rgba(var(--ax-500-rgb), 0.22) !important; }
+html[data-theme="light"] .hover\:bg-indigo-600\/40:hover { background-color: rgba(var(--ax-500-rgb), 0.26) !important; }
+html[data-theme="light"] .bg-indigo-600\/50 { background-color: rgba(var(--ax-500-rgb), 0.32) !important; }
+html[data-theme="light"] .bg-indigo-600\/80 { background-color: var(--ax-500) !important; color: #ffffff !important; }
+
+/* 950 超深底色阶梯：夜间保持深邃半透明，日间转为柔和浅色底 */
+html[data-theme="dark"] .bg-indigo-950 { background-color: var(--ax-950) !important; }
+html[data-theme="dark"] .bg-indigo-950\/40 { background-color: rgba(var(--ax-950-rgb), 0.45) !important; }
+html[data-theme="dark"] .bg-indigo-950\/60,
+html[data-theme="dark"] .hover\:bg-indigo-950\/60:hover { background-color: rgba(var(--ax-950-rgb), 0.65) !important; }
+html[data-theme="dark"] .bg-indigo-950\/85 { background-color: rgba(var(--ax-950-rgb), 0.85) !important; }
+html[data-theme="dark"] .bg-indigo-950\/90 { background-color: rgba(var(--ax-950-rgb), 0.90) !important; }
+html[data-theme="dark"] .bg-indigo-950\/95 { background-color: rgba(var(--ax-950-rgb), 0.95) !important; }
+
+html[data-theme="light"] .bg-indigo-950 { background-color: var(--ax-50) !important; }
+html[data-theme="light"] .bg-indigo-950\/40 { background-color: rgba(var(--ax-500-rgb), 0.07) !important; }
+html[data-theme="light"] .bg-indigo-950\/60,
+html[data-theme="light"] .hover\:bg-indigo-950\/60:hover { background-color: rgba(var(--ax-500-rgb), 0.11) !important; }
+html[data-theme="light"] .bg-indigo-950\/85 { background-color: var(--ax-50) !important; }
+html[data-theme="light"] .bg-indigo-950\/90 { background-color: var(--ax-50) !important; }
+html[data-theme="light"] .bg-indigo-950\/95 { background-color: var(--ax-50) !important; }
+
+/* ==========================================================================
+   3. 边框色与 Alpha 透明度阶梯 (Borders)
+   ========================================================================== */
+html[data-theme="dark"] .border-indigo-400 { border-color: var(--ax-400) !important; }
+html[data-theme="light"] .border-indigo-400 { border-color: var(--ax-500) !important; }
+html[data-theme] .border-indigo-400\/30 { border-color: rgba(var(--ax-400-rgb), 0.32) !important; }
+html[data-theme] .border-indigo-400\/70,
+html[data-theme] .hover\:border-indigo-400\/70:hover { border-color: rgba(var(--ax-500-rgb), 0.68) !important; }
+
+html[data-theme] .border-indigo-500,
+html[data-theme] .hover\:border-indigo-500:hover,
+html[data-theme] .focus\:border-indigo-500:focus {
+  border-color: var(--ax-500) !important;
+}
+
+html[data-theme] .border-indigo-500\/20 { border-color: rgba(var(--ax-500-rgb), 0.20) !important; }
+html[data-theme] .border-indigo-500\/25 { border-color: rgba(var(--ax-500-rgb), 0.25) !important; }
+html[data-theme] .border-indigo-500\/30 { border-color: rgba(var(--ax-500-rgb), 0.30) !important; }
+html[data-theme] .border-indigo-500\/35 { border-color: rgba(var(--ax-500-rgb), 0.35) !important; }
+html[data-theme] .border-indigo-500\/40,
+html[data-theme] .hover\:border-indigo-500\/40:hover { border-color: rgba(var(--ax-500-rgb), 0.40) !important; }
+html[data-theme] .border-indigo-500\/50,
+html[data-theme] .hover\:border-indigo-500\/50:hover { border-color: rgba(var(--ax-500-rgb), 0.50) !important; }
+html[data-theme] .border-indigo-500\/60,
+html[data-theme] .hover\:border-indigo-500\/60:hover { border-color: rgba(var(--ax-500-rgb), 0.60) !important; }
+
+html[data-theme="dark"] .border-indigo-700\/50 { border-color: rgba(var(--ax-700-rgb), 0.50) !important; }
+html[data-theme="light"] .border-indigo-700\/50 { border-color: rgba(var(--ax-500-rgb), 0.28) !important; }
+html[data-theme="dark"] .border-indigo-800\/60 { border-color: rgba(var(--ax-700-rgb), 0.55) !important; }
+html[data-theme="light"] .border-indigo-800\/60 { border-color: rgba(var(--ax-500-rgb), 0.24) !important; }
+
+/* ==========================================================================
+   4. 文本色阶梯 (Typography Contrast — 亮色深字、暗色亮字，杜绝同色隐形)
+   ========================================================================== */
+html[data-theme="dark"] .text-indigo-100,
+html[data-theme="dark"] .hover\:text-indigo-100:hover { color: var(--ax-100) !important; }
+html[data-theme="dark"] .text-indigo-200,
+html[data-theme="dark"] .hover\:text-indigo-200:hover { color: var(--ax-200) !important; }
+html[data-theme="dark"] .text-indigo-300,
+html[data-theme="dark"] .hover\:text-indigo-300:hover { color: var(--ax-300) !important; }
+html[data-theme="dark"] .text-indigo-400 { color: var(--ax-400) !important; }
+html[data-theme="dark"] .text-indigo-400\/70 { color: rgba(var(--ax-400-rgb), 0.72) !important; }
+html[data-theme="dark"] .text-indigo-400\/90 { color: rgba(var(--ax-400-rgb), 0.90) !important; }
+html[data-theme="dark"] .text-indigo-500 { color: var(--ax-500) !important; }
+html[data-theme="dark"] .text-indigo-600 { color: var(--ax-400) !important; }
+
+html[data-theme="light"] .text-indigo-100,
+html[data-theme="light"] .hover\:text-indigo-100:hover { color: var(--ax-800) !important; }
+html[data-theme="light"] .text-indigo-200,
+html[data-theme="light"] .hover\:text-indigo-200:hover { color: var(--ax-700) !important; }
+html[data-theme="light"] .text-indigo-300,
+html[data-theme="light"] .hover\:text-indigo-300:hover { color: var(--ax-600) !important; }
+html[data-theme="light"] .text-indigo-400 { color: var(--ax-600) !important; }
+html[data-theme="light"] .text-indigo-400\/70 { color: rgba(var(--ax-600-rgb), 0.78) !important; }
+html[data-theme="light"] .text-indigo-400\/90 { color: rgba(var(--ax-600-rgb), 0.92) !important; }
+html[data-theme="light"] .text-indigo-500 { color: var(--ax-600) !important; }
+html[data-theme="light"] .text-indigo-600 { color: var(--ax-600) !important; }
+
+/* 当实心强调色按钮同时带有 hover:text-white 时保持纯白字 */
+html[data-theme="light"] .hover\:bg-indigo-600:hover,
+html[data-theme="light"] .hover\:bg-indigo-500:hover,
+html[data-theme="light"] .bg-indigo-600.text-white {
+  color: #ffffff !important;
+}
+
+/* ==========================================================================
+   5. 渐变、发光阴影、焦点环与表单控件接管 (Gradients, Rings & Accents)
+   ========================================================================== */
+html[data-theme] .from-indigo-500 {
+  --tw-gradient-from: var(--ax-500) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgba(var(--ax-500-rgb), 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+html[data-theme] .from-indigo-600 {
+  --tw-gradient-from: var(--ax-600) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgba(var(--ax-600-rgb), 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+html[data-theme] .from-indigo-600\/40 {
+  --tw-gradient-from: rgba(var(--ax-600-rgb), 0.35) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgba(var(--ax-600-rgb), 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+html[data-theme] .hover\:from-indigo-500:hover {
+  --tw-gradient-from: var(--ax-500) var(--tw-gradient-from-position) !important;
+}
+html[data-theme] .hover\:from-indigo-400:hover {
+  --tw-gradient-from: var(--ax-400) var(--tw-gradient-from-position) !important;
+}
+html[data-theme] .to-indigo-500 {
+  --tw-gradient-to: var(--ax-500) var(--tw-gradient-to-position) !important;
+}
+html[data-theme] .to-indigo-300 {
+  --tw-gradient-to: var(--ax-300) var(--tw-gradient-to-position) !important;
+}
+
+html[data-theme] .ring-indigo-500 {
+  --tw-ring-color: var(--ax-500) !important;
+}
+html[data-theme] .focus\:ring-indigo-500\/20:focus {
+  --tw-ring-color: rgba(var(--ax-500-rgb), 0.22) !important;
+}
+html[data-theme] .shadow-indigo-500\/30,
+html[data-theme] .shadow-indigo-600\/30,
+html[data-theme] .shadow-indigo-600\/40,
+html[data-theme] .shadow-indigo-600\/50 {
+  --tw-shadow-color: rgba(var(--ax-500-rgb), 0.32) !important;
+}
+html[data-theme] .accent-indigo-500,
+html[data-theme] .text-indigo-600[type="checkbox"] {
+  accent-color: var(--ax-500) !important;
+}
+html[data-theme] .border-t-indigo-500 {
+  border-top-color: var(--ax-500) !important;
+}
+html[data-theme] .pill-toggle.active-indigo {
+  background: linear-gradient(135deg, rgba(var(--ax-500-rgb), 0.22), rgba(var(--ax-400-rgb), 0.16)) !important;
+  border-color: rgba(var(--ax-500-rgb), 0.65) !important;
+  color: var(--ax-200) !important;
+  box-shadow: 0 0 14px -3px rgba(var(--ax-500-rgb), 0.35) !important;
+}
+html[data-theme="light"] .pill-toggle.active-indigo {
+  background: rgba(var(--ax-500-rgb), 0.12) !important;
+  border-color: rgba(var(--ax-500-rgb), 0.55) !important;
+  color: var(--ax-700) !important;
+  box-shadow: 0 2px 8px rgba(var(--ax-500-rgb), 0.16) !important;
+}
