@@ -1027,11 +1027,13 @@ def set_overlay_click_through(enable: Optional[bool] = None) -> Dict[str, Any]:
     }
 
 
-def wait_for_server_ready(port: int, timeout: float = 12.0) -> bool:
+def wait_for_server_ready(port: int, timeout: float = 12.0, server_thread: Optional[threading.Thread] = None) -> bool:
     import httpx
     deadline = time.time() + timeout
     url = f"http://127.0.0.1:{port}/api/config"
     while time.time() < deadline:
+        if server_thread is not None and not server_thread.is_alive():
+            return False
         try:
             with httpx.Client(timeout=0.8) as client:
                 r = client.get(url)
@@ -1083,10 +1085,20 @@ def _restore_main_window() -> None:
     want_max = bool(hwnd and u.IsZoomed(hwnd)) or bool(api is not None and api._maximized)
 
     w.show()
-    if hwnd and u.IsIconic(hwnd):
-        u.ShowWindow(hwnd, 9)  # SW_RESTORE
-    if want_max and hwnd and not u.IsZoomed(hwnd):
-        u.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+    try:
+        w.restore()
+    except Exception:
+        pass
+    if hwnd and IS_WINDOWS:
+        try:
+            if u.IsIconic(hwnd):
+                u.ShowWindow(hwnd, 9)  # SW_RESTORE
+            if want_max and not u.IsZoomed(hwnd):
+                u.ShowWindow(hwnd, 3)  # SW_MAXIMIZE
+            u.SetForegroundWindow(hwnd)
+            u.BringWindowToTop(hwnd)
+        except Exception:
+            pass
     if api is not None:
         api._maximized = want_max
     w._is_visible = True
@@ -1358,6 +1370,57 @@ def start_system_tray(port: int, on_exit_callback):
         return None
 
 
+_single_instance_mutex = None
+
+
+def _activate_existing_instance(port: int) -> bool:
+    """尝试通过 HTTP 接口通知后台已运行的实例恢复并置顶主窗口。"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/window/restore",
+            data=b"{}",
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
+            if resp.status == 200:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _acquire_single_instance(port: int) -> bool:
+    """
+    单实例锁保护：
+    在 Windows 下使用命名 Mutex 检测是否已有相同端口的 ACG Vault 进程运行。
+    若已有实例在运行，则通过 HTTP 接口或 Win32 唤醒其窗口，并让当前进程安全退出，
+    从根本上杜绝端口 [Errno 10048] 冲突以及 WebView2 配置文件多进程锁死导致的黑屏。
+    """
+    global _single_instance_mutex
+    if not IS_WINDOWS:
+        return True
+    try:
+        mutex_name = f"Global\\ACGVault_Desktop_Instance_{port}"
+        _single_instance_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+        last_err = ctypes.windll.kernel32.GetLastError()
+        ERROR_ALREADY_EXISTS = 183
+        if last_err == ERROR_ALREADY_EXISTS:
+            print(f"[Desktop] 检测到已有 ACG Vault 实例正在运行 (端口 {port})，正在激活现有窗口...")
+            if not _activate_existing_instance(port):
+                u = ctypes.windll.user32
+                hwnd = u.FindWindowW(None, f"ACG Game Vault v{APP_VERSION} - 本地 ACG 游戏资产与攻略管理中心")
+                if hwnd:
+                    u.ShowWindow(hwnd, 9)
+                    u.SetForegroundWindow(hwnd)
+                    u.BringWindowToTop(hwnd)
+            print("[Desktop] 已唤醒现有窗口，新进程安全退出。")
+            return False
+    except Exception as e:
+        print(f"[Desktop] 单实例检测异常: {e}")
+    return True
+
+
 def run_desktop_app():
     _ensure_std_streams()
     _init_taskbar_identity()
@@ -1370,12 +1433,18 @@ def run_desktop_app():
     desktop_mode = (cfg.get("desktop_mode") or "native").lower()
     start_minimized = "--minimized" in sys.argv
 
+    if not _acquire_single_instance(port):
+        return
+
     uv_config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(uv_config)
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()
 
-    wait_for_server_ready(port)
+    if not wait_for_server_ready(port, server_thread=server_thread):
+        print(f"[Desktop] Uvicorn 服务未能成功启动 (端口 {port})，取消创建桌面窗口。")
+        log_desktop_error(f"Uvicorn server failed to start on port {port}.")
+        return
 
     def _clean_shutdown():
         """退出清理（幂等、防重入递归）。"""

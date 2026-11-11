@@ -98,9 +98,22 @@ if IS_WINDOWS:
             ("ProcessIdList", ctypes.c_size_t * 256),
         ]
 
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.UINT),
+            ("dwTime", wintypes.DWORD),
+        ]
+
     INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
     try:
         kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        user32.GetLastInputInfo.argtypes = [ctypes.POINTER(LASTINPUTINFO)]
+        user32.GetLastInputInfo.restype = wintypes.BOOL
+        user32.GetForegroundWindow.argtypes = []
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.OpenProcess.restype = wintypes.HANDLE
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -195,6 +208,89 @@ def get_process_image_path(pid: int) -> str:
         return buf.value if res else ""
     finally:
         close_win32_handle(h)
+
+
+class AfkTracker:
+    """
+    ACG Vault v3.3.0 Win32 防挂机闲置跟踪器（双阈值宽限期扣除模型）：
+    - 周期性调用 poll(known_tree_pids, active_pid)（限流每 1 秒采样一次）；
+    - 借助 GetLastInputInfo 获取全系统无操作时长（键鼠无输入）；
+    - 借助 GetForegroundWindow 与 PID 树判定游戏是否在前台；
+    - 前台宽限阈值（默认 15 分钟），后台失焦宽限阈值（默认 5 分钟）；
+    - 宽限期内视为合理剧情阅读停留；超出宽限期部分的闲置时间被视作挂机离开，从总时长中扣减；
+    - 退出时调用 finish() 结算并返回累计扣减秒数 total_idle_deducted。
+    """
+    def __init__(self, enabled: bool = True, fg_threshold_sec: int = 900, bg_threshold_sec: int = 300):
+        self.enabled = bool(enabled and IS_WINDOWS)
+        self.fg_threshold_sec = max(60, int(fg_threshold_sec))
+        self.bg_threshold_sec = max(30, int(bg_threshold_sec))
+        self.total_idle_deducted = 0
+        self._last_poll_ts = time.time()
+        self._current_idle_run_sec = 0.0
+        self._current_threshold_sec = self.fg_threshold_sec
+        self._prev_system_idle_sec = 0.0
+
+    def poll(self, known_tree_pids: Set[int], active_pid: Optional[int]) -> None:
+        if not self.enabled:
+            return
+        now = time.time()
+        if now - self._last_poll_ts < 0.95:
+            return
+        self._last_poll_ts = now
+
+        try:
+            # 1. 查询系统全局键鼠无输入毫秒数
+            lii = LASTINPUTINFO()
+            lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+            if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+                return
+
+            tick_now = ctypes.windll.kernel32.GetTickCount()
+            idle_ms = (tick_now - lii.dwTime) & 0xFFFFFFFF
+            system_idle_sec = max(0.0, idle_ms / 1000.0)
+
+            # 2. 查询当前前台窗口 PID
+            fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            is_foreground = False
+            if fg_hwnd:
+                fg_pid = wintypes.DWORD()
+                ctypes.windll.user32.GetWindowThreadProcessId(fg_hwnd, ctypes.byref(fg_pid))
+                p = int(fg_pid.value)
+                if p and (p in known_tree_pids or (active_pid and p == active_pid)):
+                    is_foreground = True
+
+            current_thresh = self.fg_threshold_sec if is_foreground else self.bg_threshold_sec
+
+            # 3. 跟踪闲置状态与恢复
+            if system_idle_sec < self._prev_system_idle_sec:
+                # 用户活动恢复：若此前连续闲置超过宽限期，扣除超出部分
+                if self._current_idle_run_sec > self._current_threshold_sec:
+                    excess = int(self._current_idle_run_sec - self._current_threshold_sec)
+                    if excess > 0:
+                        self.total_idle_deducted += excess
+                        print(f"[AFK] 恢复活动：前序闲置 {int(self._current_idle_run_sec)}s (门槛 {self._current_threshold_sec}s)，本次扣除闲置 {excess}s。累计已扣除: {self.total_idle_deducted}s")
+                self._current_idle_run_sec = system_idle_sec
+            else:
+                self._current_idle_run_sec = system_idle_sec
+
+            self._current_threshold_sec = current_thresh
+            self._prev_system_idle_sec = system_idle_sec
+        except Exception:
+            pass
+
+    def finish(self) -> int:
+        """收尾阶段：如果游戏退出时用户正处于超额闲置状态，结算这最后一段挂机扣减。"""
+        if not self.enabled:
+            return 0
+        try:
+            if self._current_idle_run_sec > self._current_threshold_sec:
+                excess = int(self._current_idle_run_sec - self._current_threshold_sec)
+                if excess > 0:
+                    self.total_idle_deducted += excess
+                    print(f"[AFK] 退出时处于闲置状态 ({int(self._current_idle_run_sec)}s)，扣除末尾挂机 {excess}s。最终挂机扣除: {self.total_idle_deducted}s")
+        except Exception:
+            pass
+        return max(0, int(self.total_idle_deducted))
 
 
 def _create_tracking_job_object(hProcess: Optional[Any] = None, pid: Optional[int] = None) -> Optional[Any]:
@@ -517,6 +613,9 @@ def get_running_games_info() -> Dict[int, Dict[str, Any]]:
     with RUNNING_LOCK:
         for gid, info in RUNNING_GAMES.items():
             elapsed = int(now - info.get("start_time", now))
+            tracker = info.get("afk_tracker")
+            idle_sec = tracker.total_idle_deducted if tracker else 0
+            net_elapsed = max(0, elapsed - idle_sec)
             active[gid] = {
                 "game_id": gid,
                 "pid": info.get("pid"),
@@ -526,6 +625,8 @@ def get_running_games_info() -> Dict[int, Dict[str, Any]]:
                 "phase": info.get("phase") or ("running" if info.get("pid") else "attaching"),
                 "attached": bool(info.get("pid")),
                 "elapsed_seconds": max(0, elapsed),
+                "net_elapsed_seconds": max(0, net_elapsed),
+                "idle_deducted_seconds": max(0, int(idle_sec)),
                 "hook_dll": info.get("hook_dll"),
                 "exe_bitness": info.get("exe_bitness"),
                 "launch_method": info.get("launch_method"),
@@ -593,14 +694,23 @@ def _poll_screenshot_hotkey_if_needed(game_id: int, active_pid: Optional[int], s
     return last_shot_ts
 
 
-def _wait_handle_with_hotkey_poll(hProc: Any, game_id: int, pid: Optional[int], search_root: Optional[str]):
-    """Waits on a Win32 process handle in 200ms intervals so F12 screenshot hotkeys respond in real time."""
+def _wait_handle_with_hotkey_poll(
+    hProc: Any,
+    game_id: int,
+    pid: Optional[int],
+    search_root: Optional[str],
+    afk_tracker: Optional[Any] = None,
+    known_tree_pids: Optional[Set[int]] = None
+):
+    """Waits on a Win32 process handle in 200ms intervals so F12 screenshot hotkeys respond in real time, and polls AFK tracker."""
     last_shot = 0.0
     while True:
         res = ctypes.windll.kernel32.WaitForSingleObject(hProc, 200)
         if res != WAIT_TIMEOUT:
             break
         last_shot = _poll_screenshot_hotkey_if_needed(game_id, pid, search_root, last_shot)
+        if afk_tracker is not None:
+            afk_tracker.poll(known_tree_pids or set(), pid)
 
 
 def _bind_running_pid(game_id: int, pid: Optional[int], phase: str = "running", reset_start_time: bool = False) -> Optional[float]:
@@ -647,7 +757,8 @@ def _watch_until_exit(
     last_shot: float = 0.0,
     resolver: Optional[Any] = None,
     hJob: Optional[Any] = None,
-    known_tree_pids: Optional[Set[int]] = None
+    known_tree_pids: Optional[Set[int]] = None,
+    afk_tracker: Optional[Any] = None
 ) -> float:
     """
     当目标进程由于权限原因无法打开 SYNCHRONIZE 句柄时的兜底守候：
@@ -660,6 +771,8 @@ def _watch_until_exit(
     while True:
         time.sleep(0.4)
         last_shot = _poll_screenshot_hotkey_if_needed(game_id, pid, search_root, last_shot)
+        if afk_tracker is not None:
+            afk_tracker.poll(tracked_roots, pid)
         if pid and is_pid_alive(pid):
             miss = 0
             continue
@@ -680,7 +793,7 @@ def _watch_until_exit(
                 if IS_WINDOWS:
                     h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
                     if h and h != INVALID_HANDLE_VALUE:
-                        _wait_handle_with_hotkey_poll(h, game_id, pid, search_root)
+                        _wait_handle_with_hotkey_poll(h, game_id, pid, search_root, afk_tracker=afk_tracker, known_tree_pids=tracked_roots)
                         close_win32_handle(h)
         else:
             miss += 1
@@ -712,6 +825,13 @@ def monitor_game_pid(
     known_tree_pids: Set[int] = set()
     if target_pid and target_pid > 0:
         known_tree_pids.add(int(target_pid))
+
+    cfg = load_config()
+    afk_enabled = bool(cfg.get("enable_afk_detection", True))
+    afk_fg = int(cfg.get("afk_timeout_foreground", 15)) * 60
+    afk_bg = int(cfg.get("afk_timeout_background", 5)) * 60
+    min_play_dur = int(cfg.get("min_play_duration_seconds", 120))
+    afk_tracker = AfkTracker(enabled=afk_enabled, fg_threshold_sec=afk_fg, bg_threshold_sec=afk_bg)
 
     def _find() -> Optional[int]:
         if resolver is not None:
@@ -760,6 +880,10 @@ def monitor_game_pid(
         if reset_ts is not None:
             start_time = reset_ts
 
+        with RUNNING_LOCK:
+            if game_id in RUNNING_GAMES:
+                RUNNING_GAMES[game_id]["afk_tracker"] = afk_tracker
+
         if active_pid and active_pid > 0:
             known_tree_pids.add(int(active_pid))
 
@@ -773,7 +897,7 @@ def monitor_game_pid(
             # Capture initial descendants before hProcess exits if possible
             for dp in _find_descendant_pids(known_tree_pids):
                 known_tree_pids.add(dp)
-            _wait_handle_with_hotkey_poll(hProcess, game_id, active_pid, search_root)
+            _wait_handle_with_hotkey_poll(hProcess, game_id, active_pid, search_root, afk_tracker=afk_tracker, known_tree_pids=known_tree_pids)
             close_win32_handle(hProcess)
             hProcess = None
             active_pid = _find_handoff_child(active_pid)
@@ -790,19 +914,19 @@ def monitor_game_pid(
 
                 hSync = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(active_pid))
                 if hSync and hSync != INVALID_HANDLE_VALUE:
-                    _wait_handle_with_hotkey_poll(hSync, game_id, active_pid, search_root)
+                    _wait_handle_with_hotkey_poll(hSync, game_id, active_pid, search_root, afk_tracker=afk_tracker, known_tree_pids=known_tree_pids)
                     close_win32_handle(hSync)
                     active_pid = _find_handoff_child(active_pid)
                 else:
                     last_shot = _watch_until_exit(
                         game_id, active_pid, search_root, exe_name, last_shot, _find,
-                        hJob=hJob, known_tree_pids=known_tree_pids
+                        hJob=hJob, known_tree_pids=known_tree_pids, afk_tracker=afk_tracker
                     )
                     break
             else:
                 last_shot = _watch_until_exit(
                     game_id, active_pid, search_root, exe_name, last_shot, _find,
-                    hJob=hJob, known_tree_pids=known_tree_pids
+                    hJob=hJob, known_tree_pids=known_tree_pids, afk_tracker=afk_tracker
                 )
                 break
     except Exception as e:
@@ -812,20 +936,32 @@ def monitor_game_pid(
             close_win32_handle(hProcess)
         if hJob:
             close_win32_handle(hJob)
-        duration = int(time.time() - start_time)
-        if attached and duration >= 3:
-            record_game_launch(game_id, duration_seconds=duration, increment_count=True)
+
+        idle_deducted = afk_tracker.finish()
+        gross_duration = int(time.time() - start_time)
+        net_duration = max(0, gross_duration - idle_deducted)
+        if attached and net_duration >= min_play_dur:
+            start_iso = datetime.fromtimestamp(start_time).isoformat()
+            record_game_launch(
+                game_id,
+                duration_seconds=net_duration,
+                increment_count=True,
+                start_time=start_iso,
+                idle_seconds=idle_deducted,
+                min_duration_seconds=min_play_dur
+            )
+        elif attached:
+            print(f"[PLAYTIME] Game {game_id} 运行时长 {gross_duration}s (剔除挂机 {idle_deducted}s，净时长 {net_duration}s) 不足 {min_play_dur}s 门槛，已忽略不计入时长与次数。")
 
         # v2.4: Automatic incremental save snapshot + optional WebDAV cloud backup when session >= threshold
         try:
-            cfg = load_config()
             if cfg.get("enable_auto_save_backup", True):
                 min_minutes = max(1, int(cfg.get("auto_backup_min_minutes", 5)))
                 max_keep = max(1, int(cfg.get("auto_backup_max_keep", 5)))
-                if duration >= min_minutes * 60:
+                if net_duration >= min_minutes * 60:
                     backup_game_saves(
                         game_id,
-                        label=f"自动快照_{duration // 60}m",
+                        label=f"自动快照_{net_duration // 60}m",
                         is_auto=True,
                         max_auto_keep=max_keep
                     )

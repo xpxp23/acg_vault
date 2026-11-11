@@ -379,6 +379,32 @@ def init_db():
         );
         """)
 
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS game_play_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id INTEGER NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT NOT NULL,
+            duration_seconds INTEGER NOT NULL,
+            session_type TEXT DEFAULT 'play',
+            idle_seconds INTEGER DEFAULT 0,
+            note TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE
+        );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_play_sessions_game_id ON game_play_sessions(game_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_play_sessions_start_time ON game_play_sessions(start_time);")
+
+        # Migrate idle_seconds column if missing
+        try:
+            cursor.execute("PRAGMA table_info(game_play_sessions);")
+            cols = [c[1] for c in cursor.fetchall()]
+            if "idle_seconds" not in cols:
+                cursor.execute("ALTER TABLE game_play_sessions ADD COLUMN idle_seconds INTEGER DEFAULT 0;")
+        except Exception:
+            pass
+
         # One-time v2.3 migration: move all existing user_notes into walkthrough_md (全结局攻略)
         cursor.execute("SELECT query_key FROM scrape_cache WHERE query_key = '__migration_v2_3_split_notes_walkthrough'")
         if not cursor.fetchone():
@@ -1112,7 +1138,48 @@ def update_game_user_state(
     return True
 
 
-def record_game_launch(game_id: int, duration_seconds: int = 0, increment_count: bool = True):
+def format_seconds_friendly(seconds: int, with_sign: bool = False) -> str:
+    """Formats duration in seconds to human readable Chinese (e.g. +1小时30分钟, -45分钟, 2小时)."""
+    s = int(seconds)
+    if s == 0:
+        return "0分钟"
+    sign = ""
+    if with_sign:
+        sign = "+" if s > 0 else "-"
+    elif s < 0:
+        sign = "-"
+    abs_s = abs(s)
+    hrs = abs_s // 3600
+    mins = (abs_s % 3600) // 60
+    secs = abs_s % 60
+    if hrs > 0 and mins > 0:
+        return f"{sign}{hrs}小时{mins}分钟"
+    elif hrs > 0:
+        return f"{sign}{hrs}小时"
+    elif mins > 0:
+        return f"{sign}{mins}分钟"
+    else:
+        return f"{sign}{secs}秒"
+
+
+def record_game_launch(
+    game_id: int,
+    duration_seconds: int = 0,
+    increment_count: bool = True,
+    start_time: Optional[str] = None,
+    idle_seconds: int = 0,
+    min_duration_seconds: int = 120
+) -> bool:
+    """
+    记录实机游玩结束：
+    - 若净游玩时长 < min_duration_seconds (默认 120 秒 / 2 分钟)，直接静默忽略，不计入总时长、不计入次数、不产生流水明细。
+    - 若净游玩时长 >= min_duration_seconds，累加时长并自增次数，同时将扣除的 idle_seconds 记入明细。
+    """
+    duration_seconds = max(0, int(duration_seconds))
+    if duration_seconds < min_duration_seconds:
+        print(f"[PLAYTIME] Game {game_id} 净游玩时长 ({duration_seconds}s) 不足 {min_duration_seconds}s 门槛，已忽略不计。")
+        return False
+
     now = datetime.now().isoformat()
     with db_session(commit=True) as (_, cursor):
         if increment_count:
@@ -1134,6 +1201,209 @@ def record_game_launch(game_id: int, duration_seconds: int = 0, increment_count:
                     updated_at = ?
                 WHERE id = ?
             """, (duration_seconds, now, now, game_id))
+
+        if duration_seconds > 0:
+            s_time = start_time or (datetime.now() - timedelta(seconds=duration_seconds)).isoformat()
+            cursor.execute("""
+                INSERT INTO game_play_sessions (game_id, start_time, end_time, duration_seconds, session_type, idle_seconds, note, created_at)
+                VALUES (?, ?, ?, ?, 'play', ?, '', ?)
+            """, (game_id, s_time, now, duration_seconds, max(0, int(idle_seconds)), now))
+    return True
+
+
+def get_game_play_sessions(game_id: int) -> List[Dict[str, Any]]:
+    """Retrieves all play sessions and manual adjustment records for a game, sorted from newest to oldest."""
+    with db_session(commit=True) as (_, cursor):
+        cursor.execute("""
+            SELECT id, game_id, start_time, end_time, duration_seconds, session_type, idle_seconds, note, created_at
+            FROM game_play_sessions
+            WHERE game_id = ?
+            ORDER BY start_time DESC, id DESC
+        """, (game_id,))
+        rows = [row_to_dict(r) for r in cursor.fetchall()]
+
+        # One-time backward compatibility baseline:
+        # If the game has existing recorded playtime but no session rows, seed an initial baseline
+        if not rows:
+            cursor.execute("SELECT played_seconds, first_played_at, last_played_at, created_at FROM games WHERE id = ?", (game_id,))
+            g = cursor.fetchone()
+            if g and (g["played_seconds"] or 0) > 0:
+                p_sec = int(g["played_seconds"])
+                now = datetime.now().isoformat()
+                s_time = g["first_played_at"] or g["created_at"] or now
+                e_time = g["last_played_at"] or now
+                cursor.execute("""
+                    INSERT INTO game_play_sessions (game_id, start_time, end_time, duration_seconds, session_type, idle_seconds, note, created_at)
+                    VALUES (?, ?, ?, ?, 'manual_adjustment', 0, '历史已记录时长初始基准', ?)
+                """, (game_id, s_time, e_time, p_sec, now))
+                cursor.execute("""
+                    SELECT id, game_id, start_time, end_time, duration_seconds, session_type, idle_seconds, note, created_at
+                    FROM game_play_sessions
+                    WHERE game_id = ?
+                    ORDER BY start_time DESC, id DESC
+                """, (game_id,))
+                rows = [row_to_dict(r) for r in cursor.fetchall()]
+
+        for r in rows:
+            r["idle_seconds"] = int(r.get("idle_seconds") or 0)
+        return rows
+
+
+def update_game_playtime(game_id: int, total_seconds: int, play_count: Optional[int] = None, note: str = "") -> Dict[str, Any]:
+    """
+    Manually modifies total played duration and play count for a game.
+    Calculates delta and automatically records a 'manual_adjustment' session (can be positive or negative).
+    Subsequent game runs will continue accumulating from this modified total.
+    """
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"success": False, "error": f"Game id {game_id} not found"}
+
+    target_total = max(0, int(total_seconds))
+    current_total = int(game.get("played_seconds") or 0)
+    current_count = int(game.get("play_count") or 0)
+    delta = target_total - current_total
+
+    if play_count is not None:
+        target_count = max(0, int(play_count))
+    else:
+        target_count = current_count if (target_total == 0 or current_count > 0) else 1
+
+    now = datetime.now().isoformat()
+
+    with db_session(commit=True) as (_, cursor):
+        cursor.execute("""
+            UPDATE games
+            SET played_seconds = ?,
+                play_count = ?,
+                play_status = CASE WHEN play_status = 'unplayed' AND ? > 0 THEN 'playing' ELSE play_status END,
+                last_played_at = CASE WHEN ? > 0 AND (last_played_at IS NULL OR last_played_at = '') THEN ? ELSE last_played_at END,
+                updated_at = ?
+            WHERE id = ?
+        """, (target_total, target_count, target_total, target_total, now, now, game_id))
+
+        if delta != 0:
+            diff_label = format_seconds_friendly(delta, with_sign=True)
+            adj_note = note.strip() if note else f"手动修改总时长 ({format_seconds_friendly(current_total)} -> {format_seconds_friendly(target_total)}，变动 {diff_label})"
+            cursor.execute("""
+                INSERT INTO game_play_sessions (game_id, start_time, end_time, duration_seconds, session_type, note, created_at)
+                VALUES (?, ?, ?, ?, 'manual_adjustment', ?, ?)
+            """, (game_id, now, now, delta, adj_note, now))
+
+    return {
+        "success": True,
+        "data": get_game_by_id(game_id),
+        "sessions": get_game_play_sessions(game_id)
+    }
+
+
+def add_manual_play_session(game_id: int, duration_seconds: int, start_time: Optional[str] = None, note: str = "", sync_to_total: bool = True) -> Dict[str, Any]:
+    """Manually logs a standalone play session, optionally syncing delta to total played_seconds."""
+    game = get_game_by_id(game_id)
+    if not game:
+        return {"success": False, "error": f"Game id {game_id} not found"}
+
+    dur = int(duration_seconds)
+    now = datetime.now().isoformat()
+    s_time = start_time or now
+
+    with db_session(commit=True) as (_, cursor):
+        cursor.execute("""
+            INSERT INTO game_play_sessions (game_id, start_time, end_time, duration_seconds, session_type, note, created_at)
+            VALUES (?, ?, ?, ?, 'manual_entry', ?, ?)
+        """, (game_id, s_time, now, dur, note.strip(), now))
+
+        if sync_to_total and dur != 0:
+            cursor.execute("""
+                UPDATE games
+                SET played_seconds = MAX(0, played_seconds + ?),
+                    play_count = play_count + 1,
+                    play_status = CASE WHEN play_status = 'unplayed' AND ? > 0 THEN 'playing' ELSE play_status END,
+                    last_played_at = COALESCE(last_played_at, ?),
+                    updated_at = ?
+                WHERE id = ?
+            """, (dur, dur, now, now, game_id))
+
+    return {
+        "success": True,
+        "data": get_game_by_id(game_id),
+        "sessions": get_game_play_sessions(game_id)
+    }
+
+
+def update_play_session(session_id: int, duration_seconds: int, note: Optional[str] = None, sync_to_total: bool = True) -> Dict[str, Any]:
+    """Updates a single play session's duration or note, optionally syncing difference to total played_seconds."""
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute("SELECT id, game_id, duration_seconds, session_type, note FROM game_play_sessions WHERE id = ?", (session_id,))
+        session = cursor.fetchone()
+        if not session:
+            return {"success": False, "error": f"Session {session_id} not found"}
+        game_id = session["game_id"]
+        old_dur = int(session["duration_seconds"])
+
+    new_dur = int(duration_seconds)
+    diff = new_dur - old_dur
+    now = datetime.now().isoformat()
+
+    with db_session(commit=True) as (_, cursor):
+        if note is not None:
+            cursor.execute("""
+                UPDATE game_play_sessions
+                SET duration_seconds = ?, note = ?
+                WHERE id = ?
+            """, (new_dur, note.strip(), session_id))
+        else:
+            cursor.execute("""
+                UPDATE game_play_sessions
+                SET duration_seconds = ?
+                WHERE id = ?
+            """, (new_dur, session_id))
+
+        if sync_to_total and diff != 0:
+            cursor.execute("""
+                UPDATE games
+                SET played_seconds = MAX(0, played_seconds + ?),
+                    updated_at = ?
+                WHERE id = ?
+            """, (diff, now, game_id))
+
+    return {
+        "success": True,
+        "data": get_game_by_id(game_id),
+        "sessions": get_game_play_sessions(game_id)
+    }
+
+
+def delete_play_session(session_id: int, sync_to_total: bool = True) -> Dict[str, Any]:
+    """Deletes a play session or manual adjustment record, optionally deducting its duration from total played_seconds."""
+    with db_session(commit=False) as (_, cursor):
+        cursor.execute("SELECT id, game_id, duration_seconds, session_type FROM game_play_sessions WHERE id = ?", (session_id,))
+        session = cursor.fetchone()
+        if not session:
+            return {"success": False, "error": f"Session {session_id} not found"}
+        game_id = session["game_id"]
+        dur = int(session["duration_seconds"])
+        stype = session["session_type"]
+
+    now = datetime.now().isoformat()
+
+    with db_session(commit=True) as (_, cursor):
+        cursor.execute("DELETE FROM game_play_sessions WHERE id = ?", (session_id,))
+
+        if sync_to_total and dur != 0:
+            cursor.execute("""
+                UPDATE games
+                SET played_seconds = MAX(0, played_seconds - ?),
+                    play_count = CASE WHEN ? IN ('play', 'manual_entry') THEN MAX(0, play_count - 1) ELSE play_count END,
+                    updated_at = ?
+                WHERE id = ?
+            """, (dur, stype, now, game_id))
+
+    return {
+        "success": True,
+        "data": get_game_by_id(game_id),
+        "sessions": get_game_play_sessions(game_id)
+    }
 
 
 def get_stats() -> Dict[str, Any]:
@@ -1936,6 +2206,7 @@ def get_ignored_paths_norm_set() -> set:
 
 def delete_game_by_id(game_id: int) -> bool:
     with db_session(commit=True) as (_, cursor):
+        cursor.execute("DELETE FROM game_play_sessions WHERE game_id = ?", (game_id,))
         cursor.execute("DELETE FROM game_screenshots WHERE game_id = ?", (game_id,))
         cursor.execute("DELETE FROM games WHERE id = ?", (game_id,))
         return cursor.rowcount > 0
@@ -1965,13 +2236,14 @@ def set_games_missing_batch(missing_ids: List[int], existing_ids: List[int]):
 
 
 def cleanup_all_missing_games() -> Tuple[int, List[int]]:
-    """Deletes all missing unarchived games and their screenshot rows, returning (count, deleted_ids)."""
+    """Deletes all missing unarchived games and their screenshot/session rows, returning (count, deleted_ids)."""
     with db_session(commit=True) as (_, cursor):
         cursor.execute("SELECT id FROM games WHERE is_missing = 1 AND is_archived = 0")
         missing_ids = [int(r["id"]) for r in cursor.fetchall()]
         if not missing_ids:
             return 0, []
         placeholders = ",".join(["?"] * len(missing_ids))
+        cursor.execute(f"DELETE FROM game_play_sessions WHERE game_id IN ({placeholders})", missing_ids)
         cursor.execute(f"DELETE FROM game_screenshots WHERE game_id IN ({placeholders})", missing_ids)
         cursor.execute(f"DELETE FROM games WHERE id IN ({placeholders})", missing_ids)
         return cursor.rowcount, missing_ids
@@ -1993,6 +2265,10 @@ def batch_delete_games_by_ids(game_ids: List[int]) -> int:
     if not game_ids:
         return 0
     with db_session(commit=True) as (_, cursor):
+        cursor.execute(
+            f"DELETE FROM game_play_sessions WHERE game_id IN ({','.join(['?']*len(game_ids))})",
+            game_ids
+        )
         cursor.execute(
             f"DELETE FROM game_screenshots WHERE game_id IN ({','.join(['?']*len(game_ids))})",
             game_ids

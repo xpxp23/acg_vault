@@ -93,6 +93,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "gamepad_back_screenshot": True,
     "gamepad_bindings": {},      # {"a": "confirm", ...} 覆盖默认映射
     "gamepad_per_game": {},      # {"<game_id>": {"profile": "...", "enabled": false}}
+    # Playtime & Anti-AFK Idle Detection
+    "enable_afk_detection": True,       # 是否开启防挂机闲置检测
+    "afk_timeout_foreground": 15,       # 游戏前台无操作超时判定阈值（分钟）
+    "afk_timeout_background": 5,        # 游戏后台/失焦无操作超时判定阈值（分钟）
+    "min_play_duration_seconds": 120,   # 单次实机游玩低于此阈值（秒）不计入总时长与次数
     # Auto Incremental Save Snapshot & WebDAV Cloud Backup (v2.4)
     "enable_auto_save_backup": True,
     "auto_backup_min_minutes": 5,

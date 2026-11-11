@@ -69,7 +69,12 @@ from db.database import (
     remove_ignored_path,
     clear_all_ignored_paths,
     get_all_ignored_paths,
-    get_archived_games
+    get_archived_games,
+    get_game_play_sessions,
+    update_game_playtime,
+    add_manual_play_session,
+    update_play_session,
+    delete_play_session
 )
 from core.scanner import scan_directory
 from core.scraper import (
@@ -321,6 +326,37 @@ class ManualUpdateMetadataRequest(BaseModel):
     voice_actors: Optional[List[str]] = None
     sample_images: Optional[List[str]] = None
     user_notes: Optional[str] = None
+    played_seconds: Optional[int] = None
+    play_count: Optional[int] = None
+
+
+class UpdatePlaytimeRequest(BaseModel):
+    total_seconds: int
+    play_count: Optional[int] = None
+    note: Optional[str] = ""
+
+
+class AddPlaySessionRequest(BaseModel):
+    duration_seconds: int
+    start_time: Optional[str] = None
+    note: Optional[str] = ""
+    sync_to_total: bool = True
+
+
+class UpdatePlaySessionRequest(BaseModel):
+    duration_seconds: int
+    note: Optional[str] = None
+    sync_to_total: bool = True
+    duration_seconds: int
+    start_time: Optional[str] = None
+    note: Optional[str] = ""
+    sync_to_total: bool = True
+
+
+class UpdatePlaySessionRequest(BaseModel):
+    duration_seconds: int
+    note: Optional[str] = None
+    sync_to_total: bool = True
 
 
 class ScrapeGameRequest(BaseModel):
@@ -945,6 +981,15 @@ def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest, bg_tasks:
             update_data["cover_url"] = f"/api/covers/{target_name}"
             update_data["banner_url"] = f"/api/covers/{target_name}"
 
+    if "played_seconds" in update_data and update_data["played_seconds"] is not None:
+        p_sec = update_data.pop("played_seconds")
+        p_cnt = update_data.pop("play_count", None)
+        update_game_playtime(game_id=game_id, total_seconds=p_sec, play_count=p_cnt, note="手动修改元数据")
+    elif "play_count" in update_data and update_data["play_count"] is not None:
+        p_cnt = update_data.pop("play_count")
+        with db_session(commit=True) as (_, cur):
+            cur.execute("UPDATE games SET play_count = ?, updated_at = ? WHERE id = ?", (p_cnt, datetime.now().isoformat(), game_id))
+
     if update_data:
         success = manual_update_game_metadata(game_id, update_data)
         if not success:
@@ -954,6 +999,78 @@ def manual_update_game(game_id: int, req: ManualUpdateMetadataRequest, bg_tasks:
         bg_tasks.add_task(compute_duplicates_and_update_db)
 
     return {"success": True, "data": get_game_by_id(game_id)}
+
+
+@app.get("/api/games/{game_id}/play_sessions")
+def get_play_sessions_api(game_id: int):
+    game = get_game_by_id(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    sessions = get_game_play_sessions(game_id)
+    return {"success": True, "data": sessions}
+
+
+@app.post("/api/games/{game_id}/update_playtime")
+def update_playtime_api(game_id: int, req: UpdatePlaytimeRequest):
+    game = get_game_by_id(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    res = update_game_playtime(
+        game_id=game_id,
+        total_seconds=req.total_seconds,
+        play_count=req.play_count,
+        note=req.note or ""
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to update playtime"))
+    return res
+
+
+@app.post("/api/games/{game_id}/play_sessions")
+def add_play_session_api(game_id: int, req: AddPlaySessionRequest):
+    game = get_game_by_id(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    res = add_manual_play_session(
+        game_id=game_id,
+        duration_seconds=req.duration_seconds,
+        start_time=req.start_time,
+        note=req.note or "",
+        sync_to_total=req.sync_to_total
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to add play session"))
+    return res
+
+
+@app.put("/api/games/{game_id}/play_sessions/{session_id}")
+def update_play_session_api(game_id: int, session_id: int, req: UpdatePlaySessionRequest):
+    game = get_game_by_id(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    res = update_play_session(
+        session_id=session_id,
+        duration_seconds=req.duration_seconds,
+        note=req.note,
+        sync_to_total=req.sync_to_total
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to update play session"))
+    return res
+
+
+@app.delete("/api/games/{game_id}/play_sessions/{session_id}")
+def delete_play_session_api(game_id: int, session_id: int, sync_to_total: bool = True):
+    game = get_game_by_id(game_id)
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found")
+    res = delete_play_session(
+        session_id=session_id,
+        sync_to_total=sync_to_total
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to delete play session"))
+    return res
 
 
 @app.post("/api/games/{game_id}/scrape")

@@ -347,7 +347,10 @@ createApp({
       synopsis: '',
       user_notes: '',
       rj_code: '',
-      has_translation: 0
+      has_translation: 0,
+      play_hours: 0,
+      play_minutes: 0,
+      play_count: 0
     });
     const editTagsList = ref([]);
     const editUserTagsList = ref([]);
@@ -355,6 +358,30 @@ createApp({
     const newEditUserTagInput = ref('');
     const editTagsString = ref('');
     const editVoiceActorsString = ref('');
+
+    // Playtime & Play Sessions Management Modal
+    const showPlaytimeModal = ref(false);
+    const playtimeTargetGame = ref(null);
+    const playtimeSessions = ref([]);
+    const isLoadingSessions = ref(false);
+    const isSavingPlaytime = ref(false);
+    const playtimeForm = reactive({
+      hours: 0,
+      minutes: 0,
+      play_count: 0,
+      note: ''
+    });
+    const sessionEditDialog = reactive({
+      show: false,
+      isAdd: false,
+      session_id: null,
+      hours: 0,
+      minutes: 0,
+      start_time: '',
+      note: '',
+      sync_to_total: true,
+      isSaving: false
+    });
 
     // Scraper Candidates Picker modal
     const showCandidateModal = ref(false);
@@ -411,6 +438,10 @@ createApp({
       gamepad_back_screenshot: true,
       gamepad_bindings: {},
       gamepad_per_game: {},
+      enable_afk_detection: true,
+      afk_timeout_foreground: 15,
+      afk_timeout_background: 5,
+      min_play_duration_seconds: 120,
       enable_auto_save_backup: true,
       auto_backup_min_minutes: 5,
       auto_backup_max_keep: 5,
@@ -561,11 +592,55 @@ createApp({
     };
 
     const formatPlayedTime = (seconds) => {
-      if (!seconds || seconds < 60) return '尚未记录';
-      const mins = Math.floor(seconds / 60);
+      const s = parseInt(seconds || 0, 10);
+      if (s <= 0) return '尚未记录';
+      if (s < 60) return '< 1 分钟';
+      const mins = Math.floor(s / 60);
       if (mins < 60) return `${mins} 分钟`;
-      const hrs = (seconds / 3600).toFixed(1);
+      const hrs = (s / 3600).toFixed(1);
       return `${hrs} 小时`;
+    };
+
+    const formatSecondsFriendly = (seconds) => {
+      const s = parseInt(seconds || 0, 10);
+      if (s === 0) return '0分钟';
+      const absS = Math.abs(s);
+      const hrs = Math.floor(absS / 3600);
+      const mins = Math.floor((absS % 3600) / 60);
+      const secs = absS % 60;
+      if (hrs > 0 && mins > 0) return `${hrs}小时${mins}分`;
+      if (hrs > 0) return `${hrs}小时`;
+      if (mins > 0) return `${mins}分钟`;
+      return `${secs}秒`;
+    };
+
+    const formatSessionDateTime = (isoStr) => {
+      if (!isoStr) return '-';
+      try {
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return isoStr;
+        const pad = (n) => String(n).padStart(2, '0');
+        const y = d.getFullYear();
+        const m = pad(d.getMonth() + 1);
+        const day = pad(d.getDate());
+        const h = pad(d.getHours());
+        const min = pad(d.getMinutes());
+        return `${y}-${m}-${day} ${h}:${min}`;
+      } catch (e) {
+        return isoStr;
+      }
+    };
+
+    const formatSessionTimeOnly = (isoStr) => {
+      if (!isoStr) return '';
+      try {
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return '';
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      } catch (e) {
+        return '';
+      }
     };
 
     const formatRunningDuration = (seconds) => {
@@ -1710,6 +1785,10 @@ createApp({
       editForm.user_notes = game.user_notes || '';
       editForm.rj_code = game.rj_code || '';
       editForm.has_translation = game.has_translation ? 1 : 0;
+      const pSec = Number(game.played_seconds || 0);
+      editForm.play_hours = Math.floor(pSec / 3600);
+      editForm.play_minutes = Math.floor((pSec % 3600) / 60);
+      editForm.play_count = Number(game.play_count || 0);
       editTagsList.value = [...(game.tags || [])];
       editUserTagsList.value = [...(game.user_tags || [])];
       editTagsString.value = (game.tags || []).join(', ');
@@ -1727,6 +1806,9 @@ createApp({
         user_notes: editForm.user_notes,
         rj_code: editForm.rj_code,
         has_translation: editForm.has_translation,
+        play_hours: editForm.play_hours,
+        play_minutes: editForm.play_minutes,
+        play_count: editForm.play_count,
         tags: editTagsList.value,
         user_tags: editUserTagsList.value,
         va: editVoiceActorsString.value
@@ -1746,6 +1828,9 @@ createApp({
         user_notes: editForm.user_notes,
         rj_code: editForm.rj_code,
         has_translation: editForm.has_translation,
+        play_hours: editForm.play_hours,
+        play_minutes: editForm.play_minutes,
+        play_count: editForm.play_count,
         tags: editTagsList.value,
         user_tags: editUserTagsList.value,
         va: editVoiceActorsString.value
@@ -2299,6 +2384,8 @@ createApp({
         user_notes: editForm.user_notes,
         rj_code: editForm.rj_code,
         has_translation: editForm.has_translation ? 1 : 0,
+        played_seconds: (Math.max(0, parseInt(editForm.play_hours || 0, 10)) * 3600) + (Math.max(0, parseInt(editForm.play_minutes || 0, 10)) * 60),
+        play_count: Math.max(0, parseInt(editForm.play_count || 0, 10)),
         tags: editTagsList.value,
         user_tags: editUserTagsList.value,
         voice_actors: vaList
@@ -2326,6 +2413,218 @@ createApp({
         showToast('保存修改异常: ' + err, 'error');
       }
       refreshIcons();
+    };
+
+    // ==================== PLAYTIME & PLAY SESSIONS MANAGEMENT ====================
+    const openPlaytimeModal = (game) => {
+      if (!game) return;
+      playtimeTargetGame.value = game;
+      const sec = Math.max(0, parseInt(game.played_seconds || 0, 10));
+      playtimeForm.hours = Math.floor(sec / 3600);
+      playtimeForm.minutes = Math.floor((sec % 3600) / 60);
+      playtimeForm.play_count = Math.max(0, parseInt(game.play_count || 0, 10));
+      playtimeForm.note = '';
+      showPlaytimeModal.value = true;
+      sessionEditDialog.show = false;
+      fetchPlaytimeSessions(game.id);
+      nextTick(() => refreshIcons());
+    };
+
+    const closePlaytimeModal = () => {
+      showPlaytimeModal.value = false;
+      sessionEditDialog.show = false;
+      playtimeTargetGame.value = null;
+    };
+
+    const fetchPlaytimeSessions = async (gameId) => {
+      if (!gameId) return;
+      isLoadingSessions.value = true;
+      try {
+        const res = await fetch(`/api/games/${gameId}/play_sessions`);
+        const json = await res.json();
+        if (json.success) {
+          playtimeSessions.value = json.data || [];
+        } else {
+          showToast(json.detail || '获取游玩流水失败', 'warning');
+        }
+      } catch (err) {
+        console.error('Failed to fetch play sessions:', err);
+      } finally {
+        isLoadingSessions.value = false;
+        nextTick(() => refreshIcons());
+      }
+    };
+
+    const applyPlaytimeQuickAdd = (deltaMins) => {
+      let totalMins = (parseInt(playtimeForm.hours || 0, 10) * 60) + parseInt(playtimeForm.minutes || 0, 10) + deltaMins;
+      if (totalMins < 0) totalMins = 0;
+      playtimeForm.hours = Math.floor(totalMins / 60);
+      playtimeForm.minutes = totalMins % 60;
+    };
+
+    const resetPlaytimeToZero = () => {
+      playtimeForm.hours = 0;
+      playtimeForm.minutes = 0;
+    };
+
+    const savePlaytimeTotal = async () => {
+      if (!playtimeTargetGame.value) return;
+      const gid = playtimeTargetGame.value.id;
+      const totalSec = (Math.max(0, parseInt(playtimeForm.hours || 0, 10)) * 3600) + (Math.max(0, parseInt(playtimeForm.minutes || 0, 10)) * 60);
+      const count = Math.max(0, parseInt(playtimeForm.play_count || 0, 10));
+
+      isSavingPlaytime.value = true;
+      try {
+        const res = await fetch(`/api/games/${gid}/update_playtime`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            total_seconds: totalSec,
+            play_count: count,
+            note: (playtimeForm.note || '').trim()
+          })
+        });
+        const result = await res.json();
+        if (res.ok && result.success) {
+          playtimeTargetGame.value = result.data;
+          updateGameInList(result.data);
+          if (selectedGame.value && selectedGame.value.id === gid) {
+            selectedGame.value = result.data;
+            populateEditForm(result.data);
+          }
+          playtimeSessions.value = result.sessions || [];
+          playtimeForm.note = '';
+          fetchStats();
+          showToast('游戏总游玩时长与启动次数已更新！', 'success');
+        } else {
+          showToast(result.detail || result.error || '更新时长失败', 'error');
+        }
+      } catch (err) {
+        showToast('保存总时长异常: ' + err, 'error');
+      } finally {
+        isSavingPlaytime.value = false;
+        nextTick(() => refreshIcons());
+      }
+    };
+
+    const openAddSessionDialog = () => {
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const localIso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+      sessionEditDialog.isAdd = true;
+      sessionEditDialog.session_id = null;
+      sessionEditDialog.hours = 1;
+      sessionEditDialog.minutes = 0;
+      sessionEditDialog.start_time = localIso;
+      sessionEditDialog.note = '';
+      sessionEditDialog.sync_to_total = true;
+      sessionEditDialog.isSaving = false;
+      sessionEditDialog.show = true;
+      nextTick(() => refreshIcons());
+    };
+
+    const openEditSessionDialog = (session) => {
+      if (!session) return;
+      const dur = Math.abs(parseInt(session.duration_seconds || 0, 10));
+      sessionEditDialog.isAdd = false;
+      sessionEditDialog.session_id = session.id;
+      sessionEditDialog.hours = Math.floor(dur / 3600);
+      sessionEditDialog.minutes = Math.floor((dur % 3600) / 60);
+      sessionEditDialog.start_time = session.start_time || '';
+      sessionEditDialog.note = session.note || '';
+      sessionEditDialog.sync_to_total = true;
+      sessionEditDialog.isSaving = false;
+      sessionEditDialog.show = true;
+      nextTick(() => refreshIcons());
+    };
+
+    const submitSingleSessionDialog = async () => {
+      if (!playtimeTargetGame.value) return;
+      const gid = playtimeTargetGame.value.id;
+      const durSec = (Math.max(0, parseInt(sessionEditDialog.hours || 0, 10)) * 3600) + (Math.max(0, parseInt(sessionEditDialog.minutes || 0, 10)) * 60);
+
+      sessionEditDialog.isSaving = true;
+      try {
+        let res, result;
+        if (sessionEditDialog.isAdd) {
+          const sTime = sessionEditDialog.start_time ? new Date(sessionEditDialog.start_time).toISOString() : new Date().toISOString();
+          res = await fetch(`/api/games/${gid}/play_sessions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              duration_seconds: durSec,
+              start_time: sTime,
+              note: (sessionEditDialog.note || '').trim(),
+              sync_to_total: sessionEditDialog.sync_to_total
+            })
+          });
+        } else {
+          res = await fetch(`/api/games/${gid}/play_sessions/${sessionEditDialog.session_id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              duration_seconds: durSec,
+              note: (sessionEditDialog.note || '').trim(),
+              sync_to_total: sessionEditDialog.sync_to_total
+            })
+          });
+        }
+        result = await res.json();
+        if (res.ok && result.success) {
+          playtimeTargetGame.value = result.data;
+          updateGameInList(result.data);
+          if (selectedGame.value && selectedGame.value.id === gid) {
+            selectedGame.value = result.data;
+            populateEditForm(result.data);
+          }
+          playtimeSessions.value = result.sessions || [];
+          sessionEditDialog.show = false;
+          fetchStats();
+          showToast(sessionEditDialog.isAdd ? '单次游玩记录已补录！' : '单次游玩时长已修改！', 'success');
+        } else {
+          showToast(result.detail || result.error || '保存单次会话失败', 'error');
+        }
+      } catch (err) {
+        showToast('保存单次记录异常: ' + err, 'error');
+      } finally {
+        sessionEditDialog.isSaving = false;
+        nextTick(() => refreshIcons());
+      }
+    };
+
+    const deleteSingleSessionAction = (session) => {
+      if (!session || !playtimeTargetGame.value) return;
+      const gid = playtimeTargetGame.value.id;
+      const durText = formatSecondsFriendly(session.duration_seconds);
+      const isAdj = session.session_type === 'manual_adjustment';
+      const promptTitle = isAdj ? '确定删除该条手动调整记录吗？' : '确定删除该条游玩明细记录吗？';
+      const promptDesc = `该记录时长为 ${durText}。删除后将自动从游戏累计总时长中扣减对应秒数。确认继续吗？`;
+
+      confirmDialog(promptTitle, promptDesc, async () => {
+        try {
+          const res = await fetch(`/api/games/${gid}/play_sessions/${session.id}?sync_to_total=true`, {
+            method: 'DELETE'
+          });
+          const result = await res.json();
+          if (res.ok && result.success) {
+            playtimeTargetGame.value = result.data;
+            updateGameInList(result.data);
+            if (selectedGame.value && selectedGame.value.id === gid) {
+              selectedGame.value = result.data;
+              populateEditForm(result.data);
+            }
+            playtimeSessions.value = result.sessions || [];
+            fetchStats();
+            showToast('该记录已删除并已同步扣除对应时长！', 'success');
+          } else {
+            showToast(result.detail || result.error || '删除失败', 'error');
+          }
+        } catch (err) {
+          showToast('删除记录异常: ' + err, 'error');
+        }
+        nextTick(() => refreshIcons());
+      });
     };
 
     const updateGameStatus = async (status) => {
@@ -4387,7 +4686,28 @@ createApp({
       perGameProfile,
       perGameEnabled,
       setPerGameProfile,
-      setPerGameEnabled
+      setPerGameEnabled,
+      // 游玩时长与单次会话管理
+      showPlaytimeModal,
+      playtimeTargetGame,
+      playtimeSessions,
+      isLoadingSessions,
+      isSavingPlaytime,
+      playtimeForm,
+      sessionEditDialog,
+      openPlaytimeModal,
+      closePlaytimeModal,
+      fetchPlaytimeSessions,
+      applyPlaytimeQuickAdd,
+      resetPlaytimeToZero,
+      savePlaytimeTotal,
+      openAddSessionDialog,
+      openEditSessionDialog,
+      submitSingleSessionDialog,
+      deleteSingleSessionAction,
+      formatSecondsFriendly,
+      formatSessionDateTime,
+      formatSessionTimeOnly
     };
   }
 }).mount('#app');
