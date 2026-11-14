@@ -6,7 +6,7 @@ import threading
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-APP_VERSION = "3.2.1"
+APP_VERSION = "3.3.0"
 
 # 冻结成 exe 后，__file__ 在 _MEIPASS 临时目录里；数据必须落在 exe 旁边，
 # 静态资源则从打包目录读。这样 exe 和源码共享同一份 data/。

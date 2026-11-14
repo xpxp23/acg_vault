@@ -5,6 +5,7 @@ import time
 import asyncio
 import webbrowser
 import threading
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -34,6 +35,7 @@ from core import gamepad as gamepad_bridge
 from core import mtool_link
 
 from db.database import (
+    db_session,
     init_db,
     get_all_games,
     get_overlay_switcher_games,
@@ -130,6 +132,18 @@ from core.save_editor import (
     list_editable_save_slots,
     inspect_save_slot,
     modify_save_slot
+)
+from core.save_diff import (
+    compare_save_sources,
+    check_webdav_save_conflicts,
+    resolve_save_conflict
+)
+from core.game_optimizer import (
+    inspect_game_optimization,
+    apply_fps_patch,
+    remove_fps_patch,
+    run_game_slim,
+    rollback_game_slim
 )
 from core.dedup import (
     compute_duplicates_and_update_db,
@@ -345,18 +359,38 @@ class AddPlaySessionRequest(BaseModel):
 
 class UpdatePlaySessionRequest(BaseModel):
     duration_seconds: int
-    note: Optional[str] = None
-    sync_to_total: bool = True
-    duration_seconds: int
     start_time: Optional[str] = None
-    note: Optional[str] = ""
-    sync_to_total: bool = True
-
-
-class UpdatePlaySessionRequest(BaseModel):
-    duration_seconds: int
     note: Optional[str] = None
     sync_to_total: bool = True
+
+
+class WindowFullscreenRequest(BaseModel):
+    enable: Optional[bool] = None
+
+
+class SaveDiffRequest(BaseModel):
+    left_source: str = "local"
+    right_source: str = "latest_backup"
+
+
+class SaveConflictResolveRequest(BaseModel):
+    strategy: str = "keep_local"
+    snapshot_filename: Optional[str] = ""
+    slot_choices: Optional[Dict[str, str]] = None
+
+
+class FpsPatchRequest(BaseModel):
+    target_fps: int = 120
+    fast_skip_mult: int = 4
+    keep_bg_audio: bool = True
+    gpu_raster: bool = True
+
+
+class GameSlimRequest(BaseModel):
+    clean_junk: bool = True
+    compress_images: bool = True
+    image_mode: str = "lossless_png"
+    create_rollback_backup: bool = True
 
 
 class ScrapeGameRequest(BaseModel):
@@ -641,18 +675,26 @@ def toggle_overlay_click_through_api(req: Optional[OverlayClickThroughRequest] =
         return {"success": False, "click_through": False, "message": f"切换穿透模式失败: {str(e)}"}
 
 
+_THUMB_GEN_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="acg_thumb")
+
+
 @app.get("/api/covers/thumb/{filename}")
-def get_cover_thumbnail(filename: str):
-    """Serves a lightweight WebP thumbnail for fast grid rendering, generating on-the-fly if needed."""
+async def get_cover_thumbnail(filename: str):
+    """Serves a lightweight WebP thumbnail for fast grid rendering, generating on a bounded worker pool without blocking API threads."""
     safe_name = Path(filename).name
     orig_path = COVERS_DIR / safe_name
     if not orig_path.exists() or not orig_path.is_file():
         raise HTTPException(status_code=404, detail="Cover not found")
     thumb_path = THUMBS_DIR / f"{safe_name}.webp"
     if not thumb_path.exists():
-        generate_cover_thumbnail(orig_path)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_THUMB_GEN_EXECUTOR, generate_cover_thumbnail, orig_path)
     if thumb_path.exists() and thumb_path.is_file():
-        return FileResponse(str(thumb_path), media_type="image/webp")
+        return FileResponse(
+            str(thumb_path),
+            media_type="image/webp",
+            headers={"Cache-Control": "public, max-age=604800"}
+        )
     return FileResponse(str(orig_path))
 
 
@@ -2009,6 +2051,90 @@ def pick_local_path(req: PickPathRequest):
 def open_browser(port: int):
     time.sleep(1.2)
     webbrowser.open(f"http://127.0.0.1:{port}")
+
+
+
+# ---------------------------------------------------------
+# v3.3.0 Native Window Fullscreen, Save Diff/Conflict & Optimizer APIs
+# ---------------------------------------------------------
+@app.get("/api/window/state")
+def api_get_window_state():
+    try:
+        from desktop_app import get_main_window_state
+        return get_main_window_state()
+    except Exception as e:
+        return {"ok": False, "fullscreen": False, "message": str(e)}
+
+
+@app.post("/api/window/fullscreen")
+def api_toggle_window_fullscreen(req: Optional[WindowFullscreenRequest] = None):
+    try:
+        from desktop_app import toggle_main_fullscreen
+        enable_val = req.enable if req is not None else None
+        return toggle_main_fullscreen(enable_val)
+    except Exception as e:
+        return {"ok": False, "fullscreen": False, "message": str(e)}
+
+
+@app.post("/api/games/{game_id}/saves/diff")
+def api_compare_game_saves(game_id: int, req: Optional[SaveDiffRequest] = None):
+    left_src = req.left_source if req else "local"
+    right_src = req.right_source if req else "latest_backup"
+    return compare_save_sources(game_id, left_source=left_src, right_source=right_src)
+
+
+@app.get("/api/games/{game_id}/saves/conflicts")
+def api_check_save_conflicts(game_id: int):
+    return check_webdav_save_conflicts(game_id)
+
+
+@app.post("/api/games/{game_id}/saves/resolve")
+def api_resolve_save_conflict(game_id: int, req: SaveConflictResolveRequest):
+    return resolve_save_conflict(
+        game_id=game_id,
+        strategy=req.strategy,
+        snapshot_filename=req.snapshot_filename or "",
+        slot_choices=req.slot_choices
+    )
+
+
+@app.get("/api/games/{game_id}/optimizer/status")
+def api_get_optimizer_status(game_id: int):
+    return inspect_game_optimization(game_id)
+
+
+@app.post("/api/games/{game_id}/optimizer/fps_patch")
+def api_apply_fps_patch(game_id: int, req: Optional[FpsPatchRequest] = None):
+    r = req or FpsPatchRequest()
+    return apply_fps_patch(
+        game_id=game_id,
+        target_fps=r.target_fps,
+        fast_skip_mult=r.fast_skip_mult,
+        keep_bg_audio=r.keep_bg_audio,
+        gpu_raster=r.gpu_raster
+    )
+
+
+@app.post("/api/games/{game_id}/optimizer/fps_unpatch")
+def api_remove_fps_patch(game_id: int):
+    return remove_fps_patch(game_id)
+
+
+@app.post("/api/games/{game_id}/optimizer/slim")
+def api_run_game_slim(game_id: int, req: Optional[GameSlimRequest] = None):
+    r = req or GameSlimRequest()
+    return run_game_slim(
+        game_id=game_id,
+        clean_junk=r.clean_junk,
+        compress_images=r.compress_images,
+        image_mode=r.image_mode,
+        create_rollback_backup=r.create_rollback_backup
+    )
+
+
+@app.post("/api/games/{game_id}/optimizer/rollback")
+def api_rollback_game_slim(game_id: int):
+    return rollback_game_slim(game_id)
 
 
 if __name__ == "__main__":

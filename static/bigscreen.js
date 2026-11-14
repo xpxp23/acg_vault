@@ -1,12 +1,6 @@
 /*
- * ACG Vault · Big Screen Mode (v3.2.0)
- * 10-foot UI, gamepad-first browsing for the local ACG library.
- *
- * Input model
- *   - Primary : navigator.getGamepads() polled on rAF (works for Xbox + DualShock/DualSense,
- *               which the backend XInput path cannot see).
- *   - Fallback: full keyboard parity (arrows / WASD, Enter, Esc, F, R, Q/E, Tab, Backspace).
- *   - Symbols : auto-detected from gamepad.id, with an explicit confirm-button-position switch.
+ * ACG Vault · Big Screen Mode (v3.3.0)
+ * 10-foot UI, gamepad & keyboard/mouse auto-sensing for the local ACG library.
  */
 (function () {
   'use strict';
@@ -24,6 +18,7 @@
     grid: { d: 'M4 4h6.5v6.5H4zM13.5 4H20v6.5h-6.5zM4 13.5h6.5V20H4zM13.5 13.5H20V20h-6.5z' },
     folder: { d: 'M3 7.2A2.2 2.2 0 0 1 5.2 5h3.4l1.9 2h8.3A2.2 2.2 0 0 1 21 9.2v8.6A2.2 2.2 0 0 1 18.8 20H5.2A2.2 2.2 0 0 1 3 17.8z' },
     filter: { d: 'M3 4h18l-7 8.3V19l-4 2v-8.7z' },
+    search: { d: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.35-4.35' },
     settings: { d: 'M12 15.4a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8zM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3.1 14H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 20.9 10H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z' },
     gamepad: { d: 'M6.5 8h11a4.5 4.5 0 0 1 4.4 3.6l.5 3a3 3 0 0 1-5.3 2.5L15.6 15H8.4l-1.5 2.1a3 3 0 0 1-5.3-2.5l.5-3A4.5 4.5 0 0 1 6.5 8zM8 11v2.2M6.9 12.1h2.2M15.4 11.4h.01M17.4 13.2h.01' },
     info: { d: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5.2M12 7.8h.01' },
@@ -145,6 +140,9 @@
     const f = coverFile(g);
     return f ? '/api/covers/thumb/' + encodeURIComponent(f) : '';
   }
+  function isTranslated(g) {
+    return Boolean(g && (g.is_translated || g.has_translation));
+  }
   function gameTitle(g) {
     if (!g) return '未命名作品';
     return g.display_title || g.clean_title || g.folder_name || '未命名作品';
@@ -250,15 +248,22 @@
       });
       const clock = ref('');
 
+      const searchQuery = ref('');
+      const searchFocused = ref(false);
+      const searchInputEl = ref(null);
+      const activeAlpha = ref('ALL');
+      const mainScrollTop = ref(0);
+
       const layout = ref(LS.get('bs_layout', 'rails'));
       const filter = reactive(Object.assign({
         status: 'all', favorite: false, translated: false, engine: 'all', sort: 'recent'
       }, LS.get('bs_filter', {})));
       const settings = reactive(Object.assign({
-        bg: 2, sound: true, volume: 0.3, confirmKey: 'auto', hints: true
+        bg: 2, sound: true, volume: 0.3, confirmKey: 'auto', cardConfirm: 'detail', hints: true
       }, LS.get('bs_settings', {})));
 
-      const focus = reactive({ row: 0, col: 0 });
+      // focus.zone: 'grid' | 'hero'
+      const focus = reactive({ zone: 'grid', row: 0, col: 0, heroBtn: 0 });
       const gridCols = ref(6);
       const scroller = ref(null);
 
@@ -266,12 +271,16 @@
       const detailStatus = ref(null);
       const detailLoading = ref(false);
       const detailTextEl = ref(null);
+      const detailScreenshots = ref([]);
+      const lightboxOpen = ref(false);
+      const lightboxIndex = ref(0);
 
       const sheet = ref(null);
       const sheetIndex = ref(0);
 
       const reader = ref(null);
       const readerBody = ref(null);
+      const readerTocIndex = ref(0);
 
       const toast = ref(null);
       let toastTimer = null;
@@ -283,10 +292,23 @@
       const modes = reactive(LS.get('bs_launch_modes', {}));
 
       const isFullscreen = ref(false);
+      let escConfirmArmedAt = 0;
 
       const pad = reactive({
-        connected: false, id: '', family: 'xbox',
-        confirm: 'A', cancel: 'B', fav: 'X', more: 'Y', start: 'START', back: 'BACK',
+        connected: false,
+        activeMethod: 'kb_mouse',
+        id: '',
+        family: 'xbox',
+        confirm: 'Enter',
+        cancel: 'Esc',
+        fav: 'F',
+        more: 'R',
+        start: 'Tab',
+        back: 'Bksp',
+        lb: 'Q',
+        rb: 'E',
+        lt: 'PgUp',
+        rt: 'PgDn',
         axes: [0, 0, 0, 0]
       });
 
@@ -338,7 +360,9 @@
             open: 'select',
             launch: 'launch'
           };
-          window.ACGTheme.playSfx(sfxMap[name] || 'focus');
+          // 将大屏音量 (0.15 / 0.3 / 0.5) 换算为相对于默认 0.3 的增益倍率
+          const volScale = Math.max(0.2, (Number(settings.volume) || 0.3) / 0.3);
+          window.ACGTheme.playSfx(sfxMap[name] || 'focus', volScale);
           return;
         }
         (SOUNDS[name] || SOUNDS.move)();
@@ -359,9 +383,22 @@
 
       const filteredGames = computed(function () {
         let list = games.value.slice();
+        const q = (searchQuery.value || '').trim().toLowerCase();
+        if (q) {
+          list = list.filter(function (g) {
+            const hay = [
+              gameTitle(g),
+              g.original_title || '',
+              g.rj_code || '',
+              g.circle_name || '',
+              parseTags(g).join(' ')
+            ].join(' ').toLowerCase();
+            return hay.indexOf(q) >= 0;
+          });
+        }
         if (filter.status !== 'all') list = list.filter(function (g) { return g.play_status === filter.status; });
         if (filter.favorite) list = list.filter(function (g) { return !!g.is_favorite; });
-        if (filter.translated) list = list.filter(function (g) { return !!g.has_translation; });
+        if (filter.translated) list = list.filter(function (g) { return isTranslated(g); });
         if (filter.engine !== 'all') list = list.filter(function (g) { return shortEngine(g.engine_type) === filter.engine; });
 
         if (filter.sort === 'title') {
@@ -377,6 +414,32 @@
         }
         return list;
       });
+
+      const alphaGroups = computed(function () {
+        const pool = filteredGames.value;
+        if (pool.length < 16) return [];
+        const groups = [{ letter: 'ALL', index: 0 }];
+        const seen = {};
+        for (let i = 0; i < pool.length; i++) {
+          const ch = gameTitle(pool[i]).trim().charAt(0).toUpperCase();
+          let bucket = '#';
+          if (/[A-Z]/.test(ch)) bucket = ch;
+          else if (/[0-9]/.test(ch)) bucket = '0-9';
+          else if (ch) bucket = '汉/假';
+          if (!seen[bucket]) {
+            seen[bucket] = true;
+            groups.push({ letter: bucket, index: i });
+          }
+        }
+        return groups.slice(0, 16);
+      });
+
+      function jumpToAlpha(rowIndex, itemIndex, letter) {
+        activeAlpha.value = letter;
+        focus.zone = 'grid';
+        setFocus(rowIndex, itemIndex);
+        scrollFocused();
+      }
 
       const engineOptions = computed(function () {
         const seen = {};
@@ -450,8 +513,8 @@
       const rows = computed(function () {
         const pool = filteredGames.value;
         if (!pool.length) return [];
-        if (layout.value === 'grid') {
-          return [{ key: 'all', title: '全部作品', icon: 'grid', type: 'grid', items: pool }];
+        if (layout.value === 'grid' || searchQuery.value) {
+          return [{ key: 'all', title: searchQuery.value ? '搜索结果' : '全部作品', icon: 'grid', type: 'grid', items: pool }];
         }
         const out = [];
 
@@ -491,22 +554,66 @@
         return r.items[clamp(focus.col, 0, r.items.length - 1)] || null;
       });
 
-      const sheetGame = computed(function () { return detailGame.value || heroGame.value || null; });
-
-      /* ----------------------------------------------------------- backdrop */
+      // 135ms 防抖 Hero 展示与 WebP 缩略图模糊背景，彻底消除长按方向键时的解码掉帧
+      const displayHeroGame = ref(null);
       const flip = ref(0);
       const bgStyle = reactive([{}, {}]);
-      watch(heroGame, function (g) {
+      let heroDebounceTimer = null;
+
+      function applyHeroBackdrop(g) {
+        displayHeroGame.value = g;
+        if (Number(settings.bg) === 0) return;
         const next = flip.value === 0 ? 1 : 0;
-        const url = g ? coverUrl(g) : '';
+        // 使用轻量 WebP 缩略图渲染 54px 高斯模糊背景，视觉完全一致且纹理开销降低 95%
+        const url = g ? (thumbUrl(g) || coverUrl(g)) : '';
         bgStyle[next] = url ? { backgroundImage: 'url("' + url + '")' } : {};
         flip.value = next;
+      }
+
+      watch(heroGame, function (g) {
+        if (!displayHeroGame.value) {
+          applyHeroBackdrop(g);
+          return;
+        }
+        if (heroDebounceTimer) clearTimeout(heroDebounceTimer);
+        heroDebounceTimer = setTimeout(function () {
+          applyHeroBackdrop(g);
+        }, 135);
       }, { immediate: true });
+
+      const isHeroCompact = computed(function () {
+        if (focus.zone === 'hero') return false;
+        return focus.row > 0 || mainScrollTop.value > 45;
+      });
+
+      function onMainScroll(ev) {
+        if (ev && ev.target) {
+          mainScrollTop.value = ev.target.scrollTop || 0;
+        }
+      }
+
+      const sheetGame = computed(function () { return detailGame.value || displayHeroGame.value || heroGame.value || null; });
 
       const detailBgStyle = computed(function () {
         const g = detailGame.value;
-        const url = g ? coverUrl(g) : '';
+        const url = g ? (thumbUrl(g) || coverUrl(g)) : '';
         return url ? { backgroundImage: 'url("' + url + '")' } : {};
+      });
+
+      const detailGallery = computed(function () {
+        const g = detailGame.value;
+        if (!g) return [];
+        const samples = parseList(g.sample_images);
+        const shots = (detailScreenshots.value || []).map(function (s) { return s.url || ('/api/gallery/' + g.id + '/' + encodeURIComponent(s.filename)); });
+        const all = [];
+        const seen = {};
+        samples.concat(shots).forEach(function (u) {
+          if (u && !seen[u]) {
+            seen[u] = true;
+            all.push(u);
+          }
+        });
+        return all.slice(0, 16);
       });
 
       /* -------------------------------------------------------- data load */
@@ -516,7 +623,7 @@
         clock.value = pad2(d.getHours()) + ':' + pad2(d.getMinutes());
       }
 
-      async function refreshGames(silent) {
+      async function refreshGames() {
         const res = await fetch('/api/games?sort_by=title&sort_order=asc', { cache: 'no-store' });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
@@ -583,7 +690,30 @@
         });
       }
 
+      function focusHeroBtn(idx) {
+        focus.zone = 'hero';
+        focus.heroBtn = idx;
+      }
+
+      function heroBtnCount() {
+        const g = displayHeroGame.value || heroGame.value;
+        return g && g.has_walkthrough ? 5 : 4;
+      }
+
+      function triggerHeroButton() {
+        const g = displayHeroGame.value || heroGame.value;
+        if (!g) return;
+        const hasGuide = !!g.has_walkthrough;
+        const idx = focus.heroBtn;
+        if (idx === 0) launch(g);
+        else if (idx === 1) openDetail(g);
+        else if (hasGuide && idx === 2) openReader(g);
+        else if (idx === (hasGuide ? 3 : 2)) toggleFavorite(g);
+        else openSheet('actions');
+      }
+
       function setFocus(ri, ci) {
+        focus.zone = 'grid';
         if (focus.row === ri && focus.col === ci) return;
         const r = rows.value[ri];
         if (!r) return;
@@ -600,6 +730,21 @@
       }
 
       function moveFocus(dx, dy) {
+        if (focus.zone === 'hero') {
+          if (dy > 0) {
+            focus.zone = 'grid';
+            play('move');
+            scrollFocused();
+            return;
+          }
+          if (dx) {
+            const maxBtn = heroBtnCount() - 1;
+            focus.heroBtn = clamp(focus.heroBtn + dx, 0, maxBtn);
+            play('move');
+          }
+          return;
+        }
+
         const rs = rows.value;
         if (!rs.length) return;
         let r = focus.row;
@@ -613,11 +758,22 @@
             const next = c + dy * cols;
             if (next >= 0 && next < row.items.length) {
               c = next;
+            } else if (dy < 0 && r === 0) {
+              focus.zone = 'hero';
+              focus.heroBtn = 0;
+              play('move');
+              return;
             } else {
               r = clamp(r + dy, 0, rs.length - 1);
               c = clamp(c, 0, Math.max(0, rs[r].items.length - 1));
             }
           } else {
+            if (dy < 0 && r === 0) {
+              focus.zone = 'hero';
+              focus.heroBtn = 0;
+              play('move');
+              return;
+            }
             r = clamp(r + dy, 0, rs.length - 1);
             c = clamp(c, 0, Math.max(0, rs[r].items.length - 1));
           }
@@ -642,6 +798,7 @@
       }
 
       function jumpSection(dir) {
+        focus.zone = 'grid';
         const rs = rows.value;
         if (!rs.length) return;
         focus.row = clamp(focus.row + dir, 0, rs.length - 1);
@@ -651,20 +808,17 @@
       }
 
       function pageMove(dir) {
+        focus.zone = 'grid';
         const row = currentRow.value;
         if (!row) return;
         if (row.type === 'grid') {
           const next = focus.col + dir * gridCols.value * 2;
-          if (next >= 0 && next < row.items.length) {
-            focus.col = next;
-          } else {
-            focus.col = clamp(next, 0, row.items.length - 1);
-          }
+          focus.col = clamp(next, 0, row.items.length - 1);
           play('move');
           scrollFocused();
         } else {
-          const next = focus.col + dir * 5;
-          if (next >= 0 && next < row.items.length) {
+          const next = clamp(focus.col + dir * 5, 0, row.items.length - 1);
+          if (next !== focus.col) {
             focus.col = next;
             play('move');
             scrollFocused();
@@ -675,11 +829,34 @@
       function toggleLayout() {
         layout.value = layout.value === 'grid' ? 'rails' : 'grid';
         LS.set('bs_layout', layout.value);
+        focus.zone = 'grid';
         focus.row = 0;
         focus.col = 0;
         play('confirm');
         showToast(layout.value === 'grid' ? '已切换为纯网格' : '已切换为轨道 + 网格', '', 1800);
         nextTick(function () { scrollFocused(); });
+      }
+
+      function clearOrBlurSearch() {
+        if (searchQuery.value) {
+          searchQuery.value = '';
+        } else if (searchInputEl.value) {
+          searchInputEl.value.blur();
+        }
+      }
+
+      function blurSearchToGrid() {
+        if (searchInputEl.value) searchInputEl.value.blur();
+        focus.zone = 'grid';
+        focus.row = 0;
+        focus.col = 0;
+      }
+
+      function toggleThemeQuick() {
+        if (window.AcgTheme) {
+          window.AcgTheme.toggle();
+          showToast(themeResolved.value === 'light' ? '☀ 已切换为 Switch 日间主题' : '🌙 已切换为夜间主题', 'success', 1800);
+        }
       }
 
       /* ------------------------------------------------------------ actions */
@@ -698,6 +875,9 @@
           if (i >= 0) games.value[i] = Object.assign({}, games.value[i], merged);
           if (detailGame.value && detailGame.value.id === g.id) {
             detailGame.value = Object.assign({}, detailGame.value, merged);
+          }
+          if (displayHeroGame.value && displayHeroGame.value.id === g.id) {
+            displayHeroGame.value = Object.assign({}, displayHeroGame.value, merged);
           }
           play('confirm');
         } catch (e) {
@@ -749,6 +929,7 @@
           showToast((data.message || '已启动') + magpieEta, 'success', 3800);
           play('launch');
           detailGame.value = null;
+          lightboxOpen.value = false;
           playSession.value = { id: g.id, title: gameTitle(g), start: startedAt, sawRunning: false, pidSeen: false };
           try { await fetch('/api/window/minimize', { method: 'POST' }); } catch (e) { /* browser mode */ }
         } catch (e) {
@@ -770,7 +951,7 @@
           const mins = Math.max(1, Math.round((Date.now() - s.start) / 60000));
           showToast('《' + s.title + '》本次游玩约 ' + mins + ' 分钟', 'success', 6000);
         }
-        try { await refreshGames(true); } catch (e) { /* ignore */ }
+        try { await refreshGames(); } catch (e) { /* ignore */ }
       }
 
       let runningTimer = null;
@@ -803,14 +984,25 @@
         detailGame.value = g;
         detailLoading.value = true;
         detailStatus.value = null;
+        detailScreenshots.value = [];
+        lightboxOpen.value = false;
+        lightboxIndex.value = 0;
         play('open');
         nextTick(function () { if (detailTextEl.value) detailTextEl.value.scrollTop = 0; });
         try {
-          const res = await fetch('/api/games/' + g.id, { cache: 'no-store' });
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          const data = await res.json();
-          if (data && data.data) detailGame.value = data.data;
-          detailStatus.value = data.mtool_status || null;
+          const [resGame, resShots] = await Promise.all([
+            fetch('/api/games/' + g.id, { cache: 'no-store' }),
+            fetch('/api/games/' + g.id + '/screenshots', { cache: 'no-store' }).catch(function () { return null; })
+          ]);
+          if (resGame && resGame.ok) {
+            const data = await resGame.json();
+            if (data && data.data) detailGame.value = data.data;
+            detailStatus.value = data.mtool_status || null;
+          }
+          if (resShots && resShots.ok) {
+            const sdata = await resShots.json();
+            detailScreenshots.value = (sdata && sdata.screenshots) || [];
+          }
         } catch (e) {
           showToast('读取详情失败，已显示缓存信息', 'error');
         } finally {
@@ -819,16 +1011,99 @@
       }
 
       function closeDetail() {
+        if (lightboxOpen.value) {
+          closeLightbox();
+          return;
+        }
         if (!detailGame.value) return;
         detailGame.value = null;
         play('back');
         scrollFocused();
       }
 
+      function openLightbox(idx) {
+        if (!detailGallery.value.length) return;
+        lightboxIndex.value = clamp(idx || 0, 0, detailGallery.value.length - 1);
+        lightboxOpen.value = true;
+        play('open');
+      }
+
+      function closeLightbox() {
+        lightboxOpen.value = false;
+        play('back');
+      }
+
+      function stepLightbox(dir) {
+        const len = detailGallery.value.length;
+        if (!len) return;
+        lightboxIndex.value = (lightboxIndex.value + dir + len) % len;
+        play('move');
+      }
+
       function scrollDetail(dir) {
         const el = detailTextEl.value;
         if (!el) return;
         el.scrollBy({ top: dir * 140, behavior: 'smooth' });
+      }
+
+      /* -------------------- 交互式攻略阅读器（含章节目录 TOC 与复选框勾选持久化） -------------------- */
+      function buildReaderPayload(gameObj, rawMd) {
+        const toc = [];
+        const checklists = [];
+        const lines = String(rawMd || '').split('\n');
+        let inCode = false;
+        for (let i = 0; i < lines.length; i++) {
+          const ln = lines[i];
+          if (/^```/.test(ln.trim())) { inCode = !inCode; continue; }
+          if (inCode) continue;
+          const hm = ln.match(/^(#{1,3})\s+(.+)$/);
+          if (hm) {
+            toc.push({
+              level: hm[1].length,
+              text: hm[2].replace(/[*_`~]/g, '').trim(),
+              lineIndex: i
+            });
+          }
+          const cm = ln.match(/^(\s*[-*+]\s+\[)([ xX])(\]\s+)(.+)$/);
+          if (cm) {
+            checklists.push({
+              idx: checklists.length,
+              lineIndex: i,
+              checked: cm[2].toLowerCase() === 'x',
+              text: cm[4].trim()
+            });
+          }
+        }
+
+        let cbCounter = 0;
+        const mdWithMermaid = rawMd.replace(/```mermaid\s*\n([\s\S]*?)```/gi, function (_m, code) {
+          return compileMermaidToVisualHtml(code);
+        });
+        let html = escapeHtml(mdWithMermaid);
+        try {
+          if (window.marked) {
+            const parsed = window.marked.parse ? window.marked.parse(mdWithMermaid) : window.marked(mdWithMermaid);
+            html = sanitizeReaderHtml(parsed);
+          }
+        } catch (e) {
+          html = sanitizeReaderHtml(mdWithMermaid);
+        }
+        // 将禁用复选框替换为可点击交互复选框
+        html = html.replace(/<input([^>]*?)type=["']checkbox["']([^>]*?)>/gi, function (full) {
+          const isChecked = /\bchecked\b/i.test(full);
+          const idx = cbCounter++;
+          return '<input type="checkbox" class="bs-task-cb" data-task-idx="' + idx + '"' + (isChecked ? ' checked' : '') + '>';
+        });
+
+        return {
+          gameId: gameObj.id,
+          title: gameTitle(gameObj),
+          rawMd: rawMd,
+          meta: Math.round(rawMd.length / 100) / 10 + 'k 字',
+          toc: toc,
+          checklists: checklists,
+          html: html
+        };
       }
 
       async function openReader(g) {
@@ -843,26 +1118,63 @@
         }
         const rawMd = full.walkthrough_md || '';
         if (!rawMd.trim()) { showToast('该作品还没有生成攻略', 'error'); return; }
-        // 先将 ```mermaid 分支路线图代码块编译为可视化卡片 HTML，再经由 marked + sanitizeReaderHtml 安全渲染
-        const md = rawMd.replace(/```mermaid\s*\n([\s\S]*?)```/gi, function (_m, code) {
-          return compileMermaidToVisualHtml(code);
-        });
-        let html = escapeHtml(md);
-        try {
-          if (window.marked) {
-            const parsed = window.marked.parse ? window.marked.parse(md) : window.marked(md);
-            html = sanitizeReaderHtml(parsed);
-          }
-        } catch (e) {
-          html = sanitizeReaderHtml(md);
-        }
-        reader.value = {
-          title: gameTitle(g),
-          meta: rawMd.length > 0 ? Math.round(rawMd.length / 100) / 10 + 'k 字 · 只读' : '只读',
-          html: html
-        };
+        readerTocIndex.value = 0;
+        reader.value = buildReaderPayload(full, rawMd);
         play('open');
         nextTick(function () { if (readerBody.value) readerBody.value.scrollTop = 0; });
+      }
+
+      const readerCheckedCount = computed(function () {
+        if (!reader.value || !reader.value.checklists) return 0;
+        return reader.value.checklists.filter(function (c) { return c.checked; }).length;
+      });
+
+      function jumpReaderToc(ti) {
+        if (!reader.value || !reader.value.toc || !readerBody.value) return;
+        readerTocIndex.value = clamp(ti, 0, reader.value.toc.length - 1);
+        const headings = readerBody.value.querySelectorAll('h1, h2, h3');
+        if (headings[readerTocIndex.value]) {
+          headings[readerTocIndex.value].scrollIntoView({ behavior: 'smooth', block: 'start' });
+          play('move');
+        }
+      }
+
+      async function toggleReaderChecklistAt(taskIdx) {
+        if (!reader.value || !reader.value.checklists) return;
+        const item = reader.value.checklists[taskIdx];
+        if (!item) return;
+        const lines = reader.value.rawMd.split('\n');
+        const ln = lines[item.lineIndex] || '';
+        const nextChecked = !item.checked;
+        lines[item.lineIndex] = ln.replace(/^(\s*[-*+]\s+\[)[ xX](\]\s+)/, '$1' + (nextChecked ? 'x' : ' ') + '$2');
+        const newMd = lines.join('\n');
+        const currentScroll = readerBody.value ? readerBody.value.scrollTop : 0;
+        reader.value = buildReaderPayload({ id: reader.value.gameId, display_title: reader.value.title }, newMd);
+        nextTick(function () {
+          if (readerBody.value) readerBody.value.scrollTop = currentScroll;
+        });
+        play('confirm');
+        try {
+          await fetch('/api/games/' + reader.value.gameId + '/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ walkthrough_md: newMd })
+          });
+          if (detailGame.value && detailGame.value.id === reader.value.gameId) {
+            detailGame.value.walkthrough_md = newMd;
+          }
+        } catch (e) { /* ignore */ }
+      }
+
+      function onReaderBodyClick(ev) {
+        const t = ev.target;
+        if (t && t.classList && t.classList.contains('bs-task-cb')) {
+          const idx = Number(t.dataset.taskIdx);
+          if (!Number.isNaN(idx)) {
+            ev.preventDefault();
+            toggleReaderChecklistAt(idx);
+          }
+        }
       }
 
       function closeReader() {
@@ -875,12 +1187,19 @@
         window.location.href = '/';
       }
 
-      function toggleFullscreen() {
+      async function toggleFullscreen() {
+        if (window.AcgWindow && window.AcgWindow.toggleFullscreen) {
+          const fs = await window.AcgWindow.toggleFullscreen();
+          isFullscreen.value = !!fs;
+          play('confirm');
+          showToast(isFullscreen.value ? '已进入全屏模式 (按 F11 可退出)' : '已退出全屏模式', '', 1800);
+          return;
+        }
         if (document.fullscreenElement) {
           document.exitFullscreen().catch(function () {});
         } else if (document.documentElement.requestFullscreen) {
           document.documentElement.requestFullscreen().catch(function () {
-            showToast('当前窗口不允许全屏，可用 F11', 'error');
+            showToast('当前窗口不允许全屏，可按 F11', 'error');
           });
         }
       }
@@ -905,11 +1224,12 @@
         }
         if (sheet.value === 'settings') {
           return [
-            { key: 's_bg', label: '背景强度', value: settings.bg, options: [[0, '关闭'], [1, '柔和'], [2, '强烈']] },
-            { key: 's_sound', label: '操作音效', value: !!settings.sound, options: [[true, '开'], [false, '关']] },
-            { key: 's_volume', label: '音量', value: Number(settings.volume), options: [[0.15, '低'], [0.3, '中'], [0.5, '高']] },
-            { key: 's_confirm', label: '确认键位置', value: settings.confirmKey, options: [['auto', '自动识别'], ['xbox', '下方键确认'], ['ps', '右侧键确认']] },
-            { key: 's_hints', label: '底部提示条', value: !!settings.hints, options: [[true, '显示'], [false, '隐藏']] }
+            { key: 's_bg', label: '背景氛围强度', value: settings.bg, options: [[0, '关闭 (省电)'], [1, '柔和'], [2, '强烈']] },
+            { key: 's_sound', label: '操作微音效', value: !!settings.sound, options: [[true, '开'], [false, '关']] },
+            { key: 's_volume', label: '音效音量', value: Number(settings.volume), options: [[0.15, '低'], [0.3, '中'], [0.5, '高']] },
+            { key: 's_card_confirm', label: '卡片确认键行为', value: settings.cardConfirm || 'detail', options: [['detail', '打开详情页'], ['launch', '直接启动游戏']] },
+            { key: 's_confirm', label: '手柄确认键位置', value: settings.confirmKey, options: [['auto', '自动识别'], ['xbox', '下方键确认'], ['ps', '右侧键确认']] },
+            { key: 's_hints', label: '底部按键提示条', value: !!settings.hints, options: [[true, '显示'], [false, '隐藏']] }
           ];
         }
         const g = sheetGame.value;
@@ -927,23 +1247,25 @@
             disabled: !magpie.value.installed || !runningMap.value[g.id],
             hint: !magpie.value.installed
               ? '未检测到 Magpie（设置里可指定路径）'
-              : (runningMap.value[g.id] ? '按 A 让 Magpie 接管全屏' : '游戏启动后才能全屏')
+              : (runningMap.value[g.id] ? '按 ' + pad.confirm + ' 让 Magpie 接管全屏' : '游戏启动后才能全屏')
           },
           {
             key: 'a_theme',
             label: '界面主题：' + (themeResolved.value === 'light' ? '日间 (Switch)' : '夜间'),
             action: true,
-            hint: '按 A 在 夜间 / 日间 (Switch) 之间切换'
+            hint: '按 ' + pad.confirm + ' 在 夜间 / 日间 (Switch) 之间切换'
           },
           {
             key: 'a_magpie_preset',
             label: 'Magpie 预设：' + magpiePresetLabel(),
             action: true,
             disabled: !magpie.value.installed || !(magpiePresets.value.presets || []).length,
-            hint: '按 A 切到下一个缩放预设（会重启 Magpie）'
+            hint: '按 ' + pad.confirm + ' 切到下一个缩放预设（会重启 Magpie）'
           },
-          { key: 'a_folder', label: '打开游戏目录', action: true, hint: '按 A 在资源管理器中打开' },
-          { key: 'a_guide', label: '全结局攻略', action: true, hint: g.has_walkthrough ? '按 A 阅读' : '该作品暂无攻略', disabled: !g.has_walkthrough }
+          { key: 'a_fps_boost', label: '⚡ 注入 120Hz 高刷与 4x 快进补丁', action: true, hint: '按 ' + pad.confirm + ' 为 RPG Maker / Unity 解锁高帧率与快进' },
+          { key: 'a_webdav_sync', label: '☁️ WebDAV 云端存档同步', action: true, hint: '按 ' + pad.confirm + ' 备份当前存档并与云端双向同步' },
+          { key: 'a_folder', label: '打开游戏目录', action: true, hint: '按 ' + pad.confirm + ' 在资源管理器中打开' },
+          { key: 'a_guide', label: '全结局攻略', action: true, hint: g.has_walkthrough ? ('按 ' + pad.confirm + ' 阅读') : '该作品暂无攻略', disabled: !g.has_walkthrough }
         ];
       });
 
@@ -975,13 +1297,27 @@
             LS.set('bs_layout', val);
             focus.row = 0; focus.col = 0;
             break;
-          case 's_bg': settings.bg = Number(val); LS.set('bs_settings', settings); break;
+          case 's_bg':
+            settings.bg = Number(val);
+            LS.set('bs_settings', settings);
+            if (settings.bg > 0 && heroGame.value) applyHeroBackdrop(heroGame.value);
+            break;
           case 's_sound':
             settings.sound = !!val;
             LS.set('bs_settings', settings);
             if (window.ACGTheme && window.ACGTheme.setSfx) window.ACGTheme.setSfx(!!val);
             break;
-          case 's_volume': settings.volume = Number(val); LS.set('bs_settings', settings); break;
+          case 's_volume':
+            settings.volume = Number(val);
+            LS.set('bs_settings', settings);
+            if (window.ACGTheme && window.ACGTheme.setVolumeScale) {
+              window.ACGTheme.setVolumeScale(Math.max(0.2, settings.volume / 0.3));
+            }
+            break;
+          case 's_card_confirm':
+            settings.cardConfirm = val;
+            LS.set('bs_settings', settings);
+            break;
           case 's_confirm':
             settings.confirmKey = val;
             LS.set('bs_settings', settings);
@@ -1019,11 +1355,7 @@
           return;
         }
         if (row.key === 'a_theme') {
-          if (window.AcgTheme) {
-            const next = themeResolved.value === 'light' ? 'dark' : 'light';
-            await window.AcgTheme.set(next);
-            showToast(next === 'light' ? '☀ 已切换到 Switch 日间模式' : '🌙 已切换到夜间模式', 'success', 2000);
-          }
+          toggleThemeQuick();
           return;
         }
         if (row.key === 'a_magpie_preset') {
@@ -1044,6 +1376,28 @@
           } catch (e) {
             showToast('切换预设失败', 'error');
           }
+          return;
+        }
+        if (row.key === 'a_fps_boost') {
+          showToast('正在注入 120Hz 高刷与 4x 快进补丁…', '', 1800);
+          try {
+            const res = await fetch('/api/games/' + g.id + '/optimizer/fps_patch', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ target_fps: 120, fast_skip_mult: 4, keep_bg_audio: true, gpu_raster: true })
+            });
+            const d = await res.json();
+            showToast(d.message || (d.success ? '高刷补丁已注入' : '注入失败'), d.success ? 'success' : 'error', 3600);
+          } catch (e) { showToast('注入补丁请求失败', 'error'); }
+          return;
+        }
+        if (row.key === 'a_webdav_sync') {
+          showToast('正在同步 WebDAV 云端存档…', '', 1800);
+          try {
+            const res = await fetch('/api/games/' + g.id + '/webdav_sync', { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message || (d.success ? '云同步完成' : '云同步失败'), d.success ? 'success' : 'error', 3600);
+          } catch (e) { showToast('WebDAV 同步请求失败', 'error'); }
           return;
         }
         if (row.key === 'a_folder') {
@@ -1101,6 +1455,20 @@
       function handleReader(name) {
         const el = readerBody.value;
         if (name === 'cancel' || name === 'back') { closeReader(); return; }
+        if (name === 'lb' && reader.value && reader.value.toc && reader.value.toc.length) {
+          jumpReaderToc(readerTocIndex.value - 1);
+          return;
+        }
+        if (name === 'rb' && reader.value && reader.value.toc && reader.value.toc.length) {
+          jumpReaderToc(readerTocIndex.value + 1);
+          return;
+        }
+        if (name === 'fav' && reader.value && reader.value.checklists && reader.value.checklists.length) {
+          // 找到第一个未完成项并切换
+          const firstUnchecked = reader.value.checklists.findIndex(function (c) { return !c.checked; });
+          toggleReaderChecklistAt(firstUnchecked >= 0 ? firstUnchecked : 0);
+          return;
+        }
         if (!el) return;
         if (name === 'up') el.scrollBy({ top: -180, behavior: 'smooth' });
         else if (name === 'down') el.scrollBy({ top: 180, behavior: 'smooth' });
@@ -1110,12 +1478,20 @@
 
       function handleDetail(name) {
         const g = detailGame.value;
+        if (lightboxOpen.value) {
+          if (name === 'cancel' || name === 'back') { closeLightbox(); return; }
+          if (name === 'left' || name === 'lb' || name === 'up') { stepLightbox(-1); return; }
+          if (name === 'right' || name === 'rb' || name === 'down' || name === 'confirm') { stepLightbox(1); return; }
+          return;
+        }
         if (name === 'confirm') { launch(g); return; }
         if (name === 'longconfirm') { launch(g, 'native'); return; }
         if (name === 'cancel') { closeDetail(); return; }
         if (name === 'fav') { toggleFavorite(g); return; }
         if (name === 'more') { openSheet('actions'); return; }
         if (name === 'start') { openSheet('filter'); return; }
+        if (name === 'lb' && detailGallery.value.length) { openLightbox(0); return; }
+        if (name === 'rb' && detailGallery.value.length) { openLightbox(0); return; }
         if (name === 'up') { scrollDetail(-1); return; }
         if (name === 'down') { scrollDetail(1); return; }
         if (name === 'lt') { scrollDetail(-4); return; }
@@ -1124,8 +1500,39 @@
 
       function handleBrowse(name) {
         const row = currentRow.value;
-        if (name === 'confirm') { if (heroGame.value) openDetail(heroGame.value); return; }
-        if (name === 'cancel') { exitHome(); return; }
+        if (name === 'confirm') {
+          if (focus.zone === 'hero') {
+            triggerHeroButton();
+            return;
+          }
+          if (heroGame.value) {
+            if (settings.cardConfirm === 'launch') launch(heroGame.value);
+            else openDetail(heroGame.value);
+          }
+          return;
+        }
+        if (name === 'cancel') {
+          if (focus.zone === 'hero') {
+            focus.zone = 'grid';
+            play('back');
+            return;
+          }
+          if (searchQuery.value) {
+            searchQuery.value = '';
+            play('back');
+            showToast('已清空搜索过滤', '', 1500);
+            return;
+          }
+          const now = Date.now();
+          if (now - escConfirmArmedAt < 2500) {
+            exitHome();
+          } else {
+            escConfirmArmedAt = now;
+            play('back');
+            showToast('再按一次 ' + pad.cancel + '（或长按手柄 ' + pad.cancel + '）退出大屏模式', '', 2400);
+          }
+          return;
+        }
         if (name === 'fav') {
           if (row && row.special === 'tonight') { rerollTonight(false); return; }
           toggleFavorite(heroGame.value);
@@ -1152,21 +1559,34 @@
       }
 
       /* -------------------------------------------------------------- hints */
+      const inputStatusText = computed(function () {
+        if (pad.activeMethod === 'gamepad' && pad.connected) {
+          const famName = pad.family === 'ps' ? 'DualSense/PS' : (pad.family === 'switch' ? 'Switch Pro' : 'Xbox');
+          return famName + ' 手柄操控中';
+        }
+        if (pad.connected) {
+          return '键鼠操控中 (手柄已就绪)';
+        }
+        return '键鼠操控模式';
+      });
+
       const hints = computed(function () {
-        const k = { confirm: pad.confirm, cancel: pad.cancel, fav: pad.fav, more: pad.more, start: pad.start };
+        const k = pad;
         if (sheet.value) {
           return [
             { key: '↑↓', label: '选择', tone: '' },
             { key: '←→', label: '调整', tone: '' },
             { key: k.confirm, label: '确认', tone: 'a', act: 'confirm' },
             { key: k.cancel, label: '关闭', tone: 'b', act: 'cancel' },
-            { key: 'LB/RB', label: '切换面板', tone: '' }
+            { key: k.lb + '/' + k.rb, label: '切换面板', tone: '' }
           ];
         }
         if (reader.value) {
           return [
             { key: '↑↓', label: '滚动', tone: '' },
-            { key: 'LT/RT', label: '翻页', tone: '' },
+            { key: k.lb + '/' + k.rb, label: '切换章节', tone: '' },
+            { key: k.fav, label: '勾选任务', tone: 'x', act: 'fav' },
+            { key: k.lt + '/' + k.rt, label: '翻页', tone: '' },
             { key: k.cancel, label: '返回', tone: 'b', act: 'cancel' }
           ];
         }
@@ -1175,17 +1595,18 @@
             { key: k.confirm, label: '开始游戏', tone: 'a', act: 'confirm' },
             { key: k.more, label: '更多操作', tone: 'y', act: 'more' },
             { key: k.fav, label: '收藏', tone: 'x', act: 'fav' },
-            { key: '长按 ' + k.confirm, label: '普通模式启动', tone: 'a', act: 'longconfirm' },
+            { key: k.lb + '/' + k.rb, label: '放大预览图', tone: '' },
             { key: k.cancel, label: '返回', tone: 'b', act: 'cancel' }
           ];
         }
         return [
-          { key: k.confirm, label: '详情', tone: 'a', act: 'confirm' },
+          { key: k.confirm, label: focus.zone === 'hero' ? '执行按钮' : (settings.cardConfirm === 'launch' ? '启动游戏' : '查看详情'), tone: 'a', act: 'confirm' },
           { key: k.fav, label: currentRow.value && currentRow.value.special === 'tonight' ? '换一个' : '收藏', tone: 'x', act: 'fav' },
-          { key: k.more, label: '操作', tone: 'y', act: 'more' },
-          { key: 'LB/RB', label: '切换栏目', tone: '' },
+          { key: k.more, label: '操作面板', tone: 'y', act: 'more' },
+          { key: k.lb + '/' + k.rb, label: '切换栏目', tone: '' },
           { key: k.start, label: '筛选', tone: '', act: 'start' },
-          { key: 'Back', label: '切换布局', tone: '', act: 'back' },
+          { key: k.back, label: '切换布局', tone: '', act: 'back' },
+          { key: 'F11', label: isFullscreen.value ? '退出全屏' : '全屏', tone: '' },
           { key: k.cancel, label: '退出大屏', tone: 'b', act: 'cancel' }
         ];
       });
@@ -1195,28 +1616,34 @@
         onAction(h.act);
       }
 
-      /* ------------------------------------------------------------- gamepad */
+      /* ----------------------------------------- Auto-Sense Labels & Gamepad */
       function computeLabels() {
-        const family = pad.family;
-        const confirmRight = settings.confirmKey === 'ps' ||
-          (settings.confirmKey === 'auto' && family === 'ps');
-        if (family === 'ps') {
-          pad.confirm = confirmRight ? '○' : '✕';
-          pad.cancel = confirmRight ? '✕' : '○';
-          pad.fav = '□';
-          pad.more = '△';
-          pad.start = 'OPTIONS';
-          pad.back = 'SHARE';
-        } else {
-          pad.confirm = 'A';
-          pad.cancel = 'B';
-          pad.fav = 'X';
-          pad.more = 'Y';
-          pad.start = '≡';
-          pad.back = '⧉';
+        if (window.AcgDeviceSense) {
+          const labels = window.AcgDeviceSense.getPromptLabels(settings.confirmKey);
+          pad.activeMethod = labels.mode;
+          pad.family = labels.family;
+          pad.confirm = labels.confirm;
+          pad.cancel = labels.cancel;
+          pad.fav = labels.fav;
+          pad.more = labels.more;
+          pad.start = labels.start;
+          pad.back = labels.back;
+          pad.lb = labels.lb;
+          pad.rb = labels.rb;
+          pad.lt = labels.lt;
+          pad.rt = labels.rt;
+          return;
         }
       }
       computeLabels();
+
+      document.addEventListener('acg-input-device-changed', function (ev) {
+        if (ev && ev.detail) {
+          pad.connected = !!ev.detail.padConnected;
+          pad.id = ev.detail.padId || pad.id;
+        }
+        computeLabels();
+      });
 
       const PAD_BUTTONS = {
         4: 'lb', 5: 'rb', 6: 'lt', 7: 'rt', 8: 'back', 9: 'start', 10: 'lthumb', 11: 'rthumb'
@@ -1224,7 +1651,7 @@
 
       function logicalFromButton(i) {
         const confirmRight = settings.confirmKey === 'ps' ||
-          (settings.confirmKey === 'auto' && pad.family === 'ps');
+          (settings.confirmKey === 'auto' && (pad.family === 'ps' || pad.family === 'switch'));
         if (i === 0) return confirmRight ? 'cancel' : 'confirm';
         if (i === 1) return confirmRight ? 'confirm' : 'cancel';
         if (i === 2) return 'fav';
@@ -1239,9 +1666,7 @@
       let confirmLong = false;
       let confirmArmed = false;
       let cancelTimer = null;
-      let cancelHinted = false;
       let padRaf = null;
-      let padSeen = false;
 
       function startConfirmHold() {
         confirmArmed = true;
@@ -1261,12 +1686,15 @@
         confirmLong = false;
       }
 
-      function overlayOpen() { return !!(sheet.value || reader.value || detailGame.value); }
+      function overlayOpen() { return !!(sheet.value || reader.value || detailGame.value || lightboxOpen.value); }
 
-      function handleButton(i, pressed) {
+      function handleButton(i, pressed, gp) {
         const prev = !!held.buttons[i];
         if (pressed === prev) return;
         held.buttons[i] = pressed;
+        if (pressed && window.AcgDeviceSense) {
+          window.AcgDeviceSense.markGamepadActivity(gp);
+        }
         const act = logicalFromButton(i);
         if (!act) return;
 
@@ -1275,16 +1703,19 @@
           if (act === 'cancel' && cancelTimer) {
             clearTimeout(cancelTimer);
             cancelTimer = null;
-            if (!cancelHinted) {
-              cancelHinted = true;
-              showToast('长按 ' + pad.cancel + ' 退出大屏模式', '', 2600);
+            if (focus.zone === 'hero') {
+              focus.zone = 'grid';
+              play('back');
+            } else {
+              // 每次短按 B 都给出清晰一致的反馈
+              showToast('长按 ' + pad.cancel + ' (0.8秒) 退出大屏模式', '', 2200);
             }
           }
           return;
         }
 
         if (act === 'confirm') {
-          if (detailGame.value) { startConfirmHold(); return; }
+          if (detailGame.value && !lightboxOpen.value) { startConfirmHold(); return; }
           onAction(act);
           return;
         }
@@ -1293,7 +1724,7 @@
           cancelTimer = setTimeout(function () {
             cancelTimer = null;
             exitHome();
-          }, 950);
+          }, 800);
           return;
         }
         onAction(act);
@@ -1305,7 +1736,7 @@
         if (b[13] && b[13].pressed) return 'down';
         if (b[14] && b[14].pressed) return 'left';
         if (b[15] && b[15].pressed) return 'right';
-        const dz = 0.55;
+        const dz = 0.52;
         const ax = gp.axes[0] || 0;
         const ay = gp.axes[1] || 0;
         if (Math.abs(ax) < dz && Math.abs(ay) < dz) return null;
@@ -1313,15 +1744,14 @@
         return ay > 0 ? 'down' : 'up';
       }
 
-      function detectFamily(id) {
-        const s = String(id || '');
-        if (/dualsense|dualshock|playstation|sony|054c/i.test(s)) return 'ps';
-        if (/^wireless controller/i.test(s)) return 'ps';
-        return 'xbox';
-      }
-
       function pollPad() {
         padRaf = requestAnimationFrame(pollPad);
+        // 关键修复：当游戏正在前台运行、页面最小化或失焦时停止处理大屏手柄输入，彻底杜绝双端手柄串键冲突！
+        if (playSession.value || document.hidden || !document.hasFocus()) {
+          held.buttons = {};
+          dirHold.act = null;
+          return;
+        }
         if (!navigator.getGamepads) return;
         const pads = navigator.getGamepads();
         let gp = null;
@@ -1331,55 +1761,52 @@
         if (!gp) {
           if (pad.connected) {
             pad.connected = false;
-            padSeen = false;
             held.buttons = {};
             dirHold.act = null;
+            computeLabels();
           }
           return;
         }
         if (!pad.connected) {
           pad.connected = true;
-          padSeen = true;
           pad.id = gp.id || '';
-          pad.family = detectFamily(gp.id);
+          if (window.AcgDeviceSense) window.AcgDeviceSense.markGamepadActivity(gp);
           computeLabels();
-          showToast((pad.family === 'ps' ? 'PlayStation' : 'Xbox') + ' 手柄已连接', 'success', 2400);
+          showToast('手柄已就绪：' + inputStatusText.value, 'success', 2200);
         }
 
         for (let i = 0; i < gp.buttons.length; i++) {
           const b = gp.buttons[i];
-          handleButton(i, !!(b && (b.pressed || b.value > 0.5)));
+          handleButton(i, !!(b && (b.pressed || b.value > 0.5)), gp);
         }
 
         const dir = dpadDirection(gp);
         const now = performance.now();
         if (dir !== dirHold.act) {
           dirHold.act = dir;
-          if (dir) { onAction(dir); dirHold.nextAt = now + 380; }
+          if (dir) {
+            if (window.AcgDeviceSense) window.AcgDeviceSense.markGamepadActivity(gp);
+            onAction(dir);
+            dirHold.nextAt = now + 360;
+          }
         } else if (dir && now >= dirHold.nextAt) {
           onAction(dir);
-          dirHold.nextAt = now + 95;
+          dirHold.nextAt = now + 90;
         }
 
         if (detailGame.value || reader.value) {
           const ry = gp.axes[3] || 0;
           if (Math.abs(ry) > 0.42) {
+            if (window.AcgDeviceSense) window.AcgDeviceSense.markGamepadActivity(gp);
             if (now >= scrollHold.nextAt) {
               const el = reader.value ? readerBody.value : detailTextEl.value;
               if (el) el.scrollBy({ top: (ry > 0 ? 1 : -1) * 110, behavior: 'auto' });
-              scrollHold.nextAt = now + 70;
+              scrollHold.nextAt = now + 65;
             }
           } else {
             scrollHold.nextAt = 0;
           }
         }
-
-        pad.axes = [
-          Math.round((gp.axes[0] || 0) * 100) / 100,
-          Math.round((gp.axes[1] || 0) * 100) / 100,
-          Math.round((gp.axes[2] || 0) * 100) / 100,
-          Math.round((gp.axes[3] || 0) * 100) / 100
-        ];
       }
 
       /* ------------------------------------------------------------- keyboard */
@@ -1393,6 +1820,12 @@
       };
 
       function onKeyDown(e) {
+        if (searchFocused.value) return;
+        if (e.key === '/' || (e.ctrlKey && e.code === 'KeyF')) {
+          e.preventDefault();
+          if (searchInputEl.value) searchInputEl.value.focus();
+          return;
+        }
         if (e.altKey && e.code === 'KeyB') { e.preventDefault(); exitHome(); return; }
         const act = KEYMAP[e.code];
         if (!act) return;
@@ -1405,20 +1838,17 @@
         updateCols();
       }
 
-      function onFullscreenChange() {
-        isFullscreen.value = !!document.fullscreenElement;
-      }
-
-      function onGamepadConnected(ev) {
-        pad.connected = true;
-        pad.id = (ev.gamepad && ev.gamepad.id) || '';
-        pad.family = detectFamily(pad.id);
-        computeLabels();
+      function onFullscreenEvent(ev) {
+        if (ev && ev.detail && ev.detail.fullscreen !== undefined) {
+          isFullscreen.value = !!ev.detail.fullscreen;
+        } else {
+          isFullscreen.value = !!document.fullscreenElement;
+        }
       }
 
       /* --------------------------------------------------------------- boot */
       watch(function () { return rows.value.map(function (r) { return r.items.length; }).join('|'); }, clampFocus);
-      watch(function () { return filter.engine + '|' + filter.status + '|' + filter.sort + '|' + filter.favorite + '|' + filter.translated; }, function () {
+      watch(function () { return filter.engine + '|' + filter.status + '|' + filter.sort + '|' + filter.favorite + '|' + filter.translated + '|' + searchQuery.value; }, function () {
         clampFocus();
         if (!tonightGame.value) rerollTonight(true);
       });
@@ -1427,16 +1857,21 @@
       onMounted(function () {
         if (window.AcgWindow) {
           window.AcgWindow.mount({
-            title: 'ACG Vault v3.2.0 · 大屏模式（手柄 / 方向键可用）',
-            minWidth: 900,
-            minHeight: 600
+            title: 'ACG Vault v3.3.0 · 大屏模式',
+            immersiveBigScreen: true,
+            minWidth: 960,
+            minHeight: 620
           });
+          isFullscreen.value = !!window.AcgWindow.isFullscreen;
+        }
+        if (window.ACGTheme && window.ACGTheme.setVolumeScale) {
+          window.ACGTheme.setVolumeScale(Math.max(0.2, (Number(settings.volume) || 0.3) / 0.3));
         }
         updateCols();
         window.addEventListener('resize', onResize);
         window.addEventListener('keydown', onKeyDown);
-        document.addEventListener('fullscreenchange', onFullscreenChange);
-        window.addEventListener('gamepadconnected', onGamepadConnected);
+        window.addEventListener('acg-fullscreen-changed', onFullscreenEvent);
+        document.addEventListener('fullscreenchange', onFullscreenEvent);
         runningTimer = setInterval(pollRunning, 2500);
         clockTimer = setInterval(tickClock, 15000);
         padRaf = requestAnimationFrame(pollPad);
@@ -1446,8 +1881,8 @@
       onBeforeUnmount(function () {
         window.removeEventListener('resize', onResize);
         window.removeEventListener('keydown', onKeyDown);
-        document.removeEventListener('fullscreenchange', onFullscreenChange);
-        window.removeEventListener('gamepadconnected', onGamepadConnected);
+        window.removeEventListener('acg-fullscreen-changed', onFullscreenEvent);
+        document.removeEventListener('fullscreenchange', onFullscreenEvent);
         if (runningTimer) clearInterval(runningTimer);
         if (clockTimer) clearInterval(clockTimer);
         if (padRaf) cancelAnimationFrame(padRaf);
@@ -1459,20 +1894,34 @@
         loadError: loadError,
         statusText: statusText,
         games: games,
+        filteredGames: filteredGames,
+        alphaGroups: alphaGroups,
+        activeAlpha: activeAlpha,
+        jumpToAlpha: jumpToAlpha,
+        searchQuery: searchQuery,
+        searchFocused: searchFocused,
+        searchInputEl: searchInputEl,
+        clearOrBlurSearch: clearOrBlurSearch,
+        blurSearchToGrid: blurSearchToGrid,
         clock: clock,
         layout: layout,
         filter: filter,
         settings: settings,
         focus: focus,
+        focusHeroBtn: focusHeroBtn,
         gridCols: gridCols,
         scroller: scroller,
+        onMainScroll: onMainScroll,
         rows: rows,
         heroGame: heroGame,
+        displayHeroGame: displayHeroGame,
+        isHeroCompact: isHeroCompact,
         currentRow: currentRow,
         runningMap: runningMap,
         magpie: magpie,
         magpiePresets: magpiePresets,
         themeResolved: themeResolved,
+        toggleThemeQuick: toggleThemeQuick,
         flip: flip,
         bgStyle: bgStyle,
         detailGame: detailGame,
@@ -1480,20 +1929,32 @@
         detailLoading: detailLoading,
         detailTextEl: detailTextEl,
         detailBgStyle: detailBgStyle,
+        detailGallery: detailGallery,
+        lightboxOpen: lightboxOpen,
+        lightboxIndex: lightboxIndex,
+        openLightbox: openLightbox,
+        closeLightbox: closeLightbox,
+        stepLightbox: stepLightbox,
         sheet: sheet,
         sheetIndex: sheetIndex,
         sheetTitle: sheetTitle,
         sheetRows: sheetRows,
         reader: reader,
         readerBody: readerBody,
+        readerTocIndex: readerTocIndex,
+        readerCheckedCount: readerCheckedCount,
+        jumpReaderToc: jumpReaderToc,
+        onReaderBodyClick: onReaderBodyClick,
         toast: toast,
         launching: launching,
         pad: pad,
+        inputStatusText: inputStatusText,
         isFullscreen: isFullscreen,
         hints: hints,
         clickHint: clickHint,
         coverUrl: coverUrl,
         thumbUrl: thumbUrl,
+        isTranslated: isTranslated,
         gameTitle: gameTitle,
         gameInitials: gameInitials,
         fmtHours: fmtHours,
@@ -1502,7 +1963,13 @@
         shortEngine: shortEngine,
         statusLabel: function (s) { return STATUS_LABELS[s] || s || '未玩'; },
         setFocus: setFocus,
-        activateCard: function (ri, ci) { setFocus(ri, ci); openDetail(rows.value[ri] && rows.value[ri].items[ci]); },
+        activateCard: function (ri, ci) {
+          setFocus(ri, ci);
+          const g = rows.value[ri] && rows.value[ri].items[ci];
+          if (!g) return;
+          if (settings.cardConfirm === 'launch') launch(g);
+          else openDetail(g);
+        },
         openDetail: openDetail,
         closeDetail: closeDetail,
         openSheet: openSheet,
@@ -1541,30 +2008,35 @@
       focused: { type: Boolean, default: false },
       running: { type: Boolean, default: false },
       tonight: { type: Boolean, default: false },
-      favLabel: { type: String, default: 'X' }
+      favLabel: { type: String, default: 'X' },
+      confirmLabel: { type: String, default: 'A' },
+      cardAction: { type: String, default: 'detail' }
     },
     setup: function (props) {
       const thumb = computed(function () { return thumbUrl(props.game); });
       const title = computed(function () { return gameTitle(props.game); });
       const initials = computed(function () { return gameInitials(props.game); });
+      const translated = computed(function () { return isTranslated(props.game); });
       const sub = computed(function () {
         const s = props.game.played_seconds || 0;
         return s > 0 ? '已玩 ' + fmtHours(s) : '尚未开始';
       });
-      return { thumb: thumb, title: title, initials: initials, sub: sub };
+      return { thumb: thumb, title: title, initials: initials, translated: translated, sub: sub };
     },
     template:
       '<article class="card" :class="{ \'is-focused\': focused, \'focused\': focused, \'tonight-card\': tonight }" ' +
       '@mouseenter="$emit(\'focus\')" @click="$emit(\'activate\')">' +
         '<div class="card-cover">' +
-          '<img v-if="thumb" :src="thumb" :alt="title" loading="lazy" draggable="false">' +
+          '<img v-if="thumb" :src="thumb" :alt="title" loading="lazy" decoding="async" draggable="false">' +
           '<div v-else class="hero-fallback">{{ initials }}</div>' +
           '<div class="card-badges" v-if="!tonight">' +
             '<span class="badge-mini live" v-if="running">● 运行中</span>' +
-            '<span class="badge-mini" v-if="game.has_translation">汉化</span>' +
+            '<span class="badge-mini emerald" v-if="translated">汉化</span>' +
             '<span class="badge-mini gold" v-if="game.user_rating">★ {{ game.user_rating }}</span>' +
           '</div>' +
-          '<div class="card-play" v-if="!tonight"><span><bs-icon name="play"></bs-icon></span></div>' +
+          '<div class="card-focus-pill" v-if="!tonight">' +
+            '<span>{{ confirmLabel }} {{ cardAction === \'launch\' ? \'立即启动\' : \'查看详情\' }}</span>' +
+          '</div>' +
           '<template v-if="tonight">' +
             '<div class="tonight-eyebrow">今晚玩什么</div>' +
             '<div class="tonight-body">' +

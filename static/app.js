@@ -1054,7 +1054,7 @@ createApp({
         drawRoundRect(48, 42, width - 96, 110, 22, 'rgba(19, 27, 46, 0.92)', 'rgba(99, 102, 241, 0.4)');
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
-        ctx.fillText('🎮 ACG Vault v3.2.0 · 个人游戏馆藏与通关总结长图', 80, 92);
+        ctx.fillText('🎮 ACG Vault v3.3.0 · 个人游戏馆藏与通关总结长图', 80, 92);
         ctx.fillStyle = '#94a3b8';
         ctx.font = '15px "Microsoft YaHei", sans-serif';
         const nowStr = new Date().toISOString().slice(0, 10);
@@ -1270,7 +1270,7 @@ createApp({
       }
     };
 
-    // ---------------------------------------------------------------- 主题与 Switch 微音效 (v3.2.0)
+    // ---------------------------------------------------------------- 主题与 Switch 微音效 (v3.3.0)
     const themeMode = ref((window.AcgTheme && window.AcgTheme.mode) || 'auto');
     const uiSfxEnabled = ref(window.AcgTheme ? Boolean(window.AcgTheme.sfx) : (localStorage.getItem('acg_ui_sfx') !== 'false'));
     const playUiSfx = (type) => {
@@ -1955,6 +1955,8 @@ createApp({
         selectedGameScreenshots.value = [];
         showSaveBackupsList.value = false;
         showSaveEditorPanel.value = false;
+        if (saveDiffModule && saveDiffModule.showSaveDiffPanel) saveDiffModule.showSaveDiffPanel.value = false;
+        if (gameOptimizerModule && gameOptimizerModule.showOptimizerPanel) gameOptimizerModule.showOptimizerPanel.value = false;
         saveEditorData.value = { supported: false, slots: [] };
         saveSlotDetail.value = null;
         isEditMode.value = false;
@@ -2593,7 +2595,7 @@ createApp({
       }
     };
 
-    const deleteSingleSessionAction = (session) => {
+    const deleteSingleSessionAction = async (session) => {
       if (!session || !playtimeTargetGame.value) return;
       const gid = playtimeTargetGame.value.id;
       const durText = formatSecondsFriendly(session.duration_seconds);
@@ -2601,30 +2603,37 @@ createApp({
       const promptTitle = isAdj ? '确定删除该条手动调整记录吗？' : '确定删除该条游玩明细记录吗？';
       const promptDesc = `该记录时长为 ${durText}。删除后将自动从游戏累计总时长中扣减对应秒数。确认继续吗？`;
 
-      confirmDialog(promptTitle, promptDesc, async () => {
-        try {
-          const res = await fetch(`/api/games/${gid}/play_sessions/${session.id}?sync_to_total=true`, {
-            method: 'DELETE'
-          });
-          const result = await res.json();
-          if (res.ok && result.success) {
-            playtimeTargetGame.value = result.data;
-            updateGameInList(result.data);
-            if (selectedGame.value && selectedGame.value.id === gid) {
-              selectedGame.value = result.data;
-              populateEditForm(result.data);
-            }
-            playtimeSessions.value = result.sessions || [];
-            fetchStats();
-            showToast('该记录已删除并已同步扣除对应时长！', 'success');
-          } else {
-            showToast(result.detail || result.error || '删除失败', 'error');
-          }
-        } catch (err) {
-          showToast('删除记录异常: ' + err, 'error');
-        }
-        nextTick(() => refreshIcons());
+      const ok = await askConfirm({
+        title: promptTitle,
+        message: promptDesc,
+        confirmText: '删除记录',
+        cancelText: '取消',
+        variant: 'danger'
       });
+      if (!ok) return;
+
+      try {
+        const res = await fetch(`/api/games/${gid}/play_sessions/${session.id}?sync_to_total=true`, {
+          method: 'DELETE'
+        });
+        const result = await res.json();
+        if (res.ok && result.success) {
+          playtimeTargetGame.value = result.data;
+          updateGameInList(result.data);
+          if (selectedGame.value && selectedGame.value.id === gid) {
+            selectedGame.value = result.data;
+            populateEditForm(result.data);
+          }
+          playtimeSessions.value = result.sessions || [];
+          fetchStats();
+          showToast('该记录已删除并已同步扣除对应时长！', 'success');
+        } else {
+          showToast(result.detail || result.error || '删除失败', 'error');
+        }
+      } catch (err) {
+        showToast('删除记录异常: ' + err, 'error');
+      }
+      nextTick(() => refreshIcons());
     };
 
     const updateGameStatus = async (status) => {
@@ -2730,57 +2739,12 @@ createApp({
         .replace(/>/g, '&gt;');
     };
 
-    // Offline Zero-Dependency Mermaid Flowchart Parser -> Visual Step Diagram HTML
+    // Delegated to modular static/modules/walkthrough-tools.js
     const compileMermaidToVisualHtml = (code) => {
-      const lines = String(code || '').split('\n').map(l => l.trim()).filter(Boolean);
-      let subgraphTitle = '剧情分支与路线流程图';
-      const nodeLabels = {};
-      const edges = [];
-
-      const parseNodeToken = (tok) => {
-        if (!tok) return '';
-        const m = tok.match(/^([A-Za-z0-9_]+)\s*(?:\[([^\]]+)\]|\(([^)]+)\)|\{([^}]+)\})?$/);
-        if (m) {
-          const id = m[1];
-          const label = (m[2] || m[3] || m[4] || '').trim();
-          if (label) nodeLabels[id] = label;
-          return nodeLabels[id] || id;
-        }
-        return tok.replace(/[\[\]{}()]/g, '').trim();
-      };
-
-      for (const line of lines) {
-        if (/^(flowchart|graph)\b/i.test(line) || line === 'end') continue;
-        const subMatch = line.match(/^subgraph\s+(.+)$/i);
-        if (subMatch) {
-          subgraphTitle = subMatch[1].trim();
-          continue;
-        }
-        const edgeMatch = line.match(/^(.+?)\s*(?:-->|---|==>)\s*(?:\|([^|]+)\|\s*)?(.+)$/);
-        if (edgeMatch) {
-          const leftRaw = edgeMatch[1].trim();
-          const cond = (edgeMatch[2] || '').trim();
-          const rightRaw = edgeMatch[3].trim();
-          const leftParts = leftRaw.split(/\s*&\s*/).map(parseNodeToken);
-          const rightParts = rightRaw.split(/\s*&\s*/).map(parseNodeToken);
-          edges.push({
-            from: leftParts.join(' + '),
-            cond,
-            to: rightParts.join(' / ')
-          });
-        }
+      if (window.AcgWalkthroughTools && window.AcgWalkthroughTools.compileMermaidToVisualHtml) {
+        return window.AcgWalkthroughTools.compileMermaidToVisualHtml(code);
       }
-
-      if (edges.length === 0) {
-        return `<pre><code>${escapeHtmlAttr(code)}</code></pre>`;
-      }
-
-      const edgeHtml = edges.map(e => {
-        const condBadge = e.cond ? `<span class="mermaid-edge-label">${escapeHtmlAttr(e.cond)}</span><span class="mermaid-arrow">→</span>` : `<span class="mermaid-arrow">⟶</span>`;
-        return `<div class="mermaid-edge-row"><span class="mermaid-node-pill">${escapeHtmlAttr(e.from)}</span>${condBadge}<span class="mermaid-node-pill">${escapeHtmlAttr(e.to)}</span></div>`;
-      }).join('');
-
-      return `<div class="mermaid-flow-container"><div class="mermaid-flow-title"><span>🗺️ ${escapeHtmlAttr(subgraphTitle)}</span></div><div class="mermaid-flow-steps">${edgeHtml}</div></div>`;
+      return `<pre><code>${escapeHtmlAttr(code)}</code></pre>`;
     };
 
     const sanitizeRenderedHtml = (html) => {
@@ -3296,14 +3260,22 @@ createApp({
         notesAutoSaveTimer = null;
         saveGameNotes(true);
       }
-      if (document.fullscreenElement) {
+      if (window.AcgWindow && window.AcgWindow.isFullscreen) {
+        window.AcgWindow.toggleFullscreen(false);
+        isBrowserFullscreen.value = false;
+      } else if (document.fullscreenElement) {
         document.exitFullscreen().catch(() => {});
       }
       showNotesFullscreen.value = false;
       refreshIcons();
     };
 
-    const toggleBrowserFullscreen = () => {
+    const toggleBrowserFullscreen = async () => {
+      if (window.AcgWindow && window.AcgWindow.toggleFullscreen) {
+        const fs = await window.AcgWindow.toggleFullscreen();
+        isBrowserFullscreen.value = Boolean(fs);
+        return;
+      }
       if (!document.fullscreenElement) {
         document.documentElement.requestFullscreen().then(() => {
           isBrowserFullscreen.value = true;
@@ -4408,9 +4380,47 @@ createApp({
       document.addEventListener('fullscreenchange', () => {
         isBrowserFullscreen.value = Boolean(document.fullscreenElement);
       });
+      window.addEventListener('acg-fullscreen-changed', (ev) => {
+        if (ev && ev.detail && ev.detail.fullscreen !== undefined) {
+          isBrowserFullscreen.value = Boolean(ev.detail.fullscreen);
+        }
+      });
+      document.addEventListener('acg-input-device-changed', (ev) => {
+        if (ev && ev.detail) {
+          activeInputDevice.value = ev.detail.activeMethod || 'kb_mouse';
+          connectedPadFamily.value = ev.detail.padFamily || 'xbox';
+        }
+      });
     });
 
+    const activeInputDevice = ref((window.AcgDeviceSense && window.AcgDeviceSense.state.activeMethod) || 'kb_mouse');
+    const connectedPadFamily = ref((window.AcgDeviceSense && window.AcgDeviceSense.state.padFamily) || 'xbox');
+
+    const saveDiffModule = (window.AcgSaveDiffModule && window.AcgSaveDiffModule.create)
+      ? window.AcgSaveDiffModule.create({
+          selectedGame,
+          selectedGameSave,
+          showToast,
+          askConfirm,
+          refreshIcons
+        })
+      : {};
+
+    const gameOptimizerModule = (window.AcgGameOptimizerModule && window.AcgGameOptimizerModule.create)
+      ? window.AcgGameOptimizerModule.create({
+          selectedGame,
+          showToast,
+          askConfirm,
+          updateGameInList,
+          refreshIcons
+        })
+      : {};
+
     return {
+      activeInputDevice,
+      connectedPadFamily,
+      ...saveDiffModule,
+      ...gameOptimizerModule,
       games,
       filteredGames,
       displayedGames,

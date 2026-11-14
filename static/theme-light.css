@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ACG Vault v3.2.0 — 正统 Nintendo Switch (Horizon OS) 日间主题
+   ACG Vault v3.3.0 — 正统 Nintendo Switch (Horizon OS) 日间主题
    核心设计规范：
      1. 画布层级：标志性哑光浅灰 #EBEBEB 主画布、#F2F2F2 次级工作区、
         纯净 #FFFFFF 游戏卡片与弹层、#DCDCDC 分割线、#2D2D2D 高对比碳黑正文。
@@ -1097,4 +1097,78 @@ html[data-theme="light"] .hover\:bg-slate-800\/80:hover,
 html[data-theme="light"] .hover\:bg-slate-800\/40:hover,
 html[data-theme="light"] .hover\:bg-slate-700:hover {
   background-color: #e8ecf2 !important;
+}
+
+
+/* ==========================================================================
+   v3.3.0 大屏常驻 Hero 舞台、实时搜索框、索引条、画廊与攻略目录日间适配
+   ========================================================================== */
+html[data-theme="light"] .bs-hero-stage {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(242, 244, 248, 0.92) 100%) !important;
+  border-bottom: 1px solid #dcdcdc !important;
+}
+html[data-theme="light"] .bs-hero-stage.is-compact {
+  background: rgba(255, 255, 255, 0.94) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06) !important;
+}
+html[data-theme="light"] .bs-search-box {
+  background: #f2f4f7 !important;
+  border-color: #dcdcdc !important;
+  color: #1f2937 !important;
+}
+html[data-theme="light"] .bs-search-box.focused {
+  background: #ffffff !important;
+  border-color: #00c3e3 !important;
+  box-shadow: 0 0 0 3px rgba(0, 195, 227, 0.22) !important;
+}
+html[data-theme="light"] .bs-search-box input {
+  color: #111827 !important;
+}
+html[data-theme="light"] .alpha-pill {
+  background: #ffffff !important;
+  border-color: #dcdcdc !important;
+  color: #4b5563 !important;
+}
+html[data-theme="light"] .alpha-pill:hover,
+html[data-theme="light"] .alpha-pill.active {
+  background: #00c3e3 !important;
+  border-color: #00a8c6 !important;
+  color: #ffffff !important;
+}
+html[data-theme="light"] .card-focus-pill {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: #00c3e3 !important;
+  color: #008ba3 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12) !important;
+}
+html[data-theme="light"] .detail-gallery-head {
+  color: #1f2937 !important;
+}
+html[data-theme="light"] .detail-gallery-item {
+  background: #ffffff !important;
+  border-color: #dcdcdc !important;
+}
+html[data-theme="light"] .detail-gallery-item:hover,
+html[data-theme="light"] .detail-gallery-item.active {
+  border-color: #00c3e3 !important;
+}
+html[data-theme="light"] .reader-toc {
+  background: #ffffff !important;
+  border-right: 1px solid #dcdcdc !important;
+  border-radius: 16px 0 0 16px;
+  margin-top: 1rem;
+  margin-bottom: 1.5rem;
+}
+html[data-theme="light"] .reader-toc-item {
+  color: #374151 !important;
+}
+html[data-theme="light"] .reader-toc-item:hover,
+html[data-theme="light"] .reader-toc-item.active {
+  background: rgba(0, 195, 227, 0.14) !important;
+  border-color: #00c3e3 !important;
+  color: #008ba3 !important;
+}
+html[data-theme="light"] .btn.is-btn-focused {
+  border-color: #00c3e3 !important;
+  box-shadow: 0 0 0 3px #00c3e3, 0 8px 20px rgba(0, 195, 227, 0.28) !important;
 }

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ACG Vault v3.2.0 Native Desktop Wrapper, In-Game Companion Overlay & System Tray Daemon.
+ACG Vault v3.3.0 Native Desktop Wrapper, In-Game Companion Overlay & System Tray Daemon.
 Provides:
 1. Standalone Native Desktop Window via PyWebView (with automatic Edge/Chrome --app mode fallback)
 2. Always-on-Top In-Game Companion Overlay Window (default Alt+G) with Win32 Click-Through HUD mode (Alt+T)
@@ -131,7 +131,7 @@ UNLOCK_WINDOW_TITLE = "ACG Vault 穿透解锁条"
 
 
 # ---------------------------------------------------------
-# Window geometry persistence & frameless window bridge (v3.2.0)
+# Window geometry persistence & frameless window bridge (v3.3.0)
 # ---------------------------------------------------------
 def log_desktop_error(message: str) -> None:
     """把窗口层/前端桥的异常落盘，方便出问题时直接看 data/desktop_error.log。"""
@@ -201,6 +201,9 @@ class WindowBridge:
         self._hwnd_cache = 0
         self._creation_size = None
         self._requested_size = None
+        self._fullscreen = False
+        self._pre_fs_box = None
+        self._pre_fs_maximized = False
 
     def _bind(self, window, frameless: bool, maximized: bool = False, title: str = "",
               size=None, prefix: str = "") -> None:
@@ -344,6 +347,7 @@ class WindowBridge:
             "role": self._role,
             "frameless": self._frameless,
             "maximized": self._is_zoomed(),
+            "fullscreen": bool(self._fullscreen),
             "x": x, "y": y, "width": width, "height": height,
         }
 
@@ -408,10 +412,117 @@ class WindowBridge:
         except Exception:
             return False
 
+    def _get_monitor_rect(self, hwnd: int):
+        """Returns (left, top, width, height) of the physical monitor containing hwnd."""
+        if not IS_WINDOWS or not hwnd:
+            return None
+        try:
+            from ctypes import wintypes
+
+            class _MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            u = ctypes.windll.user32
+            MONITOR_DEFAULTTONEAREST = 2
+            hmon = u.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+            if not hmon:
+                return None
+            mi = _MONITORINFO()
+            mi.cbSize = ctypes.sizeof(_MONITORINFO)
+            if u.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                mx = int(mi.rcMonitor.left)
+                my = int(mi.rcMonitor.top)
+                mw = int(mi.rcMonitor.right - mi.rcMonitor.left)
+                mh = int(mi.rcMonitor.bottom - mi.rcMonitor.top)
+                if mw >= 640 and mh >= 480:
+                    return (mx, my, mw, mh)
+        except Exception as e:
+            log_desktop_error(f"_get_monitor_rect failed: {e}")
+        return None
+
+    @_safe_api
+    def win_set_fullscreen(self, enable=None):
+        """
+        True borderless monitor fullscreen for PyWebView WinForms + WebView2:
+        Expands both WinForms host and WebView2 viewport across the full monitor rect (covering taskbar),
+        and cleanly restores prior window bounds or maximized state upon exit.
+        """
+        if self._window is None:
+            return {"ok": False, "fullscreen": False}
+        target = (not self._fullscreen) if enable is None else bool(enable)
+        if target == self._fullscreen:
+            return {"ok": True, "fullscreen": self._fullscreen, "maximized": self._is_zoomed()}
+
+        hwnd = self._hwnd()
+        try:
+            if target:
+                self._pre_fs_maximized = self._is_zoomed()
+                if self._pre_fs_maximized and self._restore_box:
+                    self._pre_fs_box = self._restore_box
+                else:
+                    px, py = self._position()
+                    _, _, sw, sh = self._geom()
+                    self._pre_fs_box = (px, py, sw, sh)
+
+                if hwnd and IS_WINDOWS:
+                    u = ctypes.windll.user32
+                    if u.IsZoomed(hwnd):
+                        u.ShowWindow(hwnd, 9)  # SW_RESTORE so WinForms accepts full monitor bounds
+                        time.sleep(0.03)
+                    mon = self._get_monitor_rect(hwnd)
+                    if mon:
+                        mx, my, mw, mh = mon
+                    else:
+                        mx, my = 0, 0
+                        mw = int(u.GetSystemMetrics(0) or 1920)
+                        mh = int(u.GetSystemMetrics(1) or 1080)
+                    fw, fh = self._frame_delta(hwnd)
+                    self._window.move(mx, my)
+                    self._window.resize(int(round(mw + fw)), int(round(mh + fh)))
+                    SWP_NOZORDER = 0x0004
+                    SWP_FRAMECHANGED = 0x0020
+                    u.SetWindowPos(hwnd, 0, mx, my, mw, mh, SWP_NOZORDER | SWP_FRAMECHANGED)
+                    _force_relayout(hwnd)
+                else:
+                    self._window.toggle_fullscreen()
+                self._fullscreen = True
+                self._maximized = False
+            else:
+                self._fullscreen = False
+                if hwnd and IS_WINDOWS:
+                    if self._pre_fs_maximized:
+                        self.apply_maximized(True)
+                    else:
+                        box = self._pre_fs_box or self._restore_box or (80, 60, 1460, 920)
+                        self.win_set_bounds(box[0], box[1], box[2], box[3])
+                    _force_relayout(hwnd)
+                else:
+                    self._window.toggle_fullscreen()
+            return {
+                "ok": True,
+                "fullscreen": self._fullscreen,
+                "maximized": self._is_zoomed()
+            }
+        except Exception as e:
+            log_desktop_error(f"win_set_fullscreen failed: {e}")
+            return {"ok": False, "fullscreen": self._fullscreen, "error": str(e)}
+
+    @_safe_api
+    def win_toggle_fullscreen(self):
+        return self.win_set_fullscreen(None)
+
     @_safe_api
     def win_toggle_maximize(self):
         if self._window is None:
             return False
+        if self._fullscreen:
+            self.win_set_fullscreen(False)
+            return self._maximized
         if self._is_zoomed():
             self.apply_maximized(False)
             box = self._restore_box
@@ -703,15 +814,37 @@ def get_overlay_state() -> Dict[str, Any]:
     }
 
 
-def _notify_overlay_page() -> None:
-    """把穿透/透明度状态推给伴侣窗页面（热键改状态时避免 UI 滞后）。"""
+def _notify_overlay_page(visible: Optional[bool] = None) -> None:
+    """把穿透/透明度及显隐状态推给伴侣窗页面（隐藏时停止后台轮询，热键改状态时避免 UI 滞后）。"""
     w = _overlay_window
     if w is None:
         return
     try:
+        if visible is not None:
+            vis_js = "true" if visible else "false"
+            w.evaluate_js(f"window.__acgSetOverlayVisible && window.__acgSetOverlayVisible({vis_js})")
         w.evaluate_js("window.__acgSyncOverlay && window.__acgSyncOverlay()")
     except Exception:
         pass
+
+
+def toggle_main_fullscreen(enable: Optional[bool] = None) -> Dict[str, Any]:
+    """Module-level bridge allowing FastAPI /api/window/fullscreen to toggle native fullscreen."""
+    api = globals().get("_main_api")
+    if api is not None:
+        res = api.win_set_fullscreen(enable)
+        if isinstance(res, dict):
+            return res
+    return {"ok": False, "fullscreen": False, "message": "当前非原生桌面窗口模式"}
+
+
+def get_main_window_state() -> Dict[str, Any]:
+    api = globals().get("_main_api")
+    if api is not None:
+        res = api.win_get_state()
+        if isinstance(res, dict):
+            return res
+    return {"ok": False, "frameless": False, "maximized": False, "fullscreen": False}
 
 
 def _force_relayout(hwnd: int) -> None:
@@ -1217,11 +1350,13 @@ def show_or_toggle_overlay_window(port: int, toggle: bool = True, game_id: Optio
                         _overlay_api.win_save_bounds()
                     _overlay_window.hide()
                     _overlay_window._is_visible = False
+                    _notify_overlay_page(False)
                     return True
 
             _overlay_window.show()
             _overlay_window.restore()
             _overlay_window._is_visible = True
+            _notify_overlay_page(True)
             if _overlay_api is not None:
                 ob = _bounds_cfg("overlay_bounds")
                 _overlay_api.win_set_bounds(
@@ -1618,6 +1753,7 @@ def run_desktop_app():
                 overlay_api.win_save_bounds()
                 overlay_win.hide()
                 overlay_win._is_visible = False
+                _notify_overlay_page(False)
                 return True
 
             overlay_api._on_close = request_overlay_close
@@ -1629,6 +1765,7 @@ def run_desktop_app():
                     set_overlay_click_through(False)
                     overlay_win.hide()
                     overlay_win._is_visible = False
+                    _notify_overlay_page(False)
                     return False
                 return True
 

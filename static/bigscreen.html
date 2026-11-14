@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <title>ACG Vault v3.2.0 · 大屏模式</title>
+  <title>ACG Vault v3.3.0 · 大屏模式</title>
   <style>[v-cloak]{display:none !important;}</style>
-  <link rel="stylesheet" href="/static/style.css?v=3.2">
-  <link rel="stylesheet" href="/static/bigscreen.css?v=3.2">
+  <link rel="stylesheet" href="/static/style.css?v=3.3">
+  <link rel="stylesheet" href="/static/bigscreen.css?v=3.3">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
@@ -24,15 +24,16 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.2">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.2">
-  <script src="/static/theme.js?v=3.2"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.3">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.3">
+  <script src="/static/theme.js?v=3.3"></script>
+  <script src="/static/modules/device-sense.js?v=3.3"></script>
 </head>
 <body>
 <div id="app" class="bs-root" v-cloak>
 
   <!-- ============================ ambient backdrop ============================ -->
-  <div class="bs-backdrop">
+  <div class="bs-backdrop" :data-bg-level="settings.bg">
     <div class="bg-layer" :class="{ show: flip === 0 }" :style="bgStyle[0]"></div>
     <div class="bg-layer" :class="{ show: flip === 1 }" :style="bgStyle[1]"></div>
     <div class="bg-veil"></div>
@@ -52,25 +53,43 @@
         <div class="bs-mark"><bs-icon name="gamepad" size="22"></bs-icon></div>
         <div class="bs-brand-text">
           <h1 class="brand-title">ACG VAULT</h1>
-          <p>BIG SCREEN v3.2.0 · {{ games.length }} TITLES</p>
+          <p>BIG SCREEN v3.3.0 · {{ filteredGames.length }} / {{ games.length }} TITLES</p>
         </div>
       </div>
 
-      <div class="bs-top-right">
-        <div class="bs-pill" :class="pad.connected ? 'on' : 'off'" :title="pad.id || '未检测到手柄'">
+      <!-- 实时检索栏（支持 / 快捷键或手柄呼出） -->
+      <div class="bs-search-box no-drag" :class="{ focused: searchFocused || !!searchQuery }">
+        <bs-icon name="search" size="15"></bs-icon>
+        <input
+          ref="searchInputEl"
+          v-model.trim="searchQuery"
+          type="text"
+          placeholder="搜索标题 / RJ号 / 社团 / 标签 (按 / 聚焦)…"
+          @focus="searchFocused = true"
+          @blur="searchFocused = false"
+          @keydown.esc.stop="clearOrBlurSearch"
+          @keydown.enter.stop="blurSearchToGrid">
+        <button v-if="searchQuery" class="search-clear" @click="searchQuery = ''" title="清空搜索">✕</button>
+      </div>
+
+      <div class="bs-top-right no-drag">
+        <div class="bs-pill" :class="pad.connected ? 'on' : 'off'" :title="pad.id || '支持手柄与键鼠无缝自动切换'">
           <bs-icon name="gamepad"></bs-icon>
-          <span>{{ pad.connected ? (pad.family === 'ps' ? 'PlayStation' : 'Xbox') + ' 手柄已连接' : '未连接手柄 · 可用键盘' }}</span>
+          <span>{{ inputStatusText }}</span>
           <span class="dot" v-if="pad.connected"></span>
         </div>
         <div class="bs-pill" v-if="Object.keys(runningMap).length">
           <span class="dot"></span>
           <span>{{ Object.keys(runningMap).length }} 款运行中</span>
         </div>
-        <button class="bs-pill" @click="toggleFullscreen" title="切换全屏">
+        <button class="bs-pill" @click="toggleThemeQuick" title="切换夜间 / Switch 日间主题">
+          <span>{{ themeResolved === 'light' ? '☀ 日间' : '🌙 夜间' }}</span>
+        </button>
+        <button class="bs-pill" @click="toggleFullscreen" title="切换全屏 (F11)">
           <bs-icon name="monitor"></bs-icon>
           <span>{{ isFullscreen ? '退出全屏' : '全屏' }}</span>
         </button>
-        <button class="bs-pill exit" @click="exitHome" title="退出大屏模式，返回主界面">
+        <button class="bs-pill exit" @click="exitHome" title="退出大屏模式，返回桌面主界面">
           <bs-icon name="x"></bs-icon>
           <span>退出大屏</span>
         </button>
@@ -78,65 +97,103 @@
       </div>
     </header>
 
-    <main class="bs-scroll" ref="scroller">
-      <!-- ================================ hero ================================ -->
-      <section class="bs-hero" v-if="heroGame">
-        <div class="hero-cover">
-          <img v-if="coverUrl(heroGame)" :src="coverUrl(heroGame)" :alt="gameTitle(heroGame)" draggable="false">
-          <div v-else class="hero-fallback">{{ gameInitials(heroGame) }}</div>
+    <!-- =================== 常驻 / 智能折叠双态 Hero 巨幕舞台 =================== -->
+    <section
+      class="bs-hero-stage"
+      v-if="displayHeroGame"
+      :class="{
+        'is-compact': isHeroCompact,
+        'hero-zone-focused': focus.zone === 'hero'
+      }">
+      <div class="bs-hero">
+        <div class="hero-cover" @click="openDetail(displayHeroGame)">
+          <img v-if="coverUrl(displayHeroGame)" :src="coverUrl(displayHeroGame)" :alt="gameTitle(displayHeroGame)" draggable="false">
+          <div v-else class="hero-fallback">{{ gameInitials(displayHeroGame) }}</div>
         </div>
         <div class="hero-body">
           <div class="hero-kicker">
-            <span class="hero-live" v-if="runningMap[heroGame.id]">
-              <span class="pulse"></span>{{ runningMap[heroGame.id].phase === 'attaching' ? '注入中' : '运行中' }}
+            <span class="hero-live" v-if="runningMap[displayHeroGame.id]">
+              <span class="pulse"></span>{{ runningMap[displayHeroGame.id].phase === 'attaching' ? '注入中' : '运行中' }}
             </span>
-            <span>{{ heroGame.circle_name || '未知社团' }}</span>
+            <span>{{ displayHeroGame.circle_name || '未知社团' }}</span>
             <span class="sep"></span>
-            <span>{{ heroGame.release_date || '未知发售日' }}</span>
+            <span>{{ displayHeroGame.release_date || '未知发售日' }}</span>
             <span class="sep"></span>
-            <span>{{ heroGame.rj_code || '—' }}</span>
+            <span>{{ displayHeroGame.rj_code || '—' }}</span>
+            <template v-if="displayHeroGame.folder_size_str">
+              <span class="sep"></span>
+              <span>{{ displayHeroGame.folder_size_str }}</span>
+            </template>
           </div>
 
-          <h1 class="hero-title">{{ gameTitle(heroGame) }}</h1>
-          <p class="hero-sub" v-if="heroGame.original_title && heroGame.original_title !== gameTitle(heroGame)">
-            {{ heroGame.original_title }}
-          </p>
+          <div class="hero-title-row">
+            <h1 class="hero-title">{{ gameTitle(displayHeroGame) }}</h1>
+            <p class="hero-sub" v-if="!isHeroCompact && displayHeroGame.original_title && displayHeroGame.original_title !== gameTitle(displayHeroGame)">
+              {{ displayHeroGame.original_title }}
+            </p>
+          </div>
 
           <div class="hero-chips">
-            <span class="chip accent" v-if="heroGame.engine_type">{{ shortEngine(heroGame.engine_type) }}</span>
-            <span class="chip emerald" v-if="heroGame.has_translation">汉化</span>
-            <span class="chip">{{ statusLabel(heroGame.play_status) }}</span>
-            <span class="chip" v-if="heroGame.played_seconds">
-              <bs-icon name="clock"></bs-icon>{{ fmtHours(heroGame.played_seconds) }}
+            <span class="chip accent" v-if="displayHeroGame.engine_type">{{ shortEngine(displayHeroGame.engine_type) }}</span>
+            <span class="chip emerald" v-if="isTranslated(displayHeroGame)">汉化</span>
+            <span class="chip">{{ statusLabel(displayHeroGame.play_status) }}</span>
+            <span class="chip" v-if="displayHeroGame.played_seconds">
+              <bs-icon name="clock"></bs-icon>{{ fmtHours(displayHeroGame.played_seconds) }}
             </span>
-            <span class="chip gold" v-if="heroGame.user_rating">
-              <bs-icon name="star"></bs-icon>{{ heroGame.user_rating }}/5
+            <span class="chip gold" v-if="displayHeroGame.user_rating">
+              <bs-icon name="star"></bs-icon>{{ displayHeroGame.user_rating }}/5
             </span>
-            <span class="chip pink" v-if="heroGame.is_favorite">已收藏</span>
-            <span class="chip" v-for="t in parseTags(heroGame).slice(0, 4)" :key="'ht-' + t">{{ t }}</span>
+            <span class="chip pink" v-if="displayHeroGame.is_favorite">已收藏</span>
+            <span class="chip" v-for="t in parseTags(displayHeroGame).slice(0, isHeroCompact ? 3 : 5)" :key="'ht-' + t">{{ t }}</span>
           </div>
 
-          <p class="hero-synopsis">{{ heroGame.synopsis || '暂无简介，按 A 进入详情查看完整资料。' }}</p>
+          <p class="hero-synopsis">{{ displayHeroGame.synopsis || '暂无简介，按 ' + pad.confirm + ' 进入详情查看完整资料与预览画廊。' }}</p>
 
           <div class="hero-actions">
-            <button class="btn primary" @click="launch(heroGame)">
+            <button
+              class="btn primary"
+              :class="{ 'is-btn-focused': focus.zone === 'hero' && focus.heroBtn === 0 }"
+              @mouseenter="focusHeroBtn(0)"
+              @click="launch(displayHeroGame)">
               <bs-icon name="play"></bs-icon>
-              <span>{{ launchButtonLabel(heroGame) }}</span>
+              <span>{{ launchButtonLabel(displayHeroGame) }}</span>
             </button>
-            <button class="btn" @click="openDetail(heroGame)">
-              <bs-icon name="info"></bs-icon><span>详情</span>
+            <button
+              class="btn"
+              :class="{ 'is-btn-focused': focus.zone === 'hero' && focus.heroBtn === 1 }"
+              @mouseenter="focusHeroBtn(1)"
+              @click="openDetail(displayHeroGame)">
+              <bs-icon name="info"></bs-icon><span>详情与画廊</span>
             </button>
-            <button class="btn" @click="toggleFavorite(heroGame)">
+            <button
+              v-if="displayHeroGame.has_walkthrough"
+              class="btn"
+              :class="{ 'is-btn-focused': focus.zone === 'hero' && focus.heroBtn === 2 }"
+              @mouseenter="focusHeroBtn(2)"
+              @click="openReader(displayHeroGame)">
+              <bs-icon name="book"></bs-icon><span>全结局攻略</span>
+            </button>
+            <button
+              class="btn"
+              :class="{ 'is-btn-focused': focus.zone === 'hero' && focus.heroBtn === (displayHeroGame.has_walkthrough ? 3 : 2) }"
+              @mouseenter="focusHeroBtn(displayHeroGame.has_walkthrough ? 3 : 2)"
+              @click="toggleFavorite(displayHeroGame)">
               <bs-icon name="heart"></bs-icon>
-              <span>{{ heroGame.is_favorite ? '取消收藏' : '收藏' }}</span>
+              <span>{{ displayHeroGame.is_favorite ? '取消收藏' : '收藏' }}</span>
             </button>
-            <button class="btn" @click="openSheet('actions')">
+            <button
+              class="btn"
+              :class="{ 'is-btn-focused': focus.zone === 'hero' && focus.heroBtn === (displayHeroGame.has_walkthrough ? 4 : 3) }"
+              @mouseenter="focusHeroBtn(displayHeroGame.has_walkthrough ? 4 : 3)"
+              @click="openSheet('actions')">
               <bs-icon name="more"></bs-icon><span>更多操作</span>
             </button>
           </div>
         </div>
-      </section>
+      </div>
+    </section>
 
+    <main class="bs-scroll" ref="scroller" @scroll.passive="onMainScroll">
       <!-- ================================ rows ================================ -->
       <template v-for="(row, ri) in rows" :key="row.key">
         <section class="bs-rail" v-if="row.type === 'rail'">
@@ -144,17 +201,20 @@
             <bs-icon :name="row.icon"></bs-icon>
             <h2>{{ row.title }}</h2>
             <span class="rail-count">{{ row.items.length }}</span>
-            <span class="rail-extra" v-if="row.special === 'tonight'">X 换一个 · 只从还没通关的作品里抽</span>
+            <span class="rail-extra" v-if="row.special === 'tonight'">{{ pad.fav }} 换一个 · 只从还没通关的作品里抽</span>
+            <span class="rail-extra" v-else-if="ri === 0">在首行按 ↑ 可聚焦顶部操作栏</span>
           </header>
           <div class="rail-track">
             <game-card
               v-for="(g, ci) in row.items"
               :key="'r' + ri + '-' + g.id"
               :game="g"
-              :focused="focus.row === ri && focus.col === ci"
+              :focused="focus.zone === 'grid' && focus.row === ri && focus.col === ci"
               :running="!!runningMap[g.id]"
               :tonight="row.special === 'tonight'"
               :fav-label="pad.fav"
+              :confirm-label="pad.confirm"
+              :card-action="settings.cardConfirm"
               @focus="setFocus(ri, ci)"
               @activate="activateCard(ri, ci)">
             </game-card>
@@ -166,15 +226,29 @@
             <bs-icon :name="row.icon"></bs-icon>
             <h2>{{ row.title }}</h2>
             <span class="rail-count">{{ row.items.length }}</span>
-            <span class="rail-extra">Back 切换为纯网格</span>
+            <!-- 首字母 / 快速定位索引条 -->
+            <div class="bs-alpha-bar" v-if="alphaGroups.length > 1">
+              <button
+                v-for="ag in alphaGroups"
+                :key="'ag-' + ag.letter"
+                class="alpha-pill"
+                :class="{ active: activeAlpha === ag.letter }"
+                @click="jumpToAlpha(ri, ag.index, ag.letter)">
+                {{ ag.letter }}
+              </button>
+            </div>
+            <span class="rail-extra">{{ pad.back }} 切换纯网格</span>
           </header>
           <div class="bs-grid" :style="{ '--cols': gridCols }">
             <game-card
               v-for="(g, ci) in row.items"
               :key="'g-' + g.id"
               :game="g"
-              :focused="focus.row === ri && focus.col === ci"
+              :focused="focus.zone === 'grid' && focus.row === ri && focus.col === ci"
               :running="!!runningMap[g.id]"
+              :fav-label="pad.fav"
+              :confirm-label="pad.confirm"
+              :card-action="settings.cardConfirm"
               @focus="setFocus(ri, ci)"
               @activate="activateCard(ri, ci)">
             </game-card>
@@ -183,7 +257,7 @@
       </template>
 
       <div class="bs-empty" v-if="!rows.length && !loadError">
-        当前筛选条件下没有作品，按 <span class="key">{{ pad.start }}</span> 调整筛选。
+        当前筛选或搜索条件下没有匹配的作品，按 <span class="key">{{ pad.start }}</span> 调整筛选或清空搜索词。
       </div>
       <div class="bs-empty" v-if="loadError">
         游戏库加载失败：{{ loadError }}<br>
@@ -225,6 +299,9 @@
         <button class="btn" v-if="detailGame.has_walkthrough" @click="openReader(detailGame)">
           <bs-icon name="book"></bs-icon><span>阅读全结局攻略</span>
         </button>
+        <button class="btn" @click="toggleFavorite(detailGame)">
+          <bs-icon name="heart"></bs-icon><span>{{ detailGame.is_favorite ? '已收藏 ★' : '加入收藏' }}</span>
+        </button>
       </div>
 
       <div class="detail-main">
@@ -240,7 +317,7 @@
         <h1 class="detail-title">{{ gameTitle(detailGame) }}</h1>
         <div class="hero-chips">
           <span class="chip accent" v-if="detailGame.engine_type">{{ shortEngine(detailGame.engine_type) }}</span>
-          <span class="chip emerald" v-if="detailGame.has_translation">汉化</span>
+          <span class="chip emerald" v-if="isTranslated(detailGame)">汉化</span>
           <span class="chip">{{ statusLabel(detailGame.play_status) }}</span>
           <span class="chip" v-if="detailGame.played_seconds"><bs-icon name="clock"></bs-icon>{{ fmtHours(detailGame.played_seconds) }}</span>
           <span class="chip gold" v-if="detailGame.user_rating"><bs-icon name="star"></bs-icon>{{ detailGame.user_rating }}/5</span>
@@ -249,7 +326,7 @@
         </div>
 
         <div class="detail-text" ref="detailTextEl">
-          <p v-if="detailLoading" style="color:#64748b">正在读取完整资料…</p>
+          <p v-if="detailLoading" style="color:#64748b">正在读取完整资料与预览图集…</p>
           <template v-else>
             <p>{{ detailGame.synopsis || '暂无简介。' }}</p>
             <p v-if="voiceActors(detailGame)" style="color:#8593ae;font-size:0.78rem">
@@ -261,9 +338,30 @@
           </template>
         </div>
 
+        <!-- 预览 CG 与游戏内截图横向画廊 -->
+        <div class="detail-gallery-section" v-if="detailGallery.length">
+          <div class="detail-gallery-head">
+            <span>预览 CG 与游戏截图 ({{ detailGallery.length }})</span>
+            <span class="detail-gallery-tip">按 {{ pad.lb }} / {{ pad.rb }} 或点击放大预览</span>
+          </div>
+          <div class="detail-gallery-track">
+            <div
+              v-for="(imgUrl, gi) in detailGallery"
+              :key="'dg-' + gi"
+              class="detail-gallery-item"
+              :class="{ active: lightboxIndex === gi }"
+              @click="openLightbox(gi)">
+              <img :src="imgUrl" loading="lazy" decoding="async" draggable="false">
+            </div>
+          </div>
+        </div>
+
         <div class="detail-actions">
           <button class="btn" @click="openSheet('actions')">
             <bs-icon name="settings"></bs-icon><span>启动方式 / 评分 / 状态</span>
+          </button>
+          <button class="btn" v-if="detailGallery.length" @click="openLightbox(0)">
+            <bs-icon name="monitor"></bs-icon><span>全屏赏析预览图</span>
           </button>
           <span class="hint" style="margin-left:0.4rem">
             <span class="key a">{{ pad.confirm }}</span>启动
@@ -277,6 +375,20 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ============================ CG Lightbox ============================ -->
+  <div class="bs-lightbox" v-if="lightboxOpen && detailGallery.length" @click.self="closeLightbox">
+    <button class="lightbox-nav prev" @click="stepLightbox(-1)" title="上一张">‹</button>
+    <div class="lightbox-stage">
+      <img :src="detailGallery[lightboxIndex]" draggable="false">
+      <div class="lightbox-caption">
+        <span>{{ gameTitle(detailGame) }} · 预览图 {{ lightboxIndex + 1 }} / {{ detailGallery.length }}</span>
+        <span>← / → 或 {{ pad.lb }} / {{ pad.rb }} 切换 · {{ pad.cancel }} 关闭</span>
+      </div>
+    </div>
+    <button class="lightbox-nav next" @click="stepLightbox(1)" title="下一张">›</button>
+    <button class="lightbox-close" @click="closeLightbox">✕ 关闭</button>
   </div>
 
   <!-- ================================= sheet ================================ -->
@@ -312,7 +424,7 @@
                 {{ opt[1] }}
               </button>
             </template>
-            <span v-else class="sheet-action">{{ row.hint || '按 A 执行' }}</span>
+            <span v-else class="sheet-action">{{ row.hint || ('按 ' + pad.confirm + ' 执行') }}</span>
           </div>
         </div>
       </div>
@@ -321,7 +433,7 @@
         <span>↑↓ 选择</span><span>←→ 调整</span>
         <span><span class="key a">{{ pad.confirm }}</span> 确认</span>
         <span><span class="key b">{{ pad.cancel }}</span> 关闭</span>
-        <span>LB / RB 切换面板</span>
+        <span>{{ pad.lb }} / {{ pad.rb }} 切换面板</span>
       </div>
     </div>
   </div>
@@ -332,20 +444,41 @@
       <bs-icon name="book"></bs-icon>
       <h2>{{ reader.title }}</h2>
       <span class="reader-meta">{{ reader.meta }}</span>
+      <span class="reader-meta" v-if="reader.checklists && reader.checklists.length" style="color:#34d399">
+        进度：{{ readerCheckedCount }} / {{ reader.checklists.length }} (可点击或按 {{ pad.fav }} 勾选)
+      </span>
       <span class="reader-close" @click="closeReader" title="返回大屏">
         <span class="key b">{{ pad.cancel }}</span> 返回
       </span>
     </header>
-    <div class="reader-body notes-markdown-body" ref="readerBody" v-html="reader.html"></div>
+    <div class="reader-workspace">
+      <aside class="reader-toc" v-if="reader.toc && reader.toc.length">
+        <div class="reader-toc-title">章节目录 ({{ pad.lb }}/{{ pad.rb }})</div>
+        <button
+          v-for="(item, ti) in reader.toc"
+          :key="'toc-' + ti"
+          class="reader-toc-item"
+          :class="['lv-' + item.level, { active: readerTocIndex === ti }]"
+          @click="jumpReaderToc(ti)">
+          {{ item.text }}
+        </button>
+      </aside>
+      <div
+        class="reader-body notes-markdown-body"
+        ref="readerBody"
+        @click="onReaderBodyClick"
+        v-html="reader.html">
+      </div>
+    </div>
   </div>
 
   <!-- ================================= toast ================================ -->
   <div class="bs-toast" v-if="toast" :class="toast.type">{{ toast.text }}</div>
 </div>
 
-<script src="/static/vendor/vue.global.prod.js?v=3.2"></script>
-<script src="/static/vendor/marked.min.js?v=3.2"></script>
-<script src="/static/windowbar.js?v=3.2"></script>
-<script src="/static/bigscreen.js?v=3.2"></script>
+<script src="/static/vendor/vue.global.prod.js?v=3.3"></script>
+<script src="/static/vendor/marked.min.js?v=3.3"></script>
+<script src="/static/windowbar.js?v=3.3"></script>
+<script src="/static/bigscreen.js?v=3.3"></script>
 </body>
 </html>

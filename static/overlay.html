@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ACG Vault 伴侣悬浮窗 (Alt+G)</title>
-  <script src="/static/vendor/tailwindcss.js?v=3.2"></script>
-  <script src="/static/vendor/vue.global.prod.js?v=3.2"></script>
-  <script src="/static/vendor/marked.min.js?v=3.2"></script>
-  <link rel="stylesheet" href="/static/style.css?v=3.2">
+  <script src="/static/vendor/tailwindcss.js?v=3.3"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=3.3"></script>
+  <script src="/static/vendor/marked.min.js?v=3.3"></script>
+  <link rel="stylesheet" href="/static/style.css?v=3.3">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
@@ -24,9 +24,9 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.2">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.2">
-  <script src="/static/theme.js?v=3.2"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.3">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.3">
+  <script src="/static/theme.js?v=3.3"></script>
   <style>
     html, body {
       height: 100%;
@@ -900,9 +900,20 @@
           syncOverlayState();
           window.__acgSyncOverlay = syncOverlayState;
           window.addEventListener('resize', scheduleReportUnlockChip);
-          setInterval(syncOverlayState, 1200);
+          let overlayHostVisible = true;
+          window.__acgSetOverlayVisible = (vis) => {
+            overlayHostVisible = Boolean(vis);
+            if (overlayHostVisible) {
+              syncOverlayState();
+              loadOverlayContext(selectedGameId.value, true);
+            }
+          };
           setInterval(() => {
-            if (!document.hidden && activeTab.value !== 'memo') {
+            if (!overlayHostVisible && document.hidden) return;
+            syncOverlayState();
+          }, 1500);
+          setInterval(() => {
+            if (overlayHostVisible && !document.hidden && activeTab.value !== 'memo') {
               loadOverlayContext(selectedGameId.value, true);
             }
           }, 8000);
@@ -920,7 +931,7 @@
       }
     }).mount('#overlay-app');
   </script>
-  <script src="/static/windowbar.js?v=3.2"></script>
+  <script src="/static/windowbar.js?v=3.3"></script>
   <script>
     if (window.AcgWindow) {
       window.AcgWindow.mount({

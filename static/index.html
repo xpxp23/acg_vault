@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>ACG Game Vault v3.2.1 - 本地游戏资产、大屏模式、AI攻略与数据馆藏中心</title>
+  <title>ACG Game Vault v3.3.0 - 本地游戏资产、大屏模式、AI攻略与数据馆藏中心</title>
 
   <!-- Global Diagnostic & Error Interceptor -->
   <script>
@@ -68,11 +68,11 @@
     };
   </script>
   <!-- Local Vendor Libraries (100% Offline, Zero External CDN) -->
-  <script src="/static/vendor/tailwindcss.js?v=3.2"></script>
-  <script src="/static/vendor/vue.global.prod.js?v=3.2"></script>
-  <script src="/static/vendor/lucide.min.js?v=3.2"></script>
-  <script src="/static/vendor/marked.min.js?v=3.2"></script>
-  <link rel="stylesheet" href="/static/style.css?v=3.2">
+  <script src="/static/vendor/tailwindcss.js?v=3.3"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=3.3"></script>
+  <script src="/static/vendor/lucide.min.js?v=3.3"></script>
+  <script src="/static/vendor/marked.min.js?v=3.3"></script>
+  <link rel="stylesheet" href="/static/style.css?v=3.3">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
@@ -85,9 +85,9 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.2">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.2">
-  <script src="/static/theme.js?v=3.2"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.3">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.3">
+  <script src="/static/theme.js?v=3.3"></script>
 </head>
 <body class="bg-[#070a12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
   <!-- Boot / Crash Emergency Fallback Banner -->
@@ -240,7 +240,7 @@
           <div>
             <div class="flex items-center space-x-2">
               <h1 class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-indigo-300 bg-clip-text text-transparent">ACG Vault</h1>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v3.2.1</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v3.3.0</span>
             </div>
             <p class="text-[11px] text-slate-400 font-medium">本地 ACG 资产、AI 攻略与馆藏中心</p>
           </div>
@@ -2467,6 +2467,30 @@
 
                   <div class="flex flex-wrap items-center gap-1.5">
                     <button
+                      @click="openSaveDiffPanel(selectedGame)"
+                      :class="[
+                        'px-2.5 py-1.5 rounded-xl border font-semibold flex items-center space-x-1 transition-all cursor-pointer',
+                        showSaveDiffPanel ? 'bg-cyan-500 text-black border-cyan-300 shadow-lg shadow-cyan-500/25' : 'bg-cyan-500/15 border-cyan-500/40 hover:bg-cyan-500 text-cyan-200 hover:text-black'
+                      ]"
+                      title="可视化对比本地实时存档、历史快照与 WebDAV 云端存档的金钱/等级/变量/回想开关差异，并支持多策略冲突仲裁与按槽位合并"
+                    >
+                      <i data-lucide="git-compare" class="w-3.5 h-3.5"></i>
+                      <span>⚖️ 存档对比与冲突仲裁</span>
+                    </button>
+
+                    <button
+                      @click="toggleOptimizerPanel(selectedGame)"
+                      :class="[
+                        'px-2.5 py-1.5 rounded-xl border font-semibold flex items-center space-x-1 transition-all cursor-pointer',
+                        showOptimizerPanel ? 'bg-emerald-500 text-black border-emerald-300 shadow-lg shadow-emerald-500/25' : 'bg-emerald-500/15 border-emerald-500/40 hover:bg-emerald-500 text-emerald-200 hover:text-black'
+                      ]"
+                      title="RPG Maker MV/MZ 与 Unity 内建高刷帧率解锁 (120/144Hz)、4倍快进加速、无损立绘压缩与冗余调试垃圾清理工具箱"
+                    >
+                      <i data-lucide="gauge" class="w-3.5 h-3.5"></i>
+                      <span>🚀 帧率解锁与无损瘦身</span>
+                    </button>
+
+                    <button
                       v-if="saveEditorData.supported"
                       @click="toggleSaveEditorPanel"
                       :class="[
@@ -2562,6 +2586,13 @@
                       </div>
                       <div class="flex items-center space-x-1.5 shrink-0">
                         <button
+                          @click="openSaveDiffPanel(selectedGame, 'backup:' + bak.filename)"
+                          class="px-2 py-1 rounded-lg bg-cyan-600/20 border border-cyan-500/35 hover:bg-cyan-600 text-cyan-200 hover:text-white text-[11px] font-medium transition-colors cursor-pointer"
+                          title="将该快照与当前本地实时存档逐槽位对比"
+                        >
+                          对比差异
+                        </button>
+                        <button
                           @click="restoreSaveBackupAction(selectedGame, bak)"
                           :disabled="isRestoringSave"
                           class="px-2.5 py-1 rounded-lg bg-indigo-600/30 border border-indigo-500/40 hover:bg-indigo-600 text-indigo-200 hover:text-white text-[11px] font-semibold transition-colors cursor-pointer"
@@ -2576,6 +2607,367 @@
                           <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
                         </button>
                       </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ==================== SAVE SNAPSHOT VISUAL DIFF & CLOUD CONFLICT RESOLVER PANEL (v3.3 Feature) ==================== -->
+              <div v-if="showSaveDiffPanel" class="p-4 rounded-2xl bg-gradient-to-br from-slate-900/95 via-slate-900/90 to-cyan-950/25 border border-cyan-500/40 space-y-3.5 text-xs shadow-xl">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/90 pb-2.5">
+                  <div class="flex items-center space-x-2">
+                    <span class="px-2 py-0.5 rounded-md bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 font-bold font-mono text-[11px]">SAVE DIFF & ARBITRATOR</span>
+                    <span class="font-bold text-white text-sm">存档快照可视化对比与 WebDAV 云同步冲突仲裁中心</span>
+                  </div>
+                  <button @click="showSaveDiffPanel = false" class="text-slate-400 hover:text-white px-1.5 cursor-pointer">✕</button>
+                </div>
+
+                <!-- Conflict Status Banner -->
+                <div
+                  v-if="saveConflictReport"
+                  :class="[
+                    'p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3',
+                    saveConflictReport.conflict_state === 'synced' ? 'bg-emerald-950/35 border-emerald-500/40 text-emerald-200' :
+                    saveConflictReport.conflict_state === 'diverged' ? 'bg-rose-950/40 border-rose-500/45 text-rose-200' :
+                    'bg-amber-950/35 border-amber-500/40 text-amber-200'
+                  ]"
+                >
+                  <div class="space-y-0.5">
+                    <div class="font-bold flex items-center space-x-1.5">
+                      <span>{{
+                        saveConflictReport.conflict_state === 'synced' ? '✓ 本地与快照已同步一致' :
+                        saveConflictReport.conflict_state === 'local_ahead' ? '⚡ 本地实时存档领先于快照' :
+                        saveConflictReport.conflict_state === 'remote_ahead' ? '☁️ 快照/云端版本比本地更新' :
+                        '⚠️ 检测到存档分支差异 / 云同步冲突'
+                      }}</span>
+                    </div>
+                    <div class="text-[11px] opacity-85">{{ saveConflictReport.conflict_description }}</div>
+                  </div>
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <button
+                      @click="resolveSaveConflictAction('keep_local')"
+                      :disabled="isResolvingConflict"
+                      class="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] cursor-pointer disabled:opacity-50"
+                      title="将当前本地实时存档打包为最新权威快照并上传 WebDAV"
+                    >
+                      以本地为准并推云
+                    </button>
+                    <button
+                      @click="resolveSaveConflictAction('use_snapshot')"
+                      :disabled="isResolvingConflict"
+                      class="px-2.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-bold text-[11px] cursor-pointer disabled:opacity-50"
+                      title="自动保护备份当前本地存档后，将右侧所选快照恢复至本地"
+                    >
+                      用右侧快照覆盖本地
+                    </button>
+                    <button
+                      @click="resolveSaveConflictAction('keep_both')"
+                      :disabled="isResolvingConflict"
+                      class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 font-semibold text-[11px] cursor-pointer disabled:opacity-50"
+                      title="拉取云端快照同时将当前本地存档另存为新快照，双线并存"
+                    >
+                      双分支并存保留
+                    </button>
+                    <button
+                      v-if="saveDiffResult && saveDiffResult.summary && saveDiffResult.summary.has_differences"
+                      @click="resolveSaveConflictAction('slot_merge')"
+                      :disabled="isResolvingConflict"
+                      class="px-2.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-extrabold text-[11px] cursor-pointer disabled:opacity-50"
+                      title="按照下方每个存档槽位单独勾选的『保留左侧 / 采用右侧』执行精细合并"
+                    >
+                      按槽位勾选智能合并
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Source Selectors -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-950/75 p-3 rounded-xl border border-slate-800">
+                  <div>
+                    <label class="text-[11px] text-cyan-300 font-bold block mb-1">左侧基准源 (Left Source)</label>
+                    <select
+                      v-model="saveDiffLeftSource"
+                      @change="runSaveSourceComparison"
+                      class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono text-[11px]"
+                    >
+                      <option v-for="opt in saveDiffSourceOptions" :key="'l-' + opt.id" :value="opt.id">{{ opt.label }}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-[11px] text-amber-300 font-bold block mb-1">右侧对比源 (Right Snapshot / Cloud)</label>
+                    <select
+                      v-model="saveDiffRightSource"
+                      @change="runSaveSourceComparison"
+                      class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono text-[11px]"
+                    >
+                      <option v-for="opt in saveDiffSourceOptions" :key="'r-' + opt.id" :value="opt.id">{{ opt.label }}</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div v-if="isLoadingSaveDiff" class="py-8 text-center text-slate-400 flex items-center justify-center space-x-2">
+                  <div class="w-5 h-5 border-2 border-cyan-500/20 border-t-cyan-400 rounded-full animate-spin"></div>
+                  <span>正在内存解包存档槽位并比对金钱、等级、回想开关与核心变量...</span>
+                </div>
+
+                <div v-else-if="saveDiffResult && saveDiffResult.slots" class="space-y-2.5">
+                  <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 px-1">
+                    <div>
+                      共检测 <span class="text-white font-bold">{{ saveDiffResult.summary.total_slots }}</span> 个槽位：
+                      <span class="text-amber-300 font-semibold">{{ saveDiffResult.summary.modified_count }} 处修改</span> ·
+                      <span class="text-cyan-300 font-semibold">{{ saveDiffResult.summary.only_left_count }} 处仅左侧</span> ·
+                      <span class="text-purple-300 font-semibold">{{ saveDiffResult.summary.only_right_count }} 处仅右侧</span> ·
+                      <span class="text-emerald-300">{{ saveDiffResult.summary.identical_count }} 处一致</span>
+                    </div>
+                    <span class="text-[10px] text-slate-500">支持按槽位单独选择保留哪一侧后点击「按槽位勾选智能合并」</span>
+                  </div>
+
+                  <div class="max-h-80 overflow-y-auto space-y-2 pr-1">
+                    <div
+                      v-for="slot in saveDiffResult.slots"
+                      :key="slot.rel_path"
+                      :class="[
+                        'p-3 rounded-xl border space-y-2',
+                        slot.status === 'identical' ? 'bg-slate-950/50 border-slate-800/70 opacity-75' :
+                        slot.status === 'modified' ? 'bg-slate-950/90 border-amber-500/40' :
+                        'bg-slate-950/90 border-cyan-500/40'
+                      ]"
+                    >
+                      <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="flex items-center space-x-2">
+                          <span class="font-bold text-slate-100">{{ slot.label }}</span>
+                          <span
+                            :class="[
+                              'px-1.5 py-0.5 rounded text-[10px] font-bold',
+                              slot.status === 'modified' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/35' :
+                              slot.status === 'only_left' ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/35' :
+                              slot.status === 'only_right' ? 'bg-purple-500/20 text-purple-300 border border-purple-500/35' :
+                              'bg-emerald-500/15 text-emerald-300'
+                            ]"
+                          >
+                            {{
+                              slot.status === 'modified' ? '内容不同' :
+                              slot.status === 'only_left' ? '仅左侧存在' :
+                              slot.status === 'only_right' ? '仅右侧存在' : '完全一致'
+                            }}
+                          </span>
+                          <span v-if="slot.newer_side === 'left'" class="text-[10px] text-cyan-300 font-mono">● 左侧时间较新</span>
+                          <span v-else-if="slot.newer_side === 'right'" class="text-[10px] text-amber-300 font-mono">● 右侧时间较新</span>
+                        </div>
+
+                        <!-- Per-Slot Merge Choice -->
+                        <div v-if="slot.status !== 'identical'" class="flex items-center space-x-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-[10px]">
+                          <button
+                            type="button"
+                            @click="saveDiffSlotChoices[slot.rel_path] = 'left'"
+                            :class="['px-2 py-0.5 rounded font-bold cursor-pointer', saveDiffSlotChoices[slot.rel_path] === 'left' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-200']"
+                          >
+                            保留左侧
+                          </button>
+                          <button
+                            type="button"
+                            @click="saveDiffSlotChoices[slot.rel_path] = 'right'"
+                            :class="['px-2 py-0.5 rounded font-bold cursor-pointer', saveDiffSlotChoices[slot.rel_path] === 'right' ? 'bg-amber-500 text-black' : 'text-slate-400 hover:text-slate-200']"
+                          >
+                            采用右侧
+                          </button>
+                        </div>
+                      </div>
+
+                      <!-- Left vs Right Metadata & RPG Telemetry -->
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-mono">
+                        <div class="p-2 rounded-lg bg-slate-900/70 border border-slate-800/80">
+                          <div class="text-cyan-300 font-sans font-semibold mb-0.5">左侧 ({{ slot.left ? slot.left.updated_at : '不存在' }})</div>
+                          <div v-if="slot.left" class="text-slate-300 flex flex-wrap gap-2">
+                            <span>{{ slot.left.size_kb }} KB</span>
+                            <span v-if="slot.left.gold !== null && slot.left.gold !== undefined" class="text-amber-300">💰 {{ slot.left.gold }}</span>
+                            <span v-if="slot.left.lead_actor" class="text-cyan-200">🧙 {{ slot.left.lead_actor.name }} Lv.{{ slot.left.lead_actor.level }}</span>
+                            <span v-if="slot.left.cg_switches_on !== null && slot.left.cg_switches_on !== undefined" class="text-purple-300">🔓 CG开关 {{ slot.left.cg_switches_on }}</span>
+                          </div>
+                        </div>
+                        <div class="p-2 rounded-lg bg-slate-900/70 border border-slate-800/80">
+                          <div class="text-amber-300 font-sans font-semibold mb-0.5">右侧 ({{ slot.right ? slot.right.updated_at : '不存在' }})</div>
+                          <div v-if="slot.right" class="text-slate-300 flex flex-wrap gap-2">
+                            <span>{{ slot.right.size_kb }} KB</span>
+                            <span v-if="slot.right.gold !== null && slot.right.gold !== undefined" class="text-amber-300">💰 {{ slot.right.gold }}</span>
+                            <span v-if="slot.right.lead_actor" class="text-cyan-200">🧙 {{ slot.right.lead_actor.name }} Lv.{{ slot.right.lead_actor.level }}</span>
+                            <span v-if="slot.right.cg_switches_on !== null && slot.right.cg_switches_on !== undefined" class="text-purple-300">🔓 CG开关 {{ slot.right.cg_switches_on }}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Variable & Switch Diffs -->
+                      <div v-if="(slot.var_changes && slot.var_changes.length) || (slot.sw_changes && slot.sw_changes.length)" class="pt-1 flex flex-wrap gap-1.5">
+                        <span
+                          v-for="vc in slot.var_changes.slice(0, 8)"
+                          :key="'vc-' + vc.id"
+                          :class="['px-2 py-0.5 rounded text-[10px] font-mono border', vc.is_key ? 'bg-pink-950/60 border-pink-500/40 text-pink-200' : 'bg-slate-900 border-slate-700 text-slate-300']"
+                        >
+                          {{ vc.name }}: {{ vc.left_val }} ↔ {{ vc.right_val }}
+                        </span>
+                        <span
+                          v-for="sc in slot.sw_changes.slice(0, 6)"
+                          :key="'sc-' + sc.id"
+                          :class="['px-2 py-0.5 rounded text-[10px] font-mono border', sc.is_cg ? 'bg-purple-950/60 border-purple-500/40 text-purple-200' : 'bg-slate-900 border-slate-700 text-slate-300']"
+                        >
+                          [{{ sc.name }}] {{ sc.left_val ? 'ON' : 'OFF' }} ↔ {{ sc.right_val ? 'ON' : 'OFF' }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ==================== BUILT-IN FPS UNLOCKER & LOSSLESS SLIMMING TOOLBOX PANEL (v3.3 Feature) ==================== -->
+              <div v-if="showOptimizerPanel" class="p-4 rounded-2xl bg-gradient-to-br from-slate-900/95 via-slate-900/90 to-emerald-950/25 border border-emerald-500/40 space-y-4 text-xs shadow-xl">
+                <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/90 pb-2.5">
+                  <div class="flex items-center space-x-2">
+                    <span class="px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 font-bold font-mono text-[11px]">ENGINE BOOSTER & SLIMMER</span>
+                    <span class="font-bold text-white text-sm">RPG Maker MV/MZ & Unity 帧率解锁、加速快进与无损体积瘦身工具箱</span>
+                  </div>
+                  <button @click="showOptimizerPanel = false" class="text-slate-400 hover:text-white px-1.5 cursor-pointer">✕</button>
+                </div>
+
+                <div v-if="isLoadingOptimizer" class="py-8 text-center text-slate-400 flex items-center justify-center space-x-2">
+                  <div class="w-5 h-5 border-2 border-emerald-500/20 border-t-emerald-400 rounded-full animate-spin"></div>
+                  <span>正在扫描游戏资产结构、高刷插件状态与可清理冗余体积...</span>
+                </div>
+
+                <div v-else-if="optimizerStatus" class="space-y-4">
+                  <!-- Footprint Breakdown Cards -->
+                  <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800">
+                      <div class="text-[10px] text-slate-400">当前总占用体积</div>
+                      <div class="font-mono font-bold text-white text-sm mt-0.5">{{ optimizerStatus.footprint.total_str }}</div>
+                    </div>
+                    <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800">
+                      <div class="text-[10px] text-slate-400">立绘与贴图 ({{ optimizerStatus.footprint.image_count }}张)</div>
+                      <div class="font-mono font-bold text-cyan-300 text-sm mt-0.5">{{ optimizerStatus.footprint.image_str }}</div>
+                    </div>
+                    <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800">
+                      <div class="text-[10px] text-slate-400">冗余调试与多语言垃圾 ({{ optimizerStatus.footprint.junk_count }}项)</div>
+                      <div class="font-mono font-bold text-amber-300 text-sm mt-0.5">{{ optimizerStatus.footprint.junk_str }}</div>
+                    </div>
+                    <div class="p-2.5 rounded-xl bg-emerald-950/35 border border-emerald-500/35">
+                      <div class="text-[10px] text-emerald-300">预计可无损释放空间</div>
+                      <div class="font-mono font-extrabold text-emerald-300 text-sm mt-0.5">≈ {{ optimizerStatus.footprint.estimated_savings_str }}</div>
+                    </div>
+                  </div>
+
+                  <!-- Module A: High-FPS Unlocker & Turbo Skip Patch -->
+                  <div class="p-3.5 rounded-xl bg-slate-950/85 border border-indigo-500/35 space-y-3">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div class="font-bold text-indigo-200 flex items-center space-x-2">
+                          <span>⚡ 内建高刷帧率解锁、Ctrl/RB 快进加速与后台音频保活</span>
+                          <span v-if="optimizerStatus.fps_patched" class="px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-mono">
+                            已激活 ({{ optimizerStatus.current_target_fps }} FPS)
+                          </span>
+                          <span v-else class="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px]">未注入</span>
+                        </div>
+                        <div class="text-[11px] text-slate-400 mt-0.5">
+                          支持 RPG Maker MV/MZ (注入 PIXI Ticker 高刷插件 + Chromium GPU 光栅化参数，游戏内按 F3 显隐帧率 HUD) 与 Unity (开启 Native GFX Jobs)
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label class="text-[11px] text-slate-400 block mb-1">目标最高帧率 (Target FPS)</label>
+                        <select v-model.number="optimizerForm.target_fps" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono">
+                          <option :value="60">60 FPS (标准稳定)</option>
+                          <option :value="90">90 FPS (顺滑进阶)</option>
+                          <option :value="120">120 FPS (高刷推荐)</option>
+                          <option :value="144">144 FPS (电竞丝滑)</option>
+                          <option :value="240">240 FPS / 不限帧率</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label class="text-[11px] text-slate-400 block mb-1">按住 Ctrl / 手柄 RB 快进倍率</label>
+                        <select v-model.number="optimizerForm.fast_skip_mult" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-slate-200 font-mono">
+                          <option :value="2">2x 倍速快进</option>
+                          <option :value="4">4x 倍速快进 (推荐)</option>
+                          <option :value="6">6x 高速快进</option>
+                          <option :value="8">8x 极速跳剧情</option>
+                        </select>
+                      </div>
+                      <div class="flex flex-col justify-end space-y-1.5">
+                        <label class="flex items-center space-x-2 cursor-pointer text-slate-300">
+                          <input type="checkbox" v-model="optimizerForm.keep_bg_audio" class="rounded bg-slate-900 border-slate-700 text-indigo-500" />
+                          <span>切换窗口时保持后台 BGM 播放</span>
+                        </label>
+                        <label class="flex items-center space-x-2 cursor-pointer text-slate-300">
+                          <input type="checkbox" v-model="optimizerForm.gpu_raster" class="rounded bg-slate-900 border-slate-700 text-indigo-500" />
+                          <span>启用 Chromium 硬件 GPU 加速光栅化</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        v-if="optimizerStatus.fps_patched"
+                        @click="removeFpsPatchAction"
+                        :disabled="isRunningOptimizer"
+                        type="button"
+                        class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-rose-950/70 border border-slate-700 hover:border-rose-500/40 text-slate-300 hover:text-rose-200 font-semibold cursor-pointer disabled:opacity-50"
+                      >
+                        移除高刷补丁并恢复原始配置
+                      </button>
+                      <button
+                        @click="applyFpsPatchAction"
+                        :disabled="isRunningOptimizer || !optimizerStatus.can_patch_fps"
+                        type="button"
+                        class="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-md shadow-indigo-600/30 cursor-pointer disabled:opacity-50"
+                      >
+                        {{ isRunningOptimizer ? '处理中...' : (optimizerStatus.fps_patched ? '更新高刷与加速参数' : '⚡ 一键注入高刷与加速补丁') }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Module B: Lossless Slimming & Junk Cleanup -->
+                  <div class="p-3.5 rounded-xl bg-slate-950/85 border border-emerald-500/35 space-y-3">
+                    <div class="font-bold text-emerald-200 flex items-center justify-between">
+                      <span>🧹 游戏体积无损瘦身与冗余清理（支持一键字节级回滚）</span>
+                      <span v-if="optimizerStatus.has_slim_backup" class="px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/40 text-cyan-200 text-[10px] font-mono">
+                        已有回滚备份包 ({{ optimizerStatus.backup_size_str }})
+                      </span>
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-4 text-slate-300">
+                      <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" v-model="optimizerForm.clean_junk" class="rounded bg-slate-900 border-slate-700 text-emerald-500" />
+                        <span>清理调试符号 (.pdb)、崩溃转储、DoNotShip 目录与多余 Chromium 语言包 ({{ optimizerStatus.footprint.junk_str }})</span>
+                      </label>
+                      <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" v-model="optimizerForm.compress_images" :disabled="optimizerStatus.has_encrypted_images" class="rounded bg-slate-900 border-slate-700 text-emerald-500" />
+                        <span>
+                          无损重压缩大于 96KB 的未加密 PNG 立绘 ({{ optimizerStatus.footprint.compressible_image_count }} 张 · {{ optimizerStatus.footprint.compressible_image_str }})
+                          <em v-if="optimizerStatus.has_encrypted_images" class="text-amber-400 not-italic">[检测到加密图片已自动跳过]</em>
+                        </span>
+                      </label>
+                      <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" v-model="optimizerForm.create_rollback_backup" class="rounded bg-slate-900 border-slate-700 text-cyan-500" />
+                        <span class="text-cyan-200">生成原始文件防悔备份包 (_acg_optimizer_backup.zip)</span>
+                      </label>
+                    </div>
+
+                    <div class="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        v-if="optimizerStatus.has_slim_backup"
+                        @click="rollbackGameSlimAction"
+                        :disabled="isRunningOptimizer"
+                        type="button"
+                        class="px-3.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500 border border-amber-500/40 text-amber-200 hover:text-black font-bold cursor-pointer disabled:opacity-50"
+                      >
+                        ↺ 从备份包一键无损回滚
+                      </button>
+                      <button
+                        @click="runGameSlimAction"
+                        :disabled="isRunningOptimizer || (!optimizerForm.clean_junk && !optimizerForm.compress_images)"
+                        type="button"
+                        class="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold shadow-md shadow-emerald-600/30 cursor-pointer disabled:opacity-50"
+                      >
+                        {{ isRunningOptimizer ? '正在优化压缩中...' : '🚀 立即执行无损瘦身' }}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -3552,7 +3944,7 @@
           <div class="flex items-center justify-between border-b border-slate-800 pb-3">
             <h2 class="text-base font-bold text-white flex items-center space-x-2">
               <i data-lucide="settings" class="w-5 h-5 text-indigo-400"></i>
-              <span>ACG Vault v3.2.1 系统与个性化定制中心</span>
+              <span>ACG Vault v3.3.0 系统与个性化定制中心</span>
             </h2>
             <button @click="showSettingsModal = false" class="text-slate-400 hover:text-white cursor-pointer">
               <i data-lucide="x" class="w-5 h-5"></i>
@@ -4942,8 +5334,12 @@
 
   </div>
 
-  <script src="/static/windowbar.js?v=3.2"></script>
-  <script src="/static/app.js?v=3.2"></script>
+  <script src="/static/modules/device-sense.js?v=3.3"></script>
+  <script src="/static/modules/walkthrough-tools.js?v=3.3"></script>
+  <script src="/static/modules/save-diff.js?v=3.3"></script>
+  <script src="/static/modules/game-optimizer.js?v=3.3"></script>
+  <script src="/static/windowbar.js?v=3.3"></script>
+  <script src="/static/app.js?v=3.3"></script>
   <!-- Watchdog: Check if Vue mounted correctly -->
   <script>
     setTimeout(function() {

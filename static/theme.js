@@ -1,6 +1,6 @@
 /* ==========================================================================
-   ACG Vault v3.2.0 — 主题与强调色引擎 + Nintendo Switch Horizon OS 合成微音效引擎
-   同时暴露 window.ACGTheme 与 window.AcgTheme（向后兼容）
+   ACG Vault v3.3.0 — 主题与强调色引擎 + Nintendo Switch Horizon OS 合成微音效引擎
+   同时暴露 window.ACGTheme 与 window.AcgTheme（向后兼容，支持音量倍率缩放）
    ========================================================================== */
 (function () {
   'use strict';
@@ -25,10 +25,10 @@
     mode: 'auto',
     resolved: 'dark',
     accent: 'nintendo',
-    sfx: initialSfx
+    sfx: initialSfx,
+    volumeScale: 1.0
   };
 
-  // 读取早期本地缓存，保证首帧与状态一致
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
@@ -70,9 +70,6 @@
     } catch (e) { /* ignore */ }
   }
 
-  // --------------------------------------------------------------------------
-  // Nintendo Switch Horizon OS 零依赖 Web Audio 合成微音效引擎
-  // --------------------------------------------------------------------------
   let audioCtx = null;
 
   function getAudioCtx() {
@@ -97,8 +94,9 @@
     return audioCtx;
   }
 
-  function synthTone(ac, freq, startOffset, duration, type, peakGain, endFreq) {
+  function synthTone(ac, freq, startOffset, duration, type, peakGain, endFreq, volMult) {
     try {
+      const mult = Math.max(0.05, Math.min(3.0, Number(volMult) || state.volumeScale || 1.0));
       const t0 = ac.currentTime + (startOffset || 0);
       const osc = ac.createOscillator();
       const gain = ac.createGain();
@@ -108,7 +106,7 @@
         osc.frequency.exponentialRampToValueAtTime(Math.max(20, endFreq), t0 + duration);
       }
       gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.linearRampToValueAtTime(Math.max(0.0002, peakGain || 0.08), t0 + Math.min(0.006, duration * 0.25));
+      gain.gain.linearRampToValueAtTime(Math.max(0.0002, (peakGain || 0.08) * mult), t0 + Math.min(0.006, duration * 0.25));
       gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
       osc.connect(gain);
       gain.connect(ac.destination);
@@ -117,51 +115,50 @@
     } catch (e) { /* ignore */ }
   }
 
-  function playSfx(type) {
+  function playSfx(type, customVolumeScale) {
     const ac = getAudioCtx();
     if (!ac) return;
+    const vm = customVolumeScale !== undefined ? Number(customVolumeScale) : state.volumeScale;
     switch (type || 'focus') {
       case 'focus':
       case 'move':
-        // Switch 标志性清脆木琴/棘轮移动微音效
-        synthTone(ac, 1180, 0, 0.032, 'triangle', 0.065, 1420);
-        synthTone(ac, 2360, 0.003, 0.018, 'sine', 0.025, 2600);
+        synthTone(ac, 1180, 0, 0.032, 'triangle', 0.065, 1420, vm);
+        synthTone(ac, 2360, 0.003, 0.018, 'sine', 0.025, 2600, vm);
         break;
       case 'select':
       case 'confirm':
-        // Switch 双音清亮确认音
-        synthTone(ac, 784, 0, 0.055, 'sine', 0.085, 880);
-        synthTone(ac, 1174.66, 0.045, 0.095, 'triangle', 0.09, 1318.5);
+        synthTone(ac, 784, 0, 0.055, 'sine', 0.085, 880, vm);
+        synthTone(ac, 1174.66, 0.045, 0.095, 'triangle', 0.09, 1318.5, vm);
         break;
       case 'back':
       case 'cancel':
-        // Switch 柔和双音下行返回音
-        synthTone(ac, 659.25, 0, 0.05, 'sine', 0.075, 587.33);
-        synthTone(ac, 440, 0.042, 0.085, 'triangle', 0.065, 392);
+        synthTone(ac, 659.25, 0, 0.05, 'sine', 0.075, 587.33, vm);
+        synthTone(ac, 440, 0.042, 0.085, 'triangle', 0.065, 392, vm);
         break;
       case 'launch':
-        // Switch 启动游戏三和弦上行辉光音效
-        synthTone(ac, 587.33, 0, 0.07, 'triangle', 0.08, 659.25);
-        synthTone(ac, 880, 0.055, 0.08, 'triangle', 0.085, 987.77);
-        synthTone(ac, 1174.66, 0.11, 0.18, 'sine', 0.10, 1567.98);
+        synthTone(ac, 587.33, 0, 0.07, 'triangle', 0.08, 659.25, vm);
+        synthTone(ac, 880, 0.055, 0.08, 'triangle', 0.085, 987.77, vm);
+        synthTone(ac, 1174.66, 0.11, 0.18, 'sine', 0.10, 1567.98, vm);
         break;
       case 'lock':
-        // 伴侣窗穿透锁定声
-        synthTone(ac, 960, 0, 0.04, 'triangle', 0.07, 720);
-        synthTone(ac, 640, 0.038, 0.06, 'sine', 0.075, 540);
+        synthTone(ac, 960, 0, 0.04, 'triangle', 0.07, 720, vm);
+        synthTone(ac, 640, 0.038, 0.06, 'sine', 0.075, 540, vm);
         break;
       case 'unlock':
-        // 伴侣窗穿透解锁声
-        synthTone(ac, 640, 0, 0.04, 'sine', 0.07, 880);
-        synthTone(ac, 1280, 0.038, 0.07, 'triangle', 0.08, 1480);
+        synthTone(ac, 640, 0, 0.04, 'sine', 0.07, 880, vm);
+        synthTone(ac, 1280, 0.038, 0.07, 'triangle', 0.08, 1480, vm);
         break;
       case 'tab':
-        synthTone(ac, 920, 0, 0.036, 'sine', 0.055, 1080);
+        synthTone(ac, 920, 0, 0.036, 'sine', 0.055, 1080, vm);
         break;
       default:
-        synthTone(ac, 1046.5, 0, 0.035, 'triangle', 0.06, 1174.66);
+        synthTone(ac, 1046.5, 0, 0.035, 'triangle', 0.06, 1174.66, vm);
         break;
     }
+  }
+
+  function setVolumeScale(scale) {
+    state.volumeScale = Math.max(0.05, Math.min(3.0, Number(scale) || 1.0));
   }
 
   function setSfx(enabled) {
@@ -237,9 +234,11 @@
     get resolved() { return state.resolved; },
     get accent() { return state.accent; },
     get sfx() { return state.sfx; },
+    get volumeScale() { return state.volumeScale; },
     set: set,
     setAccent: setAccent,
     setSfx: setSfx,
+    setVolumeScale: setVolumeScale,
     toggleSfx: toggleSfx,
     playSfx: playSfx,
     toggle: toggle,

@@ -1,11 +1,10 @@
 /*
- * ACG Vault · Frameless Window Chrome (v3.2.0)
+ * ACG Vault · Frameless Window Chrome & True Fullscreen Bridge (v3.3.0)
  *
- * 在无边框 WebView2 窗口里重建一条「全局标题栏」：
- *   - 永远置顶（z-index 高于页面内所有全屏层），所以攻略全屏、大屏模式、伴侣窗里都能看到；
- *   - 整条可拖动（双击最大化/还原），右侧是最小化 / 最大化 / 关闭；
- *   - 页面内容通过 CSS 变量整体下移，不吃掉布局。
- * 纯浏览器模式下完全不生效。
+ * 在无边框 WebView2 窗口里提供：
+ *   - 统一宿主级真全屏桥接（win_set_fullscreen / /api/window/fullscreen + 浏览器回退）及 F11 全局热键；
+ *   - 大屏模式下自动消除 30px 双层顶栏（将拖拽与窗口控制无缝融入大屏 .bs-top 顶栏，全屏时彻底隐藏）；
+ *   - 桌面主界面与伴侣窗提供标准可拖拽标题栏与八向边缘缩放热区。
  */
 (function () {
   'use strict';
@@ -16,8 +15,12 @@
 
   const CSS = `
   :root { --acg-tb-h: ${TB_H}px; }
+  html.acg-fullscreen,
+  html.acg-bigscreen-immersive {
+    --acg-tb-h: 0px !important;
+  }
   #acg-titlebar {
-    position: fixed; top: 0; left: 0; right: 0; height: var(--acg-tb-h);
+    position: fixed; top: 0; left: 0; right: 0; height: 30px;
     z-index: ${Z};
     display: flex; align-items: center; gap: 8px;
     padding-left: 12px;
@@ -28,6 +31,14 @@
     letter-spacing: 0.04em;
     user-select: none;
     box-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+    transition: transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1), opacity 0.2s ease;
+  }
+  html.acg-fullscreen #acg-titlebar,
+  html.acg-fullscreen .acg-resize-handle {
+    display: none !important;
+  }
+  html.acg-bigscreen-immersive #acg-titlebar {
+    display: none !important;
   }
   .acg-tb-main {
     flex: 1; min-width: 0; height: 100%;
@@ -43,7 +54,7 @@
   .acg-tb-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .acg-tb-controls { display: flex; align-items: stretch; height: 100%; }
   .acg-tb-btn {
-    width: 46px; height: 100%;
+    width: 44px; height: 100%;
     display: inline-grid; place-items: center;
     background: transparent; border: 0; margin: 0;
     color: #9fb0c9; cursor: pointer;
@@ -69,20 +80,23 @@
     min: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>',
     max: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>',
     restore: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="8" width="12" height="12" rx="2"/><path d="M8 8V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2"/></svg>',
+    fs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>',
+    exitFs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>'
   };
 
-  const SKIP = 'button, a, input, select, textarea, .no-drag, [data-no-drag], .acg-tb-controls';
+  const SKIP = 'button, a, input, select, textarea, .no-drag, [data-no-drag], .acg-tb-controls, .bs-pill, .bs-search-box';
 
   let cssInjected = false;
   let state = null;
   let mounted = false;
   let allowMax = true;
+  let isFullscreenState = false;
 
   function isDesktop() {
     return !!(window.pywebview && window.pywebview.api && window.pywebview.api.win_get_state);
   }
-  function api() { return window.pywebview.api; }
+  function api() { return window.pywebview && window.pywebview.api; }
 
   function injectCss() {
     if (cssInjected) return;
@@ -91,6 +105,62 @@
     st.id = 'acg-windowbar-style';
     st.textContent = CSS;
     document.head.appendChild(st);
+  }
+
+  function applyFullscreenClass(fs) {
+    isFullscreenState = Boolean(fs);
+    document.documentElement.classList.toggle('acg-fullscreen', isFullscreenState);
+    const fsBtn = document.querySelector('#acg-titlebar .acg-tb-btn.fs');
+    if (fsBtn) {
+      fsBtn.innerHTML = isFullscreenState ? ICONS.exitFs : ICONS.fs;
+      fsBtn.title = isFullscreenState ? '退出全屏 (F11)' : '全屏 (F11)';
+    }
+    window.dispatchEvent(new CustomEvent('acg-fullscreen-changed', {
+      detail: { fullscreen: isFullscreenState }
+    }));
+  }
+
+  async function toggleFullscreen(forceEnable) {
+    if (isDesktop() && api().win_set_fullscreen) {
+      try {
+        const res = await api().win_set_fullscreen(forceEnable === undefined ? null : Boolean(forceEnable));
+        if (res && res.ok) {
+          applyFullscreenClass(!!res.fullscreen);
+          if (res.maximized !== undefined) updateMaximized(!!res.maximized);
+          return !!res.fullscreen;
+        }
+      } catch (e) { /* fall through */ }
+    }
+
+    try {
+      const r = await fetch('/api/window/fullscreen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: forceEnable === undefined ? null : Boolean(forceEnable) })
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && d.ok) {
+          applyFullscreenClass(!!d.fullscreen);
+          if (d.maximized !== undefined) updateMaximized(!!d.maximized);
+          return !!d.fullscreen;
+        }
+      }
+    } catch (e) { /* fall through */ }
+
+    try {
+      const wantFs = forceEnable !== undefined ? Boolean(forceEnable) : !document.fullscreenElement;
+      if (wantFs && !document.fullscreenElement && document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+        applyFullscreenClass(true);
+        return true;
+      } else if (!wantFs && document.fullscreenElement && document.exitFullscreen) {
+        await document.exitFullscreen();
+        applyFullscreenClass(false);
+        return false;
+      }
+    } catch (e) { /* ignore */ }
+    return isFullscreenState;
   }
 
   function buildControls(box, options) {
@@ -112,41 +182,48 @@
       return b;
     };
 
-    // 日间/夜间切换（四端通用）
     const themeBtn = make('theme', '切换日间 / 夜间 (Switch 主题)', '<span data-acg-theme-icon>☀</span>', function () {
       if (window.AcgTheme) window.AcgTheme.toggle();
     });
     themeBtn.style.width = '32px';
     if (window.AcgTheme) window.AcgTheme.refreshButtons();
 
+    if (wanted.indexOf('max') >= 0) {
+      make('fs', '全屏切换 (F11)', ICONS.fs, function () { toggleFullscreen(); });
+    }
     if (wanted.indexOf('min') >= 0) {
-      make('min', '最小化', ICONS.min, function () { api().win_minimize(); });
+      make('min', '最小化', ICONS.min, function () { if (api()) api().win_minimize(); });
     }
     let maxBtn = null;
     if (wanted.indexOf('max') >= 0) {
       maxBtn = make('max', '最大化', ICONS.max, async function () {
         try {
           const isMax = await api().win_toggle_maximize();
+          applyFullscreenClass(false);
           maxBtn.innerHTML = isMax ? ICONS.restore : ICONS.max;
           maxBtn.title = isMax ? '还原' : '最大化';
         } catch (e) { /* ignore */ }
       });
     }
     if (wanted.indexOf('close') >= 0) {
-      make('close', options.closeTitle || '关闭', ICONS.close, function () { api().win_close(); });
+      make('close', options.closeTitle || '关闭', ICONS.close, function () { if (api()) api().win_close(); });
     }
     return maxBtn;
   }
 
   function bindDrag(el) {
+    if (!el || el.dataset.acgDragBound === '1') return;
+    el.dataset.acgDragBound = '1';
+
     el.addEventListener('pointerdown', async function (ev) {
-      if (ev.button !== 0) return;
+      if (ev.button !== 0 || isFullscreenState) return;
       const t = ev.target;
       if (t && t.closest && t.closest(SKIP)) return;
+      if (!isDesktop()) return;
 
       let st = null;
       try { st = await api().win_get_state(); } catch (e) { return; }
-      if (!st || !st.ok || !st.frameless) return;
+      if (!st || !st.ok || !st.frameless || st.fullscreen) return;
 
       if (st.maximized) {
         let r = null;
@@ -199,10 +276,14 @@
     });
 
     el.addEventListener('dblclick', function (ev) {
-      if (!allowMax) return;
+      if (!allowMax || !isDesktop()) return;
       const t = ev.target;
       if (t && t.closest && t.closest(SKIP)) return;
-      api().win_toggle_maximize();
+      if (isFullscreenState) {
+        toggleFullscreen(false);
+      } else {
+        api().win_toggle_maximize();
+      }
     });
   }
 
@@ -230,13 +311,13 @@
       document.body.appendChild(el);
 
       el.addEventListener('pointerdown', async function (ev) {
-        if (ev.button !== 0) return;
+        if (ev.button !== 0 || isFullscreenState) return;
         ev.preventDefault();
         ev.stopPropagation();
 
         let st = null;
         try { st = await api().win_get_state(); } catch (e) { return; }
-        if (!st || !st.ok || !st.frameless || st.maximized) return;
+        if (!st || !st.ok || !st.frameless || st.maximized || st.fullscreen) return;
 
         const sx = ev.screenX;
         const sy = ev.screenY;
@@ -292,7 +373,10 @@
       if (!isDesktop()) return;
       try {
         const st = await api().win_get_state();
-        if (st && st.ok) updateMaximized(!!st.maximized);
+        if (st && st.ok) {
+          updateMaximized(!!st.maximized);
+          applyFullscreenClass(!!st.fullscreen);
+        }
       } catch (e) { /* ignore */ }
     };
     window.addEventListener('focus', sync);
@@ -310,7 +394,7 @@
     main.className = 'acg-tb-main';
     main.innerHTML = '<span class="acg-tb-dot"></span>' +
       '<span class="acg-tb-title"></span>';
-    main.querySelector('.acg-tb-title').textContent = options.title || 'ACG Vault';
+    main.querySelector('.acg-tb-title').textContent = options.title || 'ACG Vault v3.3.0';
     bar.appendChild(main);
 
     const ctrl = document.createElement('div');
@@ -328,11 +412,29 @@
     return bar;
   }
 
+  window.addEventListener('keydown', function (ev) {
+    if (ev.key === 'F11' || ev.code === 'F11') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      toggleFullscreen();
+    }
+  }, true);
+
+  document.addEventListener('fullscreenchange', function () {
+    if (!isDesktop()) {
+      applyFullscreenClass(!!document.fullscreenElement);
+    }
+  });
+
   function mount(options) {
     const opts = options || {};
     allowMax = (opts.buttons || ['min', 'max', 'close']).indexOf('max') >= 0;
-    let done = false;
+    const isBigScreen = Boolean(opts.immersiveBigScreen || /bigscreen/i.test(window.location.pathname));
+    if (isBigScreen) {
+      document.documentElement.classList.add('acg-bigscreen-immersive');
+    }
 
+    let done = false;
     const init = async function () {
       if (done || !isDesktop()) return;
       done = true;
@@ -344,6 +446,17 @@
       buildTitlebar(opts);
       addResizeHandles(opts);
       bindStateSync();
+      if (state.fullscreen) applyFullscreenClass(true);
+
+      if (isBigScreen) {
+        const attachBsTopDrag = function () {
+          const bsTop = document.querySelector('.bs-top');
+          if (bsTop) bindDrag(bsTop);
+        };
+        attachBsTopDrag();
+        setTimeout(attachBsTopDrag, 400);
+        setTimeout(attachBsTopDrag, 1200);
+      }
     };
 
     if (isDesktop()) { init(); return; }
@@ -364,5 +477,12 @@
     }
   }
 
-  window.AcgWindow = { mount: mount, isDesktop: isDesktop, updateMaximized: updateMaximized };
+  window.AcgWindow = {
+    mount: mount,
+    isDesktop: isDesktop,
+    bindDrag: bindDrag,
+    updateMaximized: updateMaximized,
+    toggleFullscreen: toggleFullscreen,
+    get isFullscreen() { return isFullscreenState; }
+  };
 })();

@@ -50,8 +50,12 @@ LIGHTWEIGHT_GAME_COLUMNS = f"""
     created_at, updated_at
 """
 
+import time as _time
+import threading as _threading
+
 _TAG_L10N_CACHE = {
     "mtime": 0.0,
+    "last_check": 0.0,
     "ignore_set": set(),
     "mapping": {}
 }
@@ -62,7 +66,11 @@ _PARSED_TAG_STR_CACHE: Dict[Tuple[str, bool], Tuple[str, ...]] = {}
 
 
 def _get_tag_l10n_rules() -> Tuple[set, Dict[str, str]]:
-    """Loads and caches data/l10n_tags_zh.json with mtime invalidation."""
+    """Loads and caches data/l10n_tags_zh.json with 5s throttled mtime invalidation."""
+    now_ts = _time.monotonic()
+    if _TAG_L10N_CACHE["mtime"] > 0 and (now_ts - _TAG_L10N_CACHE["last_check"]) < 5.0:
+        return _TAG_L10N_CACHE["ignore_set"], _TAG_L10N_CACHE["mapping"]
+    _TAG_L10N_CACHE["last_check"] = now_ts
     try:
         if L10N_TAGS_FILE.exists():
             mtime = L10N_TAGS_FILE.stat().st_mtime
@@ -482,10 +490,10 @@ def init_db():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, default_collections)
 
-    # Normalize & localize existing tags on startup if enabled
+    # Normalize & localize existing tags asynchronously on startup if enabled
     try:
         if load_config().get("auto_localize_tags", True):
-            localize_all_existing_game_tags()
+            _threading.Thread(target=localize_all_existing_game_tags, daemon=True).start()
     except Exception:
         pass
 

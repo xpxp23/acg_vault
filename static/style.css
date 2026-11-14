@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ACG Vault v3.2.0 - Collector's Edition Glassmorphic & Ambient UI
+   ACG Vault v3.3.0 - Collector's Edition Glassmorphic & Ambient UI
    GPU-Optimized Compositing, Unobstructed Artwork Hover, Smart Footer & Save Editor
    ========================================================================== */
 
@@ -452,7 +452,7 @@ body {
 }
 
 /* ==========================================================================
-   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v3.2.0)
+   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v3.3.0)
    ========================================================================== */
 .notes-markdown-body {
   line-height: 1.74;
@@ -772,4 +772,21 @@ body {
 .slide-fade-leave-to {
   transform: translateX(-100%);
   opacity: 0;
+}
+
+
+/* ==========================================================================
+   v3.3.0 UI/UX Card Breathing Room & Input Auto-Sense Polish
+   ========================================================================== */
+.game-card .poster-badge-pill {
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.game-card:hover .poster-badge-pill {
+  opacity: 0.92;
+}
+html.acg-cursor-idle,
+html.acg-cursor-idle * {
+  cursor: none !important;
 }
