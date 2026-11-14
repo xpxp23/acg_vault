@@ -342,12 +342,13 @@ class WindowBridge:
             return {"ok": False}
         x, y = self._position()
         _, _, width, height = self._geom()
+        is_zm = self._is_zoomed()
         return {
             "ok": True,
             "role": self._role,
             "frameless": self._frameless,
-            "maximized": self._is_zoomed(),
-            "fullscreen": bool(self._fullscreen),
+            "maximized": is_zm,
+            "fullscreen": bool(self._fullscreen or is_zm),
             "x": x, "y": y, "width": width, "height": height,
         }
 
@@ -446,141 +447,87 @@ class WindowBridge:
         return None
 
     def _is_fullscreen(self) -> bool:
+        return bool(self._fullscreen or self._is_zoomed())
+
+    @_safe_api
+    def win_get_gamepad(self):
+        """Direct 60Hz XInput bridge for Big Screen UI gamepad navigation."""
         try:
-            native = getattr(self._window, "native", None)
-            if native is not None and hasattr(native, "is_fullscreen"):
-                return bool(native.is_fullscreen)
-        except Exception:
-            pass
-        return bool(self._fullscreen)
+            from core.gamepad import get_ui_pad_state
+            return get_ui_pad_state()
+        except Exception as e:
+            return {"ok": False, "connected": False, "error": str(e)}
 
     @_safe_api
     def win_set_fullscreen(self, enable=None):
         """
-        True borderless monitor fullscreen for PyWebView WinForms + WebView2:
-        Expands both WinForms host and WebView2 viewport across the full monitor rect (covering taskbar),
-        and cleanly restores prior window bounds or maximized state upon exit.
+        Unified borderless fullscreen / maximize engine (v3.4.0):
+        Uses the proven Win32 ShowWindow(SW_MAXIMIZE / SW_RESTORE) path identical to double-clicking
+        the frameless titlebar, eliminating WinForms WindowState.Normal shrinkage and state desync.
         """
         if self._window is None:
             return {"ok": False, "fullscreen": False}
 
-        curr_fs = self._is_fullscreen()
+        now = time.time()
+        last_ts = getattr(self, "_last_fs_toggle_ts", 0.0)
+        curr_fs = bool(self._is_zoomed() or self._fullscreen)
         target = (not curr_fs) if enable is None else bool(enable)
+
+        # Debounce rapid duplicate F11 / button triggers within 220ms when toggling
+        if enable is None and (now - last_ts) < 0.22:
+            return {"ok": True, "fullscreen": curr_fs, "maximized": curr_fs}
+        self._last_fs_toggle_ts = now
+
         if target == curr_fs:
-            return {"ok": True, "fullscreen": self._fullscreen, "maximized": self._is_zoomed()}
+            self._fullscreen = curr_fs
+            self._maximized = curr_fs
+            return {"ok": True, "fullscreen": curr_fs, "maximized": curr_fs}
 
         hwnd = self._hwnd()
-        native = getattr(self._window, "native", None)
         try:
             if target:
-                self._pre_fs_maximized = self._is_zoomed()
-                if self._pre_fs_maximized and self._restore_box:
-                    self._pre_fs_box = self._restore_box
-                else:
+                if not self._is_zoomed():
                     px, py = self._position()
                     _, _, sw, sh = self._geom()
-                    self._pre_fs_box = (px, py, sw, sh)
-
-                applied = False
-                if native is not None and hasattr(native, "Invoke"):
-                    try:
-                        from System import Action
-                        import System.Windows.Forms as WinForms
-
-                        def _do_enter_fs():
-                            scr = WinForms.Screen.FromControl(native)
-                            native.WindowState = WinForms.FormWindowState.Normal
-                            native.FormBorderStyle = getattr(WinForms.FormBorderStyle, 'None')
-                            native.Bounds = scr.Bounds
-                            native.TopMost = False
-                            if hwnd and IS_WINDOWS:
-                                ctypes.windll.user32.SetWindowPos(
-                                    native.Handle.ToInt32(),
-                                    0,  # HWND_TOP
-                                    scr.Bounds.X,
-                                    scr.Bounds.Y,
-                                    scr.Bounds.Width,
-                                    scr.Bounds.Height,
-                                    0x0020 | 0x0040  # SWP_FRAMECHANGED | SWP_SHOWWINDOW
-                                )
-                            native.is_fullscreen = True
-
-                        native.Invoke(Action(_do_enter_fs))
-                        applied = True
-                    except Exception as e:
-                        log_desktop_error(f"native.Invoke enter fullscreen failed: {e}")
-
-                if not applied:
-                    try:
-                        self._window.toggle_fullscreen()
-                        applied = True
-                    except Exception as e:
-                        log_desktop_error(f"_window.toggle_fullscreen enter failed: {e}")
-
-                if not applied and hwnd and IS_WINDOWS:
-                    u = ctypes.windll.user32
-                    mon = self._get_monitor_rect(hwnd)
-                    mx, my, mw, mh = mon if mon else (0, 0, u.GetSystemMetrics(0) or 1920, u.GetSystemMetrics(1) or 1080)
-                    if u.IsZoomed(hwnd):
-                        u.ShowWindow(hwnd, 9)
-                        time.sleep(0.02)
-                    u.SetWindowPos(hwnd, 0, mx, my, mw, mh, 0x0020 | 0x0040)
-
+                    if sw > 200 and sh > 150:
+                        self._restore_box = (px, py, sw, sh)
+                self.apply_maximized(True)
                 self._fullscreen = True
-                self._maximized = False
+                self._maximized = True
+                self._persist(maximized=True)
             else:
-                applied = False
-                if native is not None and hasattr(native, "Invoke"):
-                    try:
-                        from System import Action
-                        import System.Windows.Forms as WinForms
-                        from System.Drawing import Rectangle
-
-                        def _do_exit_fs():
-                            native.is_fullscreen = False
-                            if self._pre_fs_maximized:
-                                native.WindowState = WinForms.FormWindowState.Maximized
-                            else:
-                                native.WindowState = WinForms.FormWindowState.Normal
-                                box = self._pre_fs_box or self._restore_box or (80, 60, 1460, 920)
-                                scale = getattr(native, "_scale", 1.0) or 1.0
-                                native.Bounds = Rectangle(
-                                    int(box[0] * scale), int(box[1] * scale),
-                                    int(box[2] * scale), int(box[3] * scale)
-                                )
-
-                        native.Invoke(Action(_do_exit_fs))
-                        applied = True
-                    except Exception as e:
-                        log_desktop_error(f"native.Invoke exit fullscreen failed: {e}")
-
-                if not applied:
-                    try:
-                        self._window.toggle_fullscreen()
-                        applied = True
-                    except Exception as e:
-                        log_desktop_error(f"_window.toggle_fullscreen exit failed: {e}")
-
+                self.apply_maximized(False)
                 self._fullscreen = False
-                if not applied or self._pre_fs_maximized:
-                    if self._pre_fs_maximized:
-                        self.apply_maximized(True)
-                    else:
-                        box = self._pre_fs_box or self._restore_box or (80, 60, 1460, 920)
-                        self.win_set_bounds(box[0], box[1], box[2], box[3])
+                self._maximized = False
+                box = self._restore_box
+                if box and len(box) == 4 and box[2] > 200 and box[3] > 150:
+                    # Ensure window restores to a visible non-maximized box even if launched maximized
+                    if self._is_zoomed() and hwnd and IS_WINDOWS:
+                        ctypes.windll.user32.ShowWindow(hwnd, 9)
+                    _save_bounds_cfg(self._bounds_key, box[0], box[1], box[2], box[3], maximized=False)
+                else:
+                    self._persist(maximized=False)
 
             if hwnd and IS_WINDOWS:
                 _force_relayout(hwnd)
 
-            self._fullscreen = bool(target)
+            final_state = bool(self._is_zoomed() or self._fullscreen)
+            try:
+                js_val = "true" if final_state else "false"
+                self._window.evaluate_js(
+                    f"window.__acgSyncFullscreen && window.__acgSyncFullscreen({js_val})"
+                )
+            except Exception:
+                pass
+
             return {
                 "ok": True,
-                "fullscreen": self._fullscreen,
-                "maximized": self._is_zoomed()
+                "fullscreen": final_state,
+                "maximized": final_state
             }
         except Exception as e:
             log_desktop_error(f"win_set_fullscreen failed: {e}")
-            return {"ok": False, "fullscreen": self._fullscreen, "error": str(e)}
+            return {"ok": False, "fullscreen": self._is_fullscreen(), "error": str(e)}
 
     @_safe_api
     def win_toggle_fullscreen(self):
@@ -588,26 +535,10 @@ class WindowBridge:
 
     @_safe_api
     def win_toggle_maximize(self):
-        if self._window is None:
-            return False
-        if self._fullscreen:
-            self.win_set_fullscreen(False)
-            return self._maximized
-        if self._is_zoomed():
-            self.apply_maximized(False)
-            box = self._restore_box
-            if box:
-                _save_bounds_cfg(self._bounds_key, box[0], box[1], box[2], box[3], maximized=False)
-            else:
-                self._persist(maximized=False)
-        else:
-            if self._frameless:
-                px, py = self._position()
-                _, _, sw, sh = self._geom()
-                self._restore_box = (px, py, sw, sh)
-            self.apply_maximized(True)
-            self._persist(maximized=True)
-        return self._maximized
+        res = self.win_set_fullscreen(None)
+        if isinstance(res, dict):
+            return bool(res.get("maximized"))
+        return self._is_zoomed()
 
     @_safe_api
     def win_close(self):
@@ -1519,7 +1450,33 @@ def start_global_hotkey_listener(port: int):
         except Exception as e:
             print(f"[Desktop] Hotkey listener exited: {e}")
 
+    def _f11_foreground_watcher():
+        """Watches VK_F11 (0x7A) when ACG Vault main window is in foreground so F11 never fails in WebView2."""
+        if not IS_WINDOWS:
+            return
+        user32 = ctypes.windll.user32
+        VK_F11 = 0x7A
+        was_down = False
+        while not _server_should_exit:
+            try:
+                state = user32.GetAsyncKeyState(VK_F11)
+                is_down = bool(state & 0x8000)
+                if is_down and not was_down:
+                    api = globals().get("_main_api")
+                    if api is not None:
+                        main_hwnd = api._hwnd()
+                        fg_hwnd = user32.GetForegroundWindow()
+                        if main_hwnd and fg_hwnd and (
+                            int(fg_hwnd) == int(main_hwnd) or bool(user32.IsChild(main_hwnd, fg_hwnd))
+                        ):
+                            api.win_set_fullscreen(None)
+                was_down = is_down
+            except Exception:
+                pass
+            time.sleep(0.03)
+
     threading.Thread(target=_hotkey_loop, daemon=True).start()
+    threading.Thread(target=_f11_foreground_watcher, daemon=True).start()
 
 
 def start_system_tray(port: int, on_exit_callback):

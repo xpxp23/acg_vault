@@ -732,7 +732,19 @@ def resolve_save_conflict(
         except Exception:
             pass
 
-        choices = slot_choices or {}
+        choices = dict(slot_choices or {})
+        if not choices:
+            # 智能合并模式（大屏模式一键合并最新槽位）：自动按槽位最后修改时间与新增状态选择更新的一侧
+            auto_diff = compare_save_sources(game_id, left_source="local", right_source=f"backup:{snap_path.name}")
+            for s in (auto_diff.get("slots") or []):
+                rel_p = s.get("rel_path")
+                if not rel_p:
+                    continue
+                if s.get("status") == "only_right" or s.get("newer_side") == "right":
+                    choices[rel_p] = "right"
+                else:
+                    choices[rel_p] = "left"
+
         applied_from_right = 0
         kept_from_left = 0
         try:
@@ -753,9 +765,16 @@ def resolve_save_conflict(
         except Exception as e:
             return {"success": False, "message": f"按槽位合并失败: {str(e)}"}
 
+        try:
+            merged_bak = backup_game_saves(game_id, label="智能槽位合并结果", is_auto=True)
+            if cfg.get("webdav_enabled") and (cfg.get("webdav_url") or "").strip() and merged_bak.get("zip_path"):
+                upload_backup_to_webdav(Path(merged_bak["zip_path"]), cfg)
+        except Exception:
+            pass
+
         return {
             "success": True,
-            "message": f"按槽位合并完成！已保留 {kept_from_left} 个本地槽位，并从快照合并写入 {applied_from_right} 个槽位（合并前状态已自动备份）。",
+            "message": f"智能合并完成！保留 {kept_from_left} 个本地较新槽位，合并写入 {applied_from_right} 个快照/云端较新槽位，并已同步备份。",
             "save_status": get_game_save_status(game_id),
         }
 

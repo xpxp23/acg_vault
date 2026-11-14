@@ -1,10 +1,10 @@
 /*
- * ACG Vault · Frameless Window Chrome & True Fullscreen Bridge (v3.3.0)
+ * ACG Vault · Frameless Window Chrome & True Fullscreen Bridge (v3.4.0)
  *
  * 在无边框 WebView2 窗口里提供：
- *   - 统一宿主级真全屏桥接（win_set_fullscreen / /api/window/fullscreen + 浏览器回退）及 F11 全局热键；
- *   - 大屏模式下自动消除 30px 双层顶栏（将拖拽与窗口控制无缝融入大屏 .bs-top 顶栏，全屏时彻底隐藏）；
- *   - 桌面主界面与伴侣窗提供标准可拖拽标题栏与八向边缘缩放热区。
+ *   - 统一宿主级真全屏/最大化桥接（与双击标题栏底层 Win32 ShowWindow 完全同源）及 F11 全局热键；
+ *   - 大屏模式下自动消除 30px 双层顶栏（将拖拽、双击全屏与窗口控制无缝融入大屏 .bs-top 顶栏）；
+ *   - 桌面主界面锁定外层壳高度，使右侧滚动条内嵌于主内容区，彻底消除贯穿顶栏的割裂感。
  */
 (function () {
   'use strict';
@@ -66,7 +66,13 @@
 
   html.acg-frameless body { padding-top: var(--acg-tb-h) !important; }
   html.acg-frameless #app { min-height: calc(100vh - var(--acg-tb-h)) !important; }
-  html.acg-frameless #app-header { top: var(--acg-tb-h) !important; }
+  html.acg-frameless #app.acg-desktop-shell {
+    height: calc(100vh - var(--acg-tb-h)) !important;
+    max-height: calc(100vh - var(--acg-tb-h)) !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+  }
+  html.acg-frameless #app-header { top: 0 !important; }
   html.acg-frameless .bs-shell { height: calc(100vh - var(--acg-tb-h)) !important; }
   html.acg-frameless .bs-top { top: 0 !important; }
   html.acg-frameless .bs-detail,
@@ -92,6 +98,7 @@
   let mounted = false;
   let allowMax = true;
   let isFullscreenState = false;
+  let lastToggleAt = 0;
 
   function isDesktop() {
     return !!(window.pywebview && window.pywebview.api && window.pywebview.api.win_get_state);
@@ -120,18 +127,59 @@
     }));
   }
 
+  // 供后端 Win32 VK_F11 监听器或原生窗口状态变更直接回调同步
+  window.__acgSyncFullscreen = function (fs) {
+    applyFullscreenClass(!!fs);
+    updateMaximized(!!fs);
+  };
+
   async function toggleFullscreen(forceEnable) {
-    if (isDesktop() && api() && api().win_set_fullscreen) {
+    const now = performance.now();
+    if (forceEnable === undefined && now - lastToggleAt < 180) {
+      return isFullscreenState;
+    }
+    lastToggleAt = now;
+
+    // 1. 优先走 PyWebView 原生桥接（与双击标题栏底层 Win32 ShowWindow 完全同源）
+    if (isDesktop() && api()) {
       try {
-        const res = await api().win_set_fullscreen(forceEnable === undefined ? null : Boolean(forceEnable));
-        if (res && res.ok) {
-          applyFullscreenClass(!!res.fullscreen);
-          if (res.maximized !== undefined) updateMaximized(!!res.maximized);
-          return !!res.fullscreen;
+        if (api().win_set_fullscreen) {
+          const res = await api().win_set_fullscreen(forceEnable === undefined ? null : Boolean(forceEnable));
+          if (res && res.ok) {
+            const nextFs = !!(res.fullscreen || res.maximized);
+            applyFullscreenClass(nextFs);
+            updateMaximized(nextFs);
+            return nextFs;
+          }
         }
-      } catch (e) { /* fall through */ }
+        if (api().win_toggle_maximize && forceEnable === undefined) {
+          const isMax = await api().win_toggle_maximize();
+          applyFullscreenClass(!!isMax);
+          updateMaximized(!!isMax);
+          return !!isMax;
+        }
+      } catch (e) { /* fall through to FastAPI bridge */ }
     }
 
+    // 2. 紧接着走后端 /api/window/fullscreen 桥接（解决 pywebview.api 尚未就绪或跨页切换瞬间调用的问题）
+    try {
+      const r = await fetch('/api/window/fullscreen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: forceEnable === undefined ? null : Boolean(forceEnable) })
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (d && d.ok) {
+          const nextFs = !!(d.fullscreen || d.maximized);
+          applyFullscreenClass(nextFs);
+          updateMaximized(nextFs);
+          return nextFs;
+        }
+      }
+    } catch (e) { /* fall through to HTML5 fullscreen */ }
+
+    // 3. 仅当确认为纯外部浏览器模式（后端返回非桌面窗口模式）时，才使用 HTML5 Fullscreen API
     try {
       const wantFs = forceEnable !== undefined ? Boolean(forceEnable) : !document.fullscreenElement;
       if (wantFs) {
@@ -161,24 +209,8 @@
         }
       }
     } catch (e) {
-      console.warn('[AcgWindow] HTML5 requestFullscreen error:', e);
+      console.warn('[AcgWindow] HTML5 requestFullscreen fallback error:', e);
     }
-
-    try {
-      const r = await fetch('/api/window/fullscreen', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enable: forceEnable === undefined ? null : Boolean(forceEnable) })
-      });
-      if (r.ok) {
-        const d = await r.json();
-        if (d && d.ok) {
-          applyFullscreenClass(!!d.fullscreen);
-          if (d.maximized !== undefined) updateMaximized(!!d.maximized);
-          return !!d.fullscreen;
-        }
-      }
-    } catch (e) { /* ignore */ }
 
     return isFullscreenState;
   }
@@ -197,6 +229,7 @@
         e.preventDefault();
         e.stopPropagation();
         onClick();
+        try { window.focus(); } catch (err) {}
       });
       box.appendChild(b);
       return b;
@@ -216,13 +249,8 @@
     }
     let maxBtn = null;
     if (wanted.indexOf('max') >= 0) {
-      maxBtn = make('max', '最大化', ICONS.max, async function () {
-        try {
-          const isMax = await api().win_toggle_maximize();
-          applyFullscreenClass(false);
-          maxBtn.innerHTML = isMax ? ICONS.restore : ICONS.max;
-          maxBtn.title = isMax ? '还原' : '最大化';
-        } catch (e) { /* ignore */ }
+      maxBtn = make('max', '最大化 / 还原', ICONS.max, async function () {
+        await toggleFullscreen();
       });
     }
     if (wanted.indexOf('close') >= 0) {
@@ -236,27 +264,21 @@
     el.dataset.acgDragBound = '1';
 
     el.addEventListener('pointerdown', async function (ev) {
-      if (ev.button !== 0 || isFullscreenState) return;
+      if (ev.button !== 0) return;
       const t = ev.target;
       if (t && t.closest && t.closest(SKIP)) return;
       if (!isDesktop()) return;
 
       let st = null;
       try { st = await api().win_get_state(); } catch (e) { return; }
-      if (!st || !st.ok || !st.frameless || st.fullscreen) return;
-
-      if (st.maximized) {
-        let r = null;
-        try { r = await api().win_restore_for_drag(ev.screenX, ev.screenY); } catch (e) { r = null; }
-        if (!r || !r.ok) return;
-        st = { ok: true, x: r.x, y: r.y, width: r.width, height: r.height, maximized: false };
-        updateMaximized(false);
-      }
+      if (!st || !st.ok || !st.frameless) return;
 
       const startX = ev.screenX;
       const startY = ev.screenY;
-      const ox = st.x;
-      const oy = st.y;
+      let ox = st.x;
+      let oy = st.y;
+      let isMaxNow = !!(st.maximized || st.fullscreen);
+      let restoredDuringDrag = false;
       let nx = ox;
       let ny = oy;
       let raf = null;
@@ -268,7 +290,23 @@
         api().win_move(Math.round(nx), Math.round(ny));
         if (window.__acgReportUnlockChip) window.__acgReportUnlockChip();
       };
-      const onMove = function (e) {
+      const onMove = async function (e) {
+        const dx = e.screenX - startX;
+        const dy = e.screenY - startY;
+        if (!moved && Math.hypot(dx, dy) < 5) return;
+
+        if (isMaxNow && !restoredDuringDrag) {
+          restoredDuringDrag = true;
+          isMaxNow = false;
+          let r = null;
+          try { r = await api().win_restore_for_drag(e.screenX, e.screenY); } catch (err) { r = null; }
+          if (!r || !r.ok) return;
+          ox = r.x;
+          oy = r.y;
+          applyFullscreenClass(false);
+          updateMaximized(false);
+        }
+
         nx = ox + (e.screenX - startX);
         ny = oy + (e.screenY - startY);
         lastScreenY = e.screenY;
@@ -284,7 +322,7 @@
           api().win_save_bounds();
           if (window.__acgReportUnlockChip) window.__acgReportUnlockChip();
           if (allowMax && lastScreenY <= 4) {
-            setTimeout(function () { api().win_toggle_maximize(); }, 30);
+            setTimeout(function () { toggleFullscreen(true); }, 30);
           }
         }
       };
@@ -296,14 +334,11 @@
     });
 
     el.addEventListener('dblclick', function (ev) {
-      if (!allowMax || !isDesktop()) return;
+      if (!allowMax) return;
       const t = ev.target;
       if (t && t.closest && t.closest(SKIP)) return;
-      if (isFullscreenState) {
-        toggleFullscreen(false);
-      } else {
-        api().win_toggle_maximize();
-      }
+      ev.preventDefault();
+      toggleFullscreen();
     });
   }
 
@@ -390,17 +425,31 @@
 
   function bindStateSync() {
     const sync = async function () {
-      if (!isDesktop()) return;
+      if (isDesktop() && api() && api().win_get_state) {
+        try {
+          const st = await api().win_get_state();
+          if (st && st.ok) {
+            const isFull = !!(st.fullscreen || st.maximized);
+            updateMaximized(isFull);
+            applyFullscreenClass(isFull);
+            return;
+          }
+        } catch (e) { /* ignore */ }
+      }
       try {
-        const st = await api().win_get_state();
-        if (st && st.ok) {
-          updateMaximized(!!st.maximized);
-          applyFullscreenClass(!!st.fullscreen);
+        const r = await fetch('/api/window/state', { cache: 'no-store' });
+        if (r.ok) {
+          const d = await r.json();
+          if (d && d.ok) {
+            const isFull = !!(d.fullscreen || d.maximized);
+            updateMaximized(isFull);
+            applyFullscreenClass(isFull);
+          }
         }
       } catch (e) { /* ignore */ }
     };
     window.addEventListener('focus', sync);
-    window.addEventListener('blur', sync);
+    window.addEventListener('resize', sync);
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden) sync();
     });
@@ -414,7 +463,7 @@
     main.className = 'acg-tb-main';
     main.innerHTML = '<span class="acg-tb-dot"></span>' +
       '<span class="acg-tb-title"></span>';
-    main.querySelector('.acg-tb-title').textContent = options.title || 'ACG Vault v3.3.0';
+    main.querySelector('.acg-tb-title').textContent = options.title || 'ACG Vault v3.4.0';
     bar.appendChild(main);
 
     const ctrl = document.createElement('div');
@@ -425,7 +474,7 @@
     const maxBtn = buildControls(ctrl, options);
     bindDrag(bar);
 
-    if (maxBtn && state && state.maximized) {
+    if (maxBtn && state && (state.maximized || state.fullscreen)) {
       maxBtn.innerHTML = ICONS.restore;
       maxBtn.title = '还原';
     }
@@ -433,7 +482,7 @@
   }
 
   window.addEventListener('keydown', function (ev) {
-    if (ev.key === 'F11' || ev.code === 'F11') {
+    if (ev.key === 'F11' || ev.code === 'F11' || ev.keyCode === 122) {
       ev.preventDefault();
       ev.stopPropagation();
       toggleFullscreen();
@@ -454,7 +503,26 @@
     const isBigScreen = Boolean(opts.immersiveBigScreen || /bigscreen/i.test(window.location.pathname));
     if (isBigScreen) {
       document.documentElement.classList.add('acg-bigscreen-immersive');
+      const attachBsTopDrag = function () {
+        const bsTop = document.querySelector('.bs-top');
+        if (bsTop) bindDrag(bsTop);
+      };
+      attachBsTopDrag();
+      setTimeout(attachBsTopDrag, 350);
+      setTimeout(attachBsTopDrag, 1000);
     }
+
+    // 即使在 pywebview.api 尚未注入前，也先通过 /api/window/state 同步一次初始全屏状态
+    fetch('/api/window/state', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (d && d.ok) {
+          const isFull = !!(d.fullscreen || d.maximized);
+          applyFullscreenClass(isFull);
+          updateMaximized(isFull);
+        }
+      })
+      .catch(function () {});
 
     let done = false;
     const init = async function () {
@@ -468,7 +536,9 @@
       buildTitlebar(opts);
       addResizeHandles(opts);
       bindStateSync();
-      if (state.fullscreen) applyFullscreenClass(true);
+      const isFull = !!(state.fullscreen || state.maximized);
+      applyFullscreenClass(isFull);
+      updateMaximized(isFull);
 
       if (isBigScreen) {
         const attachBsTopDrag = function () {
@@ -477,7 +547,6 @@
         };
         attachBsTopDrag();
         setTimeout(attachBsTopDrag, 400);
-        setTimeout(attachBsTopDrag, 1200);
       }
     };
 

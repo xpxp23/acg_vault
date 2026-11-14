@@ -399,6 +399,26 @@ class GamepadEngine:
             # 关闭状态下仍保留 4Hz 连接探测，设置页才能显示"已连接/未连接"
             self.start()
 
+    def get_ui_pad_state(self) -> Dict[str, Any]:
+        """
+        返回供大屏模式 (Big Screen UI) 直接消费的 60Hz XInput 原始手柄状态。
+        即使 WebView2 因失焦或安全策略未激活 navigator.getGamepads()，
+        大屏模式也能通过此桥接通道直接获得零延迟手柄操控。
+        """
+        with self._lock:
+            connected = bool(self._state.get("connected"))
+            slot = self._state.get("slot")
+            return {
+                "ok": True,
+                "connected": connected,
+                "slot": slot,
+                "id": f"XInput Standard Controller #{int(slot or 0) + 1} ({self._state.get('backend') or 'XInput'})" if connected else "",
+                "buttons": list(self._state.get("buttons") or []),
+                "axes": dict(self._state.get("axes") or {"lx": 0.0, "ly": 0.0, "rx": 0.0, "ry": 0.0, "lt": 0.0, "rt": 0.0}),
+                "game_active": bool(self._state.get("active")),
+                "deadzone": float(self._settings.get("gamepad_deadzone", 0.35)),
+            }
+
     def get_status(self) -> Dict[str, Any]:
         with self._lock:
             state = dict(self._state)
@@ -536,23 +556,6 @@ class GamepadEngine:
 
     def _tick(self) -> float:
         enabled = bool(self._settings.get("gamepad_enabled", True))
-        if not enabled:
-            # 关闭时只保留低频连接探测，供设置页显示状态，不参与按键转发
-            self._release_all()
-            pad = self._read_pad() if XINPUT else None
-            with self._lock:
-                self._edge_state = set()
-                self._state.update({
-                    "enabled": False,
-                    "connected": bool(pad),
-                    "slot": pad[0] if pad else None,
-                    "active": False,
-                    "target_game": None,
-                    "buttons": [],
-                    "message": "手柄支持已关闭",
-                })
-            return 0.25
-
         pad = self._read_pad() if XINPUT else None
 
         if not pad:
@@ -596,7 +599,7 @@ class GamepadEngine:
 
         with self._lock:
             bindings = self._resolve_bindings()
-            self._target = self._resolve_target()
+            self._target = self._resolve_target() if enabled else None
             target_gid = (self._target or {}).get("game_id")
             active = bool(enabled and self._target and not self._game_disabled(target_gid))
             profile_id = self._resolve_profile_id((self._target or {}).get("engine_type"), target_gid)
@@ -753,3 +756,7 @@ def reload_config(cfg: Dict[str, Any]) -> None:
 
 def get_status() -> Dict[str, Any]:
     return ENGINE.get_status()
+
+
+def get_ui_pad_state() -> Dict[str, Any]:
+    return ENGINE.get_ui_pad_state()

@@ -1,5 +1,5 @@
 /*
- * ACG Vault · Big Screen Mode (v3.3.0)
+ * ACG Vault · Big Screen Mode (v3.4.0)
  * 10-foot UI, gamepad & keyboard/mouse auto-sensing for the local ACG library.
  */
 (function () {
@@ -150,7 +150,7 @@
     return g.display_title || g.clean_title || g.folder_name || '未命名作品';
   }
   function gameInitials(g) {
-    const t = gameTitle(g).replace(/[\s\-_·]+/g, '');
+    const t = gameTitle(g).replace(/[\s\-_·•:：/\\]+/g, '');
     return (t.slice(0, 2) || 'AC').toUpperCase();
   }
   function fmtHours(sec) {
@@ -261,8 +261,211 @@
         status: 'all', favorite: false, translated: false, engine: 'all', sort: 'recent'
       }, LS.get('bs_filter', {})));
       const settings = reactive(Object.assign({
-        bg: 2, sound: true, volume: 0.3, confirmKey: 'auto', cardConfirm: 'detail', hints: true
+        bg: 2, sound: true, volume: 0.3, confirmKey: 'auto', cardConfirm: 'detail',
+        coverFit: 'smart', parallax: true, hints: true
       }, LS.get('bs_settings', {})));
+
+      // 横版封面 (DLsite 4:3 / 16:9) 自动识别映射表：gameId -> boolean
+      const landscapeMap = reactive({});
+      function onCoverImgLoad(ev, g) {
+        if (!ev || !ev.target || !g || !g.id) return;
+        const nw = Number(ev.target.naturalWidth) || 0;
+        const nh = Number(ev.target.naturalHeight) || 0;
+        if (nw > 0 && nh > 0) {
+          landscapeMap[g.id] = (nw / nh) > 1.04;
+        }
+      }
+      function isSmartLandscape(g) {
+        if (!g || !g.id) return false;
+        const mode = settings.coverFit || 'smart';
+        if (mode === 'cover') return false;
+        if (mode === 'contain') return true;
+        if (landscapeMap[g.id] !== undefined) return !!landscapeMap[g.id];
+        return false;
+      }
+
+      // 引擎高刷与无损瘦身状态感知缓存：gameId -> statusObj
+      const optStatusMap = reactive({});
+      const optBusyMap = reactive({});
+      const optTargetFpsMap = reactive({});
+
+      async function refreshOptimizerStatus(gid, force) {
+        if (!gid) return null;
+        if (!force && optStatusMap[gid] && !optStatusMap[gid]._loading) {
+          return optStatusMap[gid];
+        }
+        try {
+          const res = await fetch('/api/games/' + gid + '/optimizer/status', { cache: 'no-store' });
+          if (res.ok) {
+            const d = await res.json();
+            if (d && d.success) {
+              optStatusMap[gid] = d;
+              if (!optTargetFpsMap[gid]) {
+                optTargetFpsMap[gid] = (d.current_target_fps && d.current_target_fps >= 60) ? d.current_target_fps : 120;
+              }
+              return d;
+            }
+          }
+        } catch (e) { /* ignore */ }
+        return null;
+      }
+
+      // 大屏云存档冲突快速仲裁与快照时光机状态 (Big Screen Save Time-Machine)
+      const saveTime = reactive({
+        gameId: null,
+        loading: false,
+        resolving: false,
+        conflictState: 'synced',
+        bannerText: '正在检查本地与云端存档状态…',
+        summaryText: '',
+        strategy: 'slot_merge',
+        targetSnapshot: '',
+        leftCard: null,
+        rightCard: null,
+        diffSlots: [],
+        snapshots: []
+      });
+
+      async function loadSaveTimeMachine(g, autoSwitchOnConflict) {
+        if (!g || !g.id) return null;
+        saveTime.gameId = g.id;
+        saveTime.loading = true;
+        try {
+          const res = await fetch('/api/games/' + g.id + '/saves/conflicts', { cache: 'no-store' });
+          const d = await res.json();
+          if (!d || !d.success) {
+            saveTime.bannerText = (d && d.message) || '读取存档状态失败';
+            saveTime.loading = false;
+            return null;
+          }
+          saveTime.conflictState = d.conflict_state || 'synced';
+          saveTime.bannerText = d.conflict_description || '本地存档与最新快照状态已同步';
+
+          const localBaks = d.local_backups || [];
+          const remoteBaks = d.remote_backups || [];
+          const mergedSnaps = [];
+          const seenSnap = {};
+          remoteBaks.forEach(function (rb) {
+            if (!seenSnap[rb.filename]) {
+              seenSnap[rb.filename] = true;
+              mergedSnaps.push({
+                filename: rb.filename,
+                sourceId: rb.source_id || ('webdav:' + rb.filename),
+                label: '☁️ 云端 ' + rb.filename.replace(/^game_\d+_/, ''),
+                sub: (rb.size_kb || 0) + ' KB · ' + (rb.is_downloaded ? '已缓存到本地' : '仅在 WebDAV 云端'),
+                location: 'webdav'
+              });
+            }
+          });
+          localBaks.forEach(function (lb) {
+            if (!seenSnap[lb.filename]) {
+              seenSnap[lb.filename] = true;
+              mergedSnaps.push({
+                filename: lb.filename,
+                sourceId: lb.source_id || ('backup:' + lb.filename),
+                label: '📦 本地 ' + lb.filename.replace(/^game_\d+_/, ''),
+                sub: (lb.created_at || '') + ' · ' + (lb.size_kb || 0) + ' KB',
+                location: 'local'
+              });
+            }
+          });
+          saveTime.snapshots = mergedSnaps.slice(0, 12);
+
+          const diff = d.diff;
+          if (diff && diff.success) {
+            const ls = diff.left_source || {};
+            const rs = diff.right_source || {};
+            saveTime.targetSnapshot = rs.id || (mergedSnaps[0] ? mergedSnaps[0].sourceId : '');
+
+            let leftTele = null;
+            let rightTele = null;
+            const slotsArr = diff.slots || [];
+            for (let i = 0; i < slotsArr.length; i++) {
+              const sl = slotsArr[i];
+              if (!leftTele && sl.left && (sl.left.lead_actor || sl.left.gold !== null)) {
+                const la = sl.left.lead_actor;
+                leftTele = {
+                  actor: la ? ((la.name || '主角') + ' Lv.' + (la.level || 1)) : '',
+                  gold: sl.left.gold,
+                  cgCount: sl.left.cg_switches_on || 0
+                };
+              }
+              if (!rightTele && sl.right && (sl.right.lead_actor || sl.right.gold !== null)) {
+                const ra = sl.right.lead_actor;
+                rightTele = {
+                  actor: ra ? ((ra.name || '主角') + ' Lv.' + (ra.level || 1)) : '',
+                  gold: sl.right.gold,
+                  cgCount: sl.right.cg_switches_on || 0
+                };
+              }
+            }
+
+            saveTime.leftCard = {
+              title: '本地实时存档 (Local)',
+              updatedAt: ls.updated_at || '无记录',
+              slotCount: ls.slot_count || 0,
+              sizeKb: ls.total_size_kb || 0,
+              telemetry: leftTele
+            };
+            saveTime.rightCard = {
+              title: rs.label || '云端/最新快照',
+              updatedAt: rs.updated_at || '无记录',
+              slotCount: rs.slot_count || 0,
+              sizeKb: rs.total_size_kb || 0,
+              telemetry: rightTele
+            };
+
+            const sm = diff.summary || {};
+            saveTime.summaryText = '差异槽位：修改 ' + (sm.modified_count || 0) + ' · 本地独有 ' + (sm.only_left_count || 0) + ' · 云端独有 ' + (sm.only_right_count || 0);
+
+            saveTime.diffSlots = slotsArr.filter(function (s) { return s.status !== 'identical'; }).map(function (s) {
+              const parts = [];
+              if (s.status === 'only_left') parts.push('仅本地存在');
+              else if (s.status === 'only_right') parts.push('仅云端/快照存在');
+              else {
+                parts.push(s.newer_side === 'left' ? '本地较新' : (s.newer_side === 'right' ? '云端较新' : '内容差异'));
+              }
+              if (s.level_diff) {
+                parts.push('Lv.' + s.level_diff.left_lv + ' vs Lv.' + s.level_diff.right_lv);
+              }
+              if (s.gold_diff) {
+                parts.push(s.gold_diff.left + 'G vs ' + s.gold_diff.right + 'G');
+              }
+              return {
+                rel_path: s.rel_path,
+                label: s.label,
+                status: s.status,
+                badge: parts.join(' · ')
+              };
+            });
+          } else {
+            saveTime.leftCard = null;
+            saveTime.rightCard = null;
+            saveTime.diffSlots = [];
+            saveTime.summaryText = '共 ' + mergedSnaps.length + ' 份可用历史快照';
+          }
+
+          if (saveTime.conflictState === 'remote_ahead') {
+            saveTime.strategy = 'use_snapshot';
+          } else if (saveTime.conflictState === 'local_ahead') {
+            saveTime.strategy = 'keep_local';
+          } else {
+            saveTime.strategy = 'slot_merge';
+          }
+
+          if (autoSwitchOnConflict && (saveTime.conflictState === 'diverged' || saveTime.conflictState === 'remote_ahead')) {
+            setSheet('savetime');
+            play('error');
+            showToast('⚠️ 检测到本地与云端存档存在差异分叉，已为您打开冲突快速仲裁面板', 'error', 4200);
+          }
+          return d;
+        } catch (e) {
+          saveTime.bannerText = '检测云存档冲突失败：' + e.message;
+          return null;
+        } finally {
+          saveTime.loading = false;
+        }
+      }
 
       // focus.zone: 'grid' | 'hero'
       const focus = reactive({ zone: 'grid', row: 0, col: 0, heroBtn: 0 });
@@ -583,14 +786,21 @@
         }, 135);
       }, { immediate: true });
 
+      const heroScrollCollapsed = ref(false);
       const isHeroCompact = computed(function () {
         if (focus.zone === 'hero') return false;
-        return focus.row > 0 || mainScrollTop.value > 45;
+        return focus.row > 0 || heroScrollCollapsed.value;
       });
 
       function onMainScroll(ev) {
         if (ev && ev.target) {
-          mainScrollTop.value = ev.target.scrollTop || 0;
+          const st = ev.target.scrollTop || 0;
+          mainScrollTop.value = st;
+          if (!heroScrollCollapsed.value && st > 76) {
+            heroScrollCollapsed.value = true;
+          } else if (heroScrollCollapsed.value && st < 16) {
+            heroScrollCollapsed.value = false;
+          }
         }
       }
 
@@ -680,8 +890,8 @@
             if (track) {
               const c = card.getBoundingClientRect();
               const t = track.getBoundingClientRect();
-              if (c.left < t.left + 8) track.scrollBy({ left: c.left - t.left - 8, behavior: 'smooth' });
-              else if (c.right > t.right - 8) track.scrollBy({ left: c.right - t.right + 8, behavior: 'smooth' });
+              if (c.left < t.left + 28) track.scrollBy({ left: c.left - t.left - 28, behavior: 'smooth' });
+              else if (c.right > t.right - 28) track.scrollBy({ left: c.right - t.right + 28, behavior: 'smooth' });
             }
             return;
           }
@@ -1192,31 +1402,8 @@
       async function toggleFullscreen() {
         play('confirm');
         let fs = false;
-        if (window.AcgWindow && window.AcgWindow.isDesktop && window.AcgWindow.isDesktop()) {
+        if (window.AcgWindow && window.AcgWindow.toggleFullscreen) {
           fs = await window.AcgWindow.toggleFullscreen();
-        } else {
-          // 浏览器环境：必须在当前用户交互事件调用栈中立即触发 HTML5 全屏，不能受异步网络请求干扰
-          try {
-            if (!document.fullscreenElement) {
-              const el = document.documentElement;
-              const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
-              if (rfs) {
-                await rfs.call(el);
-                fs = true;
-              }
-            } else {
-              const efs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
-              if (efs) {
-                await efs.call(document);
-                fs = false;
-              }
-            }
-          } catch (err) {
-            console.warn('[BigScreen] HTML5 fullscreen failed, falling back:', err);
-            if (window.AcgWindow && window.AcgWindow.toggleFullscreen) {
-              fs = await window.AcgWindow.toggleFullscreen();
-            }
-          }
         }
         const activeFs = Boolean(
           (window.AcgWindow && window.AcgWindow.isFullscreen) ||
@@ -1224,14 +1411,18 @@
           fs
         );
         isFullscreen.value = activeFs;
-        showToast(activeFs ? '已进入全屏模式 (按 F11 可退出)' : '已退出全屏模式', '', 1800);
+        showToast(activeFs ? '已进入全屏模式 (按 F11 或双击顶栏可还原)' : '已还原为窗口模式', '', 1800);
+        try { window.focus(); } catch (e) {}
       }
 
       /* -------------------------------------------------------------- sheet */
       const sheetTitle = computed(function () {
         if (sheet.value === 'filter') return '筛选与布局';
         if (sheet.value === 'settings') return '大屏设置';
-        return sheetGame.value ? '操作 · ' + gameTitle(sheetGame.value) : '操作';
+        if (sheet.value === 'savetime') {
+          return sheetGame.value ? '存档时光机与冲突仲裁 · ' + gameTitle(sheetGame.value) : '存档时光机';
+        }
+        return sheetGame.value ? '操作与生命周期维护 · ' + gameTitle(sheetGame.value) : '操作';
       });
 
       const sheetRows = computed(function () {
@@ -1247,6 +1438,8 @@
         }
         if (sheet.value === 'settings') {
           return [
+            { key: 's_cover_fit', label: '横竖封面比例兼容', value: settings.coverFit || 'smart', options: [['smart', '智能防裁切 (推荐)'], ['cover', '全铺满 (3:4)'], ['contain', '全部完整居中']] },
+            { key: 's_parallax', label: '卡片 3D 视差高光动效', value: settings.parallax !== false, options: [[true, '开启'], [false, '关闭']] },
             { key: 's_bg', label: '背景氛围强度', value: settings.bg, options: [[0, '关闭 (省电)'], [1, '柔和'], [2, '强烈']] },
             { key: 's_sound', label: '操作微音效', value: !!settings.sound, options: [[true, '开'], [false, '关']] },
             { key: 's_volume', label: '音效音量', value: Number(settings.volume), options: [[0.15, '低'], [0.3, '中'], [0.5, '高']] },
@@ -1257,44 +1450,185 @@
         }
         const g = sheetGame.value;
         if (!g) return [];
+
+        if (sheet.value === 'savetime') {
+          const stRows = [
+            {
+              key: 'st_strategy',
+              label: '⚖️ 冲突仲裁策略',
+              value: saveTime.strategy || 'slot_merge',
+              options: [
+                ['slot_merge', '智能合并最新槽位'],
+                ['keep_local', '保留本地并上传'],
+                ['use_snapshot', '采用云端/快照覆盖'],
+                ['keep_both', '双分支同时保留']
+              ]
+            },
+            {
+              key: 'st_execute_resolve',
+              label: '⚡ 立即执行所选仲裁并同步',
+              action: true,
+              disabled: saveTime.resolving || saveTime.loading,
+              hint: saveTime.resolving ? '正在执行存档仲裁与云同步…' : ('按 ' + pad.confirm + ' 立即应用上方仲裁方案（自动创建保护备份）')
+            },
+            {
+              key: 'st_create_snapshot',
+              label: '📸 立即新建当前存档快照并上传云端',
+              action: true,
+              disabled: saveTime.resolving,
+              hint: '按 ' + pad.confirm + ' 固化当前进度并同步至 WebDAV'
+            },
+            {
+              key: 'st_refresh',
+              label: '🔄 重新扫描本地与 WebDAV 云端存档槽位',
+              action: true,
+              disabled: saveTime.loading,
+              hint: '按 ' + pad.confirm + ' 刷新双向差异对比数据'
+            }
+          ];
+          (saveTime.snapshots || []).forEach(function (snap) {
+            stRows.push({
+              key: 'st_restore:' + snap.sourceId,
+              snapObj: snap,
+              label: '🕰️ ' + snap.label,
+              action: true,
+              disabled: saveTime.resolving,
+              hint: snap.sub + ' · 按 ' + pad.confirm + ' 一键回滚至此时间点'
+            });
+          });
+          return stRows;
+        }
+
         const statusOpts = STATUS_OPTIONS.filter(function (o) { return o[0] !== 'all'; });
-        return [
+        const optInfo = optStatusMap[g.id] || null;
+        const isBusy = !!optBusyMap[g.id];
+        const targetFps = optTargetFpsMap[g.id] || 120;
+        const canPatchFps = optInfo ? !!optInfo.can_patch_fps : true;
+        const fpsPatched = !!(optInfo && optInfo.fps_patched);
+        const curFps = (optInfo && optInfo.current_target_fps) || 120;
+        const fp = (optInfo && optInfo.footprint) || null;
+        const estSaveBytes = fp ? (fp.estimated_savings_bytes || 0) : 0;
+        const estSaveStr = fp ? (fp.estimated_savings_str || '0 B') : '检测中…';
+        const totalSizeStr = (fp && fp.total_str) || g.folder_size_str || '—';
+        const hasSlimBackup = !!(optInfo && optInfo.has_slim_backup);
+
+        const actionRows = [
           { key: 'a_launch', label: '启动方式', value: launchModeFor(g), options: MODE_OPTIONS },
           { key: 'a_fav', label: '收藏', value: !!g.is_favorite, options: [[true, '已收藏'], [false, '未收藏']] },
           { key: 'a_rating', label: '评分', value: g.user_rating || 0, options: [[0, '未评'], [1, '1'], [2, '2'], [3, '3'], [4, '4'], [5, '5']] },
-          { key: 'a_status', label: '状态', value: g.play_status, options: statusOpts },
-          {
-            key: 'a_magpie',
-            label: 'Magpie 全屏',
-            action: true,
-            disabled: !magpie.value.installed || !runningMap.value[g.id],
-            hint: !magpie.value.installed
-              ? '未检测到 Magpie（设置里可指定路径）'
-              : (runningMap.value[g.id] ? '按 ' + pad.confirm + ' 让 Magpie 接管全屏' : '游戏启动后才能全屏')
-          },
-          {
-            key: 'a_theme',
-            label: '界面主题：' + (themeResolved.value === 'light' ? '日间 (Switch)' : '夜间'),
-            action: true,
-            hint: '按 ' + pad.confirm + ' 在 夜间 / 日间 (Switch) 之间切换'
-          },
-          {
-            key: 'a_magpie_preset',
-            label: 'Magpie 预设：' + magpiePresetLabel(),
-            action: true,
-            disabled: !magpie.value.installed || !(magpiePresets.value.presets || []).length,
-            hint: '按 ' + pad.confirm + ' 切到下一个缩放预设（会重启 Magpie）'
-          },
-          { key: 'a_fps_boost', label: '⚡ 注入 120Hz 高刷与 4x 快进补丁', action: true, hint: '按 ' + pad.confirm + ' 为 RPG Maker / Unity 解锁高帧率与快进' },
-          { key: 'a_webdav_sync', label: '☁️ WebDAV 云端存档同步', action: true, hint: '按 ' + pad.confirm + ' 备份当前存档并与云端双向同步' },
-          { key: 'a_folder', label: '打开游戏目录', action: true, hint: '按 ' + pad.confirm + ' 在资源管理器中打开' },
-          { key: 'a_guide', label: '全结局攻略', action: true, hint: g.has_walkthrough ? ('按 ' + pad.confirm + ' 阅读') : '该作品暂无攻略', disabled: !g.has_walkthrough }
+          { key: 'a_status', label: '状态', value: g.play_status, options: statusOpts }
         ];
+
+        // 状态感知高刷补丁与一键回滚项
+        if (canPatchFps) {
+          actionRows.push({
+            key: 'a_fps_target',
+            label: '🎯 高刷补丁目标帧率',
+            value: targetFps,
+            options: [[60, '60Hz'], [90, '90Hz'], [120, '120Hz'], [144, '144Hz'], [165, '165Hz']]
+          });
+        }
+        actionRows.push({
+          key: 'a_fps_boost',
+          label: fpsPatched
+            ? ('⚡ 高刷补丁：已注入 ' + curFps + 'Hz' + (curFps !== targetFps ? (' → 待更新 ' + targetFps + 'Hz') : ''))
+            : ('⚡ 高刷与 4x 快进补丁：' + (canPatchFps ? '未注入' : '当前引擎无需注入')),
+          action: true,
+          disabled: isBusy || !canPatchFps,
+          hint: !canPatchFps
+            ? '仅 RPG Maker MV/MZ 与 Unity 引擎支持原生高刷注入'
+            : (fpsPatched && curFps === targetFps
+                ? ('按 ' + pad.confirm + ' 一键回滚移除高刷补丁，恢复原始脚本')
+                : ('按 ' + pad.confirm + ' 注入 ' + targetFps + 'Hz 高刷与 4x 快进补丁'))
+        });
+
+        // 状态感知无损体积瘦身与备份回滚项
+        actionRows.push({
+          key: 'a_slim_game',
+          label: fp
+            ? (estSaveBytes > 32 * 1024
+                ? ('🧹 体积瘦身：可释放 ' + estSaveStr + '（当前 ' + totalSizeStr + '）')
+                : ('🧹 体积瘦身：已处于精简状态（当前 ' + totalSizeStr + '）'))
+            : '🧹 体积瘦身：正在分析冗余文件与贴图…',
+          action: true,
+          disabled: isBusy || !optInfo,
+          hint: isBusy
+            ? '正在后台执行无损压缩与清理，请稍候…'
+            : ('按 ' + pad.confirm + ' 清理冗余缓存并无损压缩 PNG 贴图（自动生成回滚备份包）')
+        });
+
+        if (hasSlimBackup) {
+          actionRows.push({
+            key: 'a_slim_rollback',
+            label: '⏪ 还原瘦身前原始文件（备份包 ' + (optInfo.backup_size_str || '') + '）',
+            action: true,
+            disabled: isBusy,
+            hint: '按 ' + pad.confirm + ' 从 .acg_optimizer_backup.zip 无损恢复全部原始文件'
+          });
+        }
+
+        // 云存档同步与时光机冲突仲裁入口
+        actionRows.push({
+          key: 'a_webdav_sync',
+          label: '☁️ WebDAV 云端存档智能同步',
+          action: true,
+          hint: '按 ' + pad.confirm + ' 自动检测冲突并双向同步（若存在分叉将弹出快速仲裁）'
+        });
+        actionRows.push({
+          key: 'a_open_savetime',
+          label: '🕰️ 存档时光机与冲突快速仲裁面板',
+          action: true,
+          hint: '按 ' + pad.confirm + ' 对比本地 vs 云端槽位详情或回滚历史快照'
+        });
+
+        actionRows.push({
+          key: 'a_magpie',
+          label: 'Magpie 全屏',
+          action: true,
+          disabled: !magpie.value.installed || !runningMap.value[g.id],
+          hint: !magpie.value.installed
+            ? '未检测到 Magpie（设置里可指定路径）'
+            : (runningMap.value[g.id] ? '按 ' + pad.confirm + ' 让 Magpie 接管全屏' : '游戏启动后才能全屏')
+        });
+        actionRows.push({
+          key: 'a_magpie_preset',
+          label: 'Magpie 预设：' + magpiePresetLabel(),
+          action: true,
+          disabled: !magpie.value.installed || !(magpiePresets.value.presets || []).length,
+          hint: '按 ' + pad.confirm + ' 切到下一个缩放预设（会重启 Magpie）'
+        });
+        actionRows.push({
+          key: 'a_theme',
+          label: '界面主题：' + (themeResolved.value === 'light' ? '日间 (Switch)' : '夜间'),
+          action: true,
+          hint: '按 ' + pad.confirm + ' 在 夜间 / 日间 (Switch) 之间切换'
+        });
+        actionRows.push({
+          key: 'a_folder',
+          label: '打开游戏目录',
+          action: true,
+          hint: '按 ' + pad.confirm + ' 在资源管理器中打开'
+        });
+        actionRows.push({
+          key: 'a_guide',
+          label: '全结局攻略',
+          action: true,
+          hint: g.has_walkthrough ? ('按 ' + pad.confirm + ' 阅读') : '该作品暂无攻略',
+          disabled: !g.has_walkthrough
+        });
+
+        return actionRows;
       });
 
       function setSheet(name) {
         sheet.value = name;
         sheetIndex.value = 0;
+        const g = sheetGame.value;
+        if (name === 'actions' && g) {
+          refreshOptimizerStatus(g.id, false);
+        } else if (name === 'savetime' && g) {
+          loadSaveTimeMachine(g, false);
+        }
       }
 
       function openSheet(name) {
@@ -1319,6 +1653,14 @@
             layout.value = val;
             LS.set('bs_layout', val);
             focus.row = 0; focus.col = 0;
+            break;
+          case 's_cover_fit':
+            settings.coverFit = val;
+            LS.set('bs_settings', settings);
+            break;
+          case 's_parallax':
+            settings.parallax = !!val;
+            LS.set('bs_settings', settings);
             break;
           case 's_bg':
             settings.bg = Number(val);
@@ -1354,6 +1696,12 @@
           case 'a_fav': if (g) updateGame(g, { is_favorite: val ? 1 : 0 }); break;
           case 'a_rating': if (g) updateGame(g, { user_rating: Number(val) }); break;
           case 'a_status': if (g) updateGame(g, { play_status: val }); break;
+          case 'a_fps_target':
+            if (g) optTargetFpsMap[g.id] = Number(val);
+            break;
+          case 'st_strategy':
+            saveTime.strategy = val;
+            break;
           default: break;
         }
         play('move');
@@ -1362,6 +1710,85 @@
       async function runRowAction(row) {
         const g = sheetGame.value;
         if (!g || row.disabled) return;
+
+        // 存档时光机与冲突快速仲裁面板动作
+        if (row.key === 'a_open_savetime') {
+          setSheet('savetime');
+          play('open');
+          return;
+        }
+        if (row.key === 'st_refresh') {
+          showToast('正在重新扫描本地与云端存档槽位…', '', 1600);
+          await loadSaveTimeMachine(g, false);
+          play('confirm');
+          return;
+        }
+        if (row.key === 'st_create_snapshot') {
+          saveTime.resolving = true;
+          showToast('正在创建本地存档快照并同步云端…', '', 2000);
+          try {
+            const res = await fetch('/api/games/' + g.id + '/webdav_sync', { method: 'POST' });
+            const d = await res.json();
+            showToast(d.message || (d.success ? '已创建快照并同步至云端' : '快照创建完成'), d.success ? 'success' : 'error', 3600);
+            play(d.success ? 'confirm' : 'error');
+            await loadSaveTimeMachine(g, false);
+          } catch (e) {
+            showToast('创建快照请求失败：' + e.message, 'error');
+          } finally {
+            saveTime.resolving = false;
+          }
+          return;
+        }
+        if (row.key === 'st_execute_resolve') {
+          saveTime.resolving = true;
+          const strat = saveTime.strategy || 'slot_merge';
+          showToast('正在执行存档仲裁方案…', '', 2200);
+          try {
+            const res = await fetch('/api/games/' + g.id + '/saves/resolve', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                strategy: strat,
+                snapshot_filename: saveTime.targetSnapshot || '',
+                slot_choices: null
+              })
+            });
+            const d = await res.json();
+            showToast(d.message || (d.success ? '存档仲裁完成' : '仲裁失败'), d.success ? 'success' : 'error', 4200);
+            play(d.success ? 'confirm' : 'error');
+            await loadSaveTimeMachine(g, false);
+          } catch (e) {
+            showToast('仲裁请求失败：' + e.message, 'error');
+          } finally {
+            saveTime.resolving = false;
+          }
+          return;
+        }
+        if (row.key && row.key.indexOf('st_restore:') === 0 && row.snapObj) {
+          saveTime.resolving = true;
+          const snap = row.snapObj;
+          showToast('正在回滚至快照：' + snap.filename + '…', '', 2400);
+          try {
+            const res = await fetch('/api/games/' + g.id + '/saves/resolve', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                strategy: 'use_snapshot',
+                snapshot_filename: snap.sourceId || snap.filename
+              })
+            });
+            const d = await res.json();
+            showToast(d.message || (d.success ? '已成功恢复至所选快照（恢复前进度已自动备份）' : '快照恢复失败'), d.success ? 'success' : 'error', 4200);
+            play(d.success ? 'confirm' : 'error');
+            await loadSaveTimeMachine(g, false);
+          } catch (e) {
+            showToast('回滚快照失败：' + e.message, 'error');
+          } finally {
+            saveTime.resolving = false;
+          }
+          return;
+        }
+
         if (row.key === 'a_magpie') {
           try {
             const res = await fetch('/api/magpie/scale', {
@@ -1402,24 +1829,105 @@
           return;
         }
         if (row.key === 'a_fps_boost') {
-          showToast('正在注入 120Hz 高刷与 4x 快进补丁…', '', 1800);
+          const optInfo = optStatusMap[g.id];
+          const targetFps = optTargetFpsMap[g.id] || 120;
+          const isRollback = !!(optInfo && optInfo.fps_patched && optInfo.current_target_fps === targetFps);
+          optBusyMap[g.id] = true;
           try {
-            const res = await fetch('/api/games/' + g.id + '/optimizer/fps_patch', {
+            if (isRollback) {
+              showToast('正在移除高刷补丁并恢复原始脚本…', '', 1800);
+              const res = await fetch('/api/games/' + g.id + '/optimizer/fps_unpatch', { method: 'POST' });
+              const d = await res.json();
+              if (d && d.status) optStatusMap[g.id] = d.status;
+              else await refreshOptimizerStatus(g.id, true);
+              showToast(d.message || (d.success ? '已还原原始帧率配置' : '还原失败'), d.success ? 'success' : 'error', 3600);
+              play(d.success ? 'confirm' : 'error');
+            } else {
+              showToast('正在注入 ' + targetFps + 'Hz 高刷与 4x 快进补丁…', '', 1800);
+              const res = await fetch('/api/games/' + g.id + '/optimizer/fps_patch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_fps: targetFps, fast_skip_mult: 4, keep_bg_audio: true, gpu_raster: true })
+              });
+              const d = await res.json();
+              if (d && d.status) optStatusMap[g.id] = d.status;
+              else await refreshOptimizerStatus(g.id, true);
+              showToast(d.message || (d.success ? '高刷补丁已注入' : '注入失败'), d.success ? 'success' : 'error', 3600);
+              play(d.success ? 'confirm' : 'error');
+            }
+          } catch (e) {
+            showToast('高刷补丁操作失败：' + e.message, 'error');
+          } finally {
+            optBusyMap[g.id] = false;
+          }
+          return;
+        }
+        if (row.key === 'a_slim_game') {
+          optBusyMap[g.id] = true;
+          showToast('正在清理冗余缓存并无损压缩 PNG 贴图…', '', 2800);
+          try {
+            const res = await fetch('/api/games/' + g.id + '/optimizer/slim', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ target_fps: 120, fast_skip_mult: 4, keep_bg_audio: true, gpu_raster: true })
+              body: JSON.stringify({
+                clean_junk: true,
+                compress_images: true,
+                image_mode: 'lossless_png',
+                create_rollback_backup: true
+              })
             });
             const d = await res.json();
-            showToast(d.message || (d.success ? '高刷补丁已注入' : '注入失败'), d.success ? 'success' : 'error', 3600);
-          } catch (e) { showToast('注入补丁请求失败', 'error'); }
+            if (d && d.status) {
+              optStatusMap[g.id] = d.status;
+              if (d.status.footprint && d.status.footprint.total_str) {
+                g.folder_size_str = d.status.footprint.total_str;
+              }
+            } else {
+              await refreshOptimizerStatus(g.id, true);
+            }
+            showToast(d.message || (d.success ? '无损体积瘦身完成' : '瘦身失败'), d.success ? 'success' : 'error', 4200);
+            play(d.success ? 'confirm' : 'error');
+          } catch (e) {
+            showToast('无损瘦身请求失败：' + e.message, 'error');
+          } finally {
+            optBusyMap[g.id] = false;
+          }
+          return;
+        }
+        if (row.key === 'a_slim_rollback') {
+          optBusyMap[g.id] = true;
+          showToast('正在从备份包无损回滚全部原始文件…', '', 2400);
+          try {
+            const res = await fetch('/api/games/' + g.id + '/optimizer/rollback', { method: 'POST' });
+            const d = await res.json();
+            if (d && d.status) {
+              optStatusMap[g.id] = d.status;
+              if (d.status.footprint && d.status.footprint.total_str) {
+                g.folder_size_str = d.status.footprint.total_str;
+              }
+            } else {
+              await refreshOptimizerStatus(g.id, true);
+            }
+            showToast(d.message || (d.success ? '已成功恢复原始文件' : '回滚失败'), d.success ? 'success' : 'error', 4200);
+            play(d.success ? 'confirm' : 'error');
+          } catch (e) {
+            showToast('回滚瘦身备份失败：' + e.message, 'error');
+          } finally {
+            optBusyMap[g.id] = false;
+          }
           return;
         }
         if (row.key === 'a_webdav_sync') {
-          showToast('正在同步 WebDAV 云端存档…', '', 1800);
+          showToast('正在检测云端存档状态与同步…', '', 1800);
+          const conflictRes = await loadSaveTimeMachine(g, true);
+          if (conflictRes && (conflictRes.conflict_state === 'diverged' || conflictRes.conflict_state === 'remote_ahead')) {
+            return;
+          }
           try {
             const res = await fetch('/api/games/' + g.id + '/webdav_sync', { method: 'POST' });
             const d = await res.json();
             showToast(d.message || (d.success ? '云同步完成' : '云同步失败'), d.success ? 'success' : 'error', 3600);
+            play(d.success ? 'confirm' : 'error');
           } catch (e) { showToast('WebDAV 同步请求失败', 'error'); }
           return;
         }
@@ -1456,20 +1964,29 @@
         const rowsNow = sheetRows.value;
         if (!rowsNow.length) { if (name === 'cancel') closeSheet(); return; }
         const row = rowsNow[clamp(sheetIndex.value, 0, rowsNow.length - 1)];
-        if (name === 'up') { sheetIndex.value = clamp(sheetIndex.value - 1, 0, rowsNow.length - 1); play('move'); }
-        else if (name === 'down') { sheetIndex.value = clamp(sheetIndex.value + 1, 0, rowsNow.length - 1); play('move'); }
+        if (name === 'up' || name === 'down') {
+          const delta = name === 'up' ? -1 : 1;
+          sheetIndex.value = clamp(sheetIndex.value + delta, 0, rowsNow.length - 1);
+          play('move');
+          nextTick(function () {
+            const focusedRow = document.querySelector('.sheet-row.focused');
+            if (focusedRow && focusedRow.scrollIntoView) {
+              focusedRow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+          });
+        }
         else if (name === 'left') cycleRow(row, -1);
         else if (name === 'right') cycleRow(row, 1);
         else if (name === 'confirm') { if (row.action) runRowAction(row); else cycleRow(row, 1); }
         else if (name === 'cancel' || name === 'start') closeSheet();
         else if (name === 'lb') {
-          const tabs = ['filter', 'actions', 'settings'];
-          const i = tabs.indexOf(sheet.value);
+          const tabs = ['filter', 'actions', 'savetime', 'settings'];
+          const i = Math.max(0, tabs.indexOf(sheet.value));
           setSheet(tabs[(i - 1 + tabs.length) % tabs.length]);
           play('move');
         } else if (name === 'rb') {
-          const tabs = ['filter', 'actions', 'settings'];
-          const i = tabs.indexOf(sheet.value);
+          const tabs = ['filter', 'actions', 'savetime', 'settings'];
+          const i = Math.max(0, tabs.indexOf(sheet.value));
           setSheet(tabs[(i + 1) % tabs.length]);
           play('move');
         }
@@ -1487,9 +2004,17 @@
           return;
         }
         if (name === 'fav' && reader.value && reader.value.checklists && reader.value.checklists.length) {
-          // 找到第一个未完成项并切换
-          const firstUnchecked = reader.value.checklists.findIndex(function (c) { return !c.checked; });
-          toggleReaderChecklistAt(firstUnchecked >= 0 ? firstUnchecked : 0);
+          let minLine = 0;
+          if (reader.value.toc && reader.value.toc[readerTocIndex.value]) {
+            minLine = reader.value.toc[readerTocIndex.value].lineIndex || 0;
+          }
+          let targetIdx = reader.value.checklists.findIndex(function (c) {
+            return !c.checked && c.lineIndex >= minLine;
+          });
+          if (targetIdx < 0) {
+            targetIdx = reader.value.checklists.findIndex(function (c) { return !c.checked; });
+          }
+          toggleReaderChecklistAt(targetIdx >= 0 ? targetIdx : 0);
           return;
         }
         if (!el) return;
@@ -1767,20 +2292,108 @@
         return ay > 0 ? 'down' : 'up';
       }
 
+      // 后端 XInput 实时状态桥接缓存（与设置页共享同一套 XInput1_4.dll 底层引擎，彻底解决 WebView2 失焦或未解锁导致手柄失效的问题）
+      const backendXInput = {
+        connected: false,
+        id: '',
+        buttons: [],
+        axes: { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 },
+        gameActive: false,
+        busy: false
+      };
+
+      const XINPUT_W3C_ORDER = [
+        'a', 'b', 'x', 'y', 'lb', 'rb', 'lt', 'rt',
+        'back', 'start', 'lthumb', 'rthumb', 'up', 'down', 'left', 'right'
+      ];
+
+      async function pollBackendXInput() {
+        if (playSession.value || document.hidden || backendXInput.busy) return;
+        backendXInput.busy = true;
+        try {
+          let d = null;
+          if (window.pywebview && window.pywebview.api && window.pywebview.api.win_get_gamepad) {
+            d = await window.pywebview.api.win_get_gamepad();
+          } else {
+            const r = await fetch('/api/gamepad/ui_state', { cache: 'no-store' });
+            if (r.ok) d = await r.json();
+          }
+          if (d && d.ok !== false) {
+            backendXInput.connected = !!d.connected;
+            backendXInput.id = d.id || 'XInput Standard Controller';
+            backendXInput.buttons = Array.isArray(d.buttons) ? d.buttons : [];
+            backendXInput.axes = d.axes || { lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
+            backendXInput.gameActive = !!d.game_active;
+          }
+        } catch (e) { /* ignore */ }
+        finally {
+          backendXInput.busy = false;
+        }
+      }
+
+      function buildUnifiedGamepad() {
+        let browserGp = null;
+        if (navigator.getGamepads) {
+          try {
+            const pads = navigator.getGamepads();
+            for (let i = 0; i < pads.length; i++) {
+              if (pads[i] && pads[i].connected) { browserGp = pads[i]; break; }
+            }
+          } catch (e) { /* ignore */ }
+        }
+
+        const xConn = backendXInput.connected;
+        if (!browserGp && !xConn) return null;
+
+        const xSet = {};
+        for (let i = 0; i < backendXInput.buttons.length; i++) {
+          xSet[backendXInput.buttons[i]] = true;
+        }
+
+        const mergedButtons = [];
+        for (let i = 0; i < 16; i++) {
+          const bBtn = browserGp && browserGp.buttons && browserGp.buttons[i];
+          const bPressed = !!(bBtn && (bBtn.pressed || bBtn.value > 0.5));
+          const xName = XINPUT_W3C_ORDER[i];
+          const xPressed = !!(xConn && xName && xSet[xName]);
+          const isPressed = bPressed || xPressed;
+          mergedButtons.push({ pressed: isPressed, value: isPressed ? 1.0 : 0.0 });
+        }
+
+        const bAxes = (browserGp && browserGp.axes) || [0, 0, 0, 0];
+        const xAxes = xConn
+          ? [
+              Number(backendXInput.axes.lx) || 0,
+              -(Number(backendXInput.axes.ly) || 0),
+              Number(backendXInput.axes.rx) || 0,
+              -(Number(backendXInput.axes.ry) || 0)
+            ]
+          : [0, 0, 0, 0];
+
+        const mergedAxes = [0, 0, 0, 0];
+        for (let a = 0; a < 4; a++) {
+          const ba = Number(bAxes[a]) || 0;
+          const xa = Number(xAxes[a]) || 0;
+          mergedAxes[a] = Math.abs(ba) >= Math.abs(xa) ? ba : xa;
+        }
+
+        return {
+          id: (browserGp && browserGp.id) || backendXInput.id || 'XInput Controller',
+          connected: true,
+          buttons: mergedButtons,
+          axes: mergedAxes
+        };
+      }
+
       function pollPad() {
         padRaf = requestAnimationFrame(pollPad);
-        // 关键修复：当游戏正在前台运行、页面最小化或失焦时停止处理大屏手柄输入，彻底杜绝双端手柄串键冲突！
-        if (playSession.value || document.hidden || !document.hasFocus()) {
+        // 仅当通过大屏启动的游戏正在运行或窗口最小化隐藏时暂停大屏手柄响应（彻底移除导致大屏手柄失灵的 !document.hasFocus() 拦截！）
+        if (playSession.value || document.hidden || backendXInput.gameActive) {
           held.buttons = {};
           dirHold.act = null;
           return;
         }
-        if (!navigator.getGamepads) return;
-        const pads = navigator.getGamepads();
-        let gp = null;
-        for (let i = 0; i < pads.length; i++) {
-          if (pads[i] && pads[i].connected) { gp = pads[i]; break; }
-        }
+        const gp = buildUnifiedGamepad();
         if (!gp) {
           if (pad.connected) {
             pad.connected = false;
@@ -1828,6 +2441,19 @@
             }
           } else {
             scrollHold.nextAt = 0;
+          }
+        } else if (!sheet.value && settings.parallax !== false) {
+          // 浏览模式下推动手柄右摇杆可实时把玩当前聚焦卡片的 3D 视差倾角与流光折射
+          const rx = gp.axes[2] || 0;
+          const ry = gp.axes[3] || 0;
+          const focusedEl = document.querySelector('.card.is-focused');
+          if (focusedEl) {
+            if (Math.abs(rx) > 0.15 || Math.abs(ry) > 0.15) {
+              focusedEl.style.setProperty('--rx', (-ry * 6.5).toFixed(2) + 'deg');
+              focusedEl.style.setProperty('--ry', (rx * 7.5).toFixed(2) + 'deg');
+              focusedEl.style.setProperty('--gx', Math.round(((rx + 1) / 2) * 100) + '%');
+              focusedEl.style.setProperty('--gy', Math.round(((ry + 1) / 2) * 100) + '%');
+            }
           }
         }
       }
@@ -1880,7 +2506,7 @@
       onMounted(function () {
         if (window.AcgWindow) {
           window.AcgWindow.mount({
-            title: 'ACG Vault v3.3.0 · 大屏模式',
+            title: 'ACG Vault v3.4.0 · 大屏模式',
             immersiveBigScreen: true,
             minWidth: 960,
             minHeight: 620
@@ -1895,6 +2521,10 @@
         window.addEventListener('keydown', onKeyDown);
         window.addEventListener('acg-fullscreen-changed', onFullscreenEvent);
         document.addEventListener('fullscreenchange', onFullscreenEvent);
+        try { window.focus(); } catch (e) {}
+        pollBackendXInput();
+        const xinputTimer = setInterval(pollBackendXInput, 36);
+        window.__bsXinputTimer = xinputTimer;
         runningTimer = setInterval(pollRunning, 2500);
         clockTimer = setInterval(tickClock, 15000);
         padRaf = requestAnimationFrame(pollPad);
@@ -1906,6 +2536,7 @@
         window.removeEventListener('keydown', onKeyDown);
         window.removeEventListener('acg-fullscreen-changed', onFullscreenEvent);
         document.removeEventListener('fullscreenchange', onFullscreenEvent);
+        if (window.__bsXinputTimer) clearInterval(window.__bsXinputTimer);
         if (runningTimer) clearInterval(runningTimer);
         if (clockTimer) clearInterval(clockTimer);
         if (padRaf) cancelAnimationFrame(padRaf);
@@ -1962,6 +2593,9 @@
         sheetIndex: sheetIndex,
         sheetTitle: sheetTitle,
         sheetRows: sheetRows,
+        saveTime: saveTime,
+        onCoverImgLoad: onCoverImgLoad,
+        isSmartLandscape: isSmartLandscape,
         reader: reader,
         readerBody: readerBody,
         readerTocIndex: readerTocIndex,
@@ -2033,9 +2667,12 @@
       tonight: { type: Boolean, default: false },
       favLabel: { type: String, default: 'X' },
       confirmLabel: { type: String, default: 'A' },
-      cardAction: { type: String, default: 'detail' }
+      cardAction: { type: String, default: 'detail' },
+      isLandscape: { type: Boolean, default: false },
+      parallax: { type: Boolean, default: true }
     },
-    setup: function (props) {
+    emits: ['focus', 'activate', 'cover-load'],
+    setup: function (props, ctx) {
       const thumb = computed(function () { return thumbUrl(props.game); });
       const title = computed(function () { return gameTitle(props.game); });
       const initials = computed(function () { return gameInitials(props.game); });
@@ -2044,14 +2681,51 @@
         const s = props.game.played_seconds || 0;
         return s > 0 ? '已玩 ' + fmtHours(s) : '尚未开始';
       });
-      return { thumb: thumb, title: title, initials: initials, translated: translated, sub: sub };
+      const tiltStyle = ref({});
+
+      function onCardMove(ev) {
+        if (!props.parallax || !ev.currentTarget) return;
+        const r = ev.currentTarget.getBoundingClientRect();
+        if (!r.width || !r.height) return;
+        const nx = ((ev.clientX - r.left) / r.width) * 2 - 1;
+        const ny = ((ev.clientY - r.top) / r.height) * 2 - 1;
+        tiltStyle.value = {
+          '--rx': (-ny * 4.5).toFixed(2) + 'deg',
+          '--ry': (nx * 5.5).toFixed(2) + 'deg',
+          '--gx': Math.round(((nx + 1) / 2) * 100) + '%',
+          '--gy': Math.round(((ny + 1) / 2) * 100) + '%'
+        };
+      }
+      function onCardLeave() {
+        tiltStyle.value = {};
+      }
+      function onImgLoad(ev) {
+        ctx.emit('cover-load', ev);
+      }
+
+      return {
+        thumb: thumb,
+        title: title,
+        initials: initials,
+        translated: translated,
+        sub: sub,
+        tiltStyle: tiltStyle,
+        onCardMove: onCardMove,
+        onCardLeave: onCardLeave,
+        onImgLoad: onImgLoad
+      };
     },
     template:
       '<article class="card" :class="{ \'is-focused\': focused, \'focused\': focused, \'tonight-card\': tonight }" ' +
-      '@mouseenter="$emit(\'focus\')" @click="$emit(\'activate\')">' +
-        '<div class="card-cover">' +
-          '<img v-if="thumb" :src="thumb" :alt="title" loading="lazy" decoding="async" draggable="false">' +
+      ':style="focused ? tiltStyle : null" ' +
+      '@mouseenter="$emit(\'focus\')" @mousemove="onCardMove" @mouseleave="onCardLeave" @click="$emit(\'activate\')">' +
+        '<div class="card-cover" :class="{ \'is-landscape-smart\': !tonight && isLandscape }">' +
+          '<template v-if="thumb">' +
+            '<img v-if="!tonight" class="card-cover-ambient" :src="thumb" aria-hidden="true" loading="lazy" decoding="async" draggable="false">' +
+            '<img class="card-cover-main" :src="thumb" :alt="title" @load="onImgLoad" loading="lazy" decoding="async" draggable="false">' +
+          '</template>' +
           '<div v-else class="hero-fallback">{{ initials }}</div>' +
+          '<div class="card-glare" v-if="parallax"></div>' +
           '<div class="card-badges" v-if="!tonight">' +
             '<span class="badge-mini live" v-if="running">● 运行中</span>' +
             '<span class="badge-mini emerald" v-if="translated">汉化</span>' +

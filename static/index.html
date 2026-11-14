@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>ACG Game Vault v3.3.0 - 本地游戏资产、大屏模式、AI攻略与数据馆藏中心</title>
+  <title>ACG Game Vault v3.4.0 - 本地游戏资产、大屏模式、AI攻略与数据馆藏中心</title>
 
   <!-- Global Diagnostic & Error Interceptor -->
   <script>
@@ -68,11 +68,11 @@
     };
   </script>
   <!-- Local Vendor Libraries (100% Offline, Zero External CDN) -->
-  <script src="/static/vendor/tailwindcss.js?v=3.3"></script>
-  <script src="/static/vendor/vue.global.prod.js?v=3.3"></script>
-  <script src="/static/vendor/lucide.min.js?v=3.3"></script>
-  <script src="/static/vendor/marked.min.js?v=3.3"></script>
-  <link rel="stylesheet" href="/static/style.css?v=3.3">
+  <script src="/static/vendor/tailwindcss.js?v=3.4"></script>
+  <script src="/static/vendor/vue.global.prod.js?v=3.4"></script>
+  <script src="/static/vendor/lucide.min.js?v=3.4"></script>
+  <script src="/static/vendor/marked.min.js?v=3.4"></script>
+  <link rel="stylesheet" href="/static/style.css?v=3.4">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
@@ -85,9 +85,9 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.3">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.3">
-  <script src="/static/theme.js?v=3.3"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.4">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.4">
+  <script src="/static/theme.js?v=3.4"></script>
 </head>
 <body class="bg-[#070a12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
   <!-- Boot / Crash Emergency Fallback Banner -->
@@ -105,7 +105,7 @@
     <pre id="boot-error-text" style="background:#0b0f19; padding:14px; border-radius:10px; border:1px solid #334155; overflow:auto; max-height:180px; font-size:12px; color:#fca5a5; white-space:pre-wrap; font-family:monospace; margin:0;"></pre>
   </div>
 
-  <div id="app" class="min-h-screen flex flex-col">
+  <div id="app" class="acg-desktop-shell h-screen overflow-hidden flex flex-col">
 
     <!-- Toast Floating Notifications Container -->
     <div class="fixed top-5 right-5 z-[99999] flex flex-col gap-2.5 max-w-sm pointer-events-none">
@@ -230,7 +230,7 @@
     </transition>
 
     <!-- Top Navigation Header -->
-    <header id="app-header" class="sticky top-0 z-40 glass-panel border-b border-slate-800/80 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+    <header id="app-header" class="shrink-0 z-40 glass-panel border-b border-slate-800/80 px-6 py-3 flex flex-wrap items-center justify-between gap-4">
       <!-- Brand & Mini Collection Metrics -->
       <div class="flex items-center space-x-5">
         <div class="flex items-center space-x-3 cursor-pointer group" @click="resetFilters">
@@ -240,7 +240,7 @@
           <div>
             <div class="flex items-center space-x-2">
               <h1 class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-indigo-300 bg-clip-text text-transparent">ACG Vault</h1>
-              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v3.3.0</span>
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">v3.4.0</span>
             </div>
             <p class="text-[11px] text-slate-400 font-medium">本地 ACG 资产、AI 攻略与馆藏中心</p>
           </div>
@@ -367,7 +367,7 @@
     </header>
 
     <!-- Subheader Stats, Pill Toggles & Multi-Dimensional Filter Bar -->
-    <div class="bg-slate-900/75 border-b border-slate-800/80 px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
+    <div class="shrink-0 bg-slate-900/75 border-b border-slate-800/80 px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
       <!-- Left: Status Tabs -->
       <div class="flex items-center space-x-1 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
         <button
@@ -550,7 +550,7 @@
     </div>
 
     <!-- ==================== SMART & CUSTOM COLLECTIONS BAR (v2.3 Feature #5 & #2) ==================== -->
-    <div v-if="viewMode !== 'analytics'" class="bg-slate-950/75 border-b border-slate-800/70 px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+    <div v-if="viewMode !== 'analytics'" class="shrink-0 bg-slate-950/75 border-b border-slate-800/70 px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
       <div class="flex items-center space-x-1.5 overflow-x-auto scrollbar-none py-0.5">
         <span class="text-[11px] text-slate-400 font-semibold flex items-center space-x-1 shrink-0 mr-1">
           <i data-lucide="sparkles" class="w-3.5 h-3.5 text-indigo-400"></i>
@@ -647,8 +647,9 @@
       </div>
     </div>
 
-    <!-- Main Content Area -->
-    <main class="flex-1 p-6 max-w-[1920px] mx-auto w-full">
+    <!-- Main Content Area (Internal Scroll Container so scrollbar stays below headers) -->
+    <main id="app-main-scroll" class="acg-main-scroll flex-1 min-h-0 overflow-y-auto overflow-x-hidden w-full">
+      <div class="p-6 max-w-[1920px] mx-auto w-full">
 
       <!-- ==================== ANALYTICS & TIMELINE DASHBOARD VIEW (v2.4) ==================== -->
       <div v-if="viewMode === 'analytics'" class="space-y-6">
@@ -1448,6 +1449,7 @@
             加载更多 ({{ displayedGames.length }} / {{ filteredGames.length }})
           </button>
         </div>
+      </div>
       </div>
     </main>
     <!-- ==================== GAME DETAIL DRAWER (BENTO EDITION v2.3) ==================== -->
@@ -3944,7 +3946,7 @@
           <div class="flex items-center justify-between border-b border-slate-800 pb-3">
             <h2 class="text-base font-bold text-white flex items-center space-x-2">
               <i data-lucide="settings" class="w-5 h-5 text-indigo-400"></i>
-              <span>ACG Vault v3.3.0 系统与个性化定制中心</span>
+              <span>ACG Vault v3.4.0 系统与个性化定制中心</span>
             </h2>
             <button @click="showSettingsModal = false" class="text-slate-400 hover:text-white cursor-pointer">
               <i data-lucide="x" class="w-5 h-5"></i>
@@ -5334,12 +5336,12 @@
 
   </div>
 
-  <script src="/static/modules/device-sense.js?v=3.3"></script>
-  <script src="/static/modules/walkthrough-tools.js?v=3.3"></script>
-  <script src="/static/modules/save-diff.js?v=3.3"></script>
-  <script src="/static/modules/game-optimizer.js?v=3.3"></script>
-  <script src="/static/windowbar.js?v=3.3"></script>
-  <script src="/static/app.js?v=3.3"></script>
+  <script src="/static/modules/device-sense.js?v=3.4"></script>
+  <script src="/static/modules/walkthrough-tools.js?v=3.4"></script>
+  <script src="/static/modules/save-diff.js?v=3.4"></script>
+  <script src="/static/modules/game-optimizer.js?v=3.4"></script>
+  <script src="/static/windowbar.js?v=3.4"></script>
+  <script src="/static/app.js?v=3.4"></script>
   <!-- Watchdog: Check if Vue mounted correctly -->
   <script>
     setTimeout(function() {

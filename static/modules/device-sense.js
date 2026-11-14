@@ -1,5 +1,5 @@
 /* ==========================================================================
- * ACG Vault v3.3.0 — Global Input Device Auto-Sense Engine (Gamepad <-> KB/Mouse)
+ * ACG Vault v3.4.0 — Global Input Device Auto-Sense Engine (Gamepad <-> KB/Mouse)
  * Seamlessly detects whether the user is actively using a Gamepad (Xbox / DualSense / Switch)
  * or Keyboard & Mouse, updates root data attributes, auto-hides idle mouse cursor in
  * gamepad mode, and provides dynamic prompt keycap labels.
@@ -89,12 +89,23 @@
   }
 
   function markMouseActivity(ev) {
+    // 若刚刚在 350ms 内有手柄按键/摇杆输入，忽略因焦点滚动触发的合成 pointermove
+    if (ev && ev.type === 'pointermove' && (performance.now() - state.lastPadTimestamp) < 350) {
+      return;
+    }
     if (ev && ev.type === 'pointermove') {
-      const dx = Math.abs((ev.clientX || 0) - state.lastMousePos.x);
-      const dy = Math.abs((ev.clientY || 0) - state.lastMousePos.y);
-      state.lastMousePos.x = ev.clientX || 0;
-      state.lastMousePos.y = ev.clientY || 0;
-      if (dx < 7 && dy < 7) return;
+      const cx = ev.clientX || 0;
+      const cy = ev.clientY || 0;
+      if (state.lastMousePos.x < 0) {
+        state.lastMousePos.x = cx;
+        state.lastMousePos.y = cy;
+        return;
+      }
+      const dx = Math.abs(cx - state.lastMousePos.x);
+      const dy = Math.abs(cy - state.lastMousePos.y);
+      if (dx < 14 && dy < 14) return;
+      state.lastMousePos.x = cx;
+      state.lastMousePos.y = cy;
     }
     state.lastSubDevice = 'mouse';
     root.classList.remove('acg-cursor-idle');

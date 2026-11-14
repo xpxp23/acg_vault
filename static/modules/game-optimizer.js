@@ -1,5 +1,5 @@
 /* ==========================================================================
- * ACG Vault v3.3.0 — RPG Maker MV/MZ & Unity Framerate Unlock & Slimming Toolbox Composable
+ * ACG Vault v3.4.0 — RPG Maker MV/MZ & Unity Framerate Unlock & Slimming Toolbox Composable
  * Exposes window.AcgGameOptimizerModule.create(ctx)
  * ========================================================================== */
 (function () {

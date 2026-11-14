@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <title>ACG Vault v3.3.0 · 大屏模式</title>
+  <title>ACG Vault v3.4.0 · 大屏模式</title>
   <style>[v-cloak]{display:none !important;}</style>
-  <link rel="stylesheet" href="/static/style.css?v=3.3">
-  <link rel="stylesheet" href="/static/bigscreen.css?v=3.3">
+  <link rel="stylesheet" href="/static/style.css?v=3.4">
+  <link rel="stylesheet" href="/static/bigscreen.css?v=3.4">
   <script>
     // 首帧前先定主题，避免深/浅色闪烁
     (function () {
@@ -24,10 +24,10 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="/static/theme-light.css?v=3.3">
-  <link rel="stylesheet" href="/static/theme-accent.css?v=3.3">
-  <script src="/static/theme.js?v=3.3"></script>
-  <script src="/static/modules/device-sense.js?v=3.3"></script>
+  <link rel="stylesheet" href="/static/theme-light.css?v=3.4">
+  <link rel="stylesheet" href="/static/theme-accent.css?v=3.4">
+  <script src="/static/theme.js?v=3.4"></script>
+  <script src="/static/modules/device-sense.js?v=3.4"></script>
 </head>
 <body>
 <div id="app" class="bs-root" v-cloak>
@@ -53,7 +53,7 @@
         <div class="bs-mark"><bs-icon name="gamepad" size="22"></bs-icon></div>
         <div class="bs-brand-text">
           <h1 class="brand-title">ACG VAULT</h1>
-          <p>BIG SCREEN v3.3.0 · {{ filteredGames.length }} / {{ games.length }} TITLES</p>
+          <p>BIG SCREEN v3.4.0 · {{ filteredGames.length }} / {{ games.length }} TITLES</p>
         </div>
       </div>
 
@@ -106,8 +106,11 @@
         'hero-zone-focused': focus.zone === 'hero'
       }">
       <div class="bs-hero">
-        <div class="hero-cover" @click="openDetail(displayHeroGame)">
-          <img v-if="coverUrl(displayHeroGame)" :src="coverUrl(displayHeroGame)" :alt="gameTitle(displayHeroGame)" draggable="false">
+        <div class="hero-cover" :class="{ 'is-landscape-smart': isSmartLandscape(displayHeroGame) }" @click="openDetail(displayHeroGame)">
+          <template v-if="coverUrl(displayHeroGame)">
+            <img class="card-cover-ambient" :src="thumbUrl(displayHeroGame) || coverUrl(displayHeroGame)" aria-hidden="true" draggable="false">
+            <img class="card-cover-main" :src="coverUrl(displayHeroGame)" :alt="gameTitle(displayHeroGame)" @load="onCoverImgLoad($event, displayHeroGame)" draggable="false">
+          </template>
           <div v-else class="hero-fallback">{{ gameInitials(displayHeroGame) }}</div>
         </div>
         <div class="hero-body">
@@ -215,6 +218,9 @@
               :fav-label="pad.fav"
               :confirm-label="pad.confirm"
               :card-action="settings.cardConfirm"
+              :is-landscape="isSmartLandscape(g)"
+              :parallax="settings.parallax !== false"
+              @cover-load="onCoverImgLoad($event, g)"
               @focus="setFocus(ri, ci)"
               @activate="activateCard(ri, ci)">
             </game-card>
@@ -249,6 +255,9 @@
               :fav-label="pad.fav"
               :confirm-label="pad.confirm"
               :card-action="settings.cardConfirm"
+              :is-landscape="isSmartLandscape(g)"
+              :parallax="settings.parallax !== false"
+              @cover-load="onCoverImgLoad($event, g)"
               @focus="setFocus(ri, ci)"
               @activate="activateCard(ri, ci)">
             </game-card>
@@ -289,8 +298,11 @@
 
     <div class="detail-inner">
       <div class="detail-cover-wrap">
-        <div class="detail-cover">
-          <img v-if="coverUrl(detailGame)" :src="coverUrl(detailGame)" :alt="gameTitle(detailGame)" draggable="false">
+        <div class="detail-cover" :class="{ 'is-landscape-smart': isSmartLandscape(detailGame) }">
+          <template v-if="coverUrl(detailGame)">
+            <img class="card-cover-ambient" :src="thumbUrl(detailGame) || coverUrl(detailGame)" aria-hidden="true" draggable="false">
+            <img class="card-cover-main" :src="coverUrl(detailGame)" :alt="gameTitle(detailGame)" @load="onCoverImgLoad($event, detailGame)" draggable="false">
+          </template>
           <div v-else class="hero-fallback">{{ gameInitials(detailGame) }}</div>
         </div>
         <button class="btn primary" @click="launch(detailGame)" :disabled="launching === detailGame.id">
@@ -399,10 +411,62 @@
         <div class="sheet-tabs">
           <button class="sheet-tab" :class="{ on: sheet === 'filter' }" @click="setSheet('filter')">筛选</button>
           <button class="sheet-tab" :class="{ on: sheet === 'actions' }" @click="setSheet('actions')">操作</button>
+          <button class="sheet-tab" :class="{ on: sheet === 'savetime' }" @click="setSheet('savetime')">存档时光机</button>
           <button class="sheet-tab" :class="{ on: sheet === 'settings' }" @click="setSheet('settings')">设置</button>
           <button class="sheet-tab sheet-close" @click="closeSheet" title="关闭面板">✕</button>
         </div>
       </header>
+
+      <!-- 大屏云存档冲突快速仲裁与快照时光机可视化对比看板 -->
+      <div class="bs-savetime-box" v-if="sheet === 'savetime'">
+        <div class="bs-conflict-banner" :class="{ synced: saveTime.conflictState === 'synced' }">
+          <span>{{ saveTime.bannerText }}</span>
+          <span v-if="saveTime.loading">正在扫描本地与云端槽位…</span>
+          <span v-else-if="saveTime.summaryText">{{ saveTime.summaryText }}</span>
+        </div>
+
+        <div class="bs-diff-grid" v-if="saveTime.leftCard && saveTime.rightCard">
+          <div class="bs-diff-card" :class="{ ahead: saveTime.conflictState === 'local_ahead' }">
+            <div class="bs-diff-head">
+              <span>📍 {{ saveTime.leftCard.title }}</span>
+              <span>{{ saveTime.leftCard.slotCount }} 槽位 · {{ saveTime.leftCard.sizeKb }} KB</span>
+            </div>
+            <div class="bs-diff-meta">
+              <span>更新：{{ saveTime.leftCard.updatedAt || '无记录' }}</span>
+            </div>
+            <div class="bs-diff-tele" v-if="saveTime.leftCard.telemetry">
+              <span class="bs-slot-pill left" v-if="saveTime.leftCard.telemetry.actor">👤 {{ saveTime.leftCard.telemetry.actor }}</span>
+              <span class="bs-slot-pill mod" v-if="saveTime.leftCard.telemetry.gold !== null">💰 {{ saveTime.leftCard.telemetry.gold }}G</span>
+              <span class="bs-slot-pill" v-if="saveTime.leftCard.telemetry.cgCount">🖼️ CG {{ saveTime.leftCard.telemetry.cgCount }}</span>
+            </div>
+          </div>
+
+          <div class="bs-diff-card" :class="{ ahead: saveTime.conflictState === 'remote_ahead' || saveTime.conflictState === 'diverged' }">
+            <div class="bs-diff-head">
+              <span>☁️ {{ saveTime.rightCard.title }}</span>
+              <span>{{ saveTime.rightCard.slotCount }} 槽位 · {{ saveTime.rightCard.sizeKb }} KB</span>
+            </div>
+            <div class="bs-diff-meta">
+              <span>更新：{{ saveTime.rightCard.updatedAt || '无记录' }}</span>
+            </div>
+            <div class="bs-diff-tele" v-if="saveTime.rightCard.telemetry">
+              <span class="bs-slot-pill right" v-if="saveTime.rightCard.telemetry.actor">👤 {{ saveTime.rightCard.telemetry.actor }}</span>
+              <span class="bs-slot-pill mod" v-if="saveTime.rightCard.telemetry.gold !== null">💰 {{ saveTime.rightCard.telemetry.gold }}G</span>
+              <span class="bs-slot-pill" v-if="saveTime.rightCard.telemetry.cgCount">🖼️ CG {{ saveTime.rightCard.telemetry.cgCount }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bs-slot-list" v-if="saveTime.diffSlots && saveTime.diffSlots.length">
+          <span
+            v-for="sl in saveTime.diffSlots.slice(0, 8)"
+            :key="'sl-' + sl.rel_path"
+            class="bs-slot-pill"
+            :class="sl.status === 'modified' ? 'mod' : (sl.status === 'only_left' ? 'left' : 'right')">
+            {{ sl.label }}：{{ sl.badge }}
+          </span>
+        </div>
+      </div>
 
       <div class="sheet-rows">
         <div
@@ -476,9 +540,9 @@
   <div class="bs-toast" v-if="toast" :class="toast.type">{{ toast.text }}</div>
 </div>
 
-<script src="/static/vendor/vue.global.prod.js?v=3.3"></script>
-<script src="/static/vendor/marked.min.js?v=3.3"></script>
-<script src="/static/windowbar.js?v=3.3"></script>
-<script src="/static/bigscreen.js?v=3.3"></script>
+<script src="/static/vendor/vue.global.prod.js?v=3.4"></script>
+<script src="/static/vendor/marked.min.js?v=3.4"></script>
+<script src="/static/windowbar.js?v=3.4"></script>
+<script src="/static/bigscreen.js?v=3.4"></script>
 </body>
 </html>

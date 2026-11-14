@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ACG Vault v3.3.0 — 正统 Nintendo Switch (Horizon OS) 日间主题
+   ACG Vault v3.4.0 — 正统 Nintendo Switch (Horizon OS) 日间主题
    核心设计规范：
      1. 画布层级：标志性哑光浅灰 #EBEBEB 主画布、#F2F2F2 次级工作区、
         纯净 #FFFFFF 游戏卡片与弹层、#DCDCDC 分割线、#2D2D2D 高对比碳黑正文。
@@ -14,17 +14,17 @@
 @keyframes switchFocusPulse {
   0%, 100% {
     box-shadow:
-      0 0 0 2px #ffffff,
-      0 0 0 6px #00c3e3,
-      0 14px 28px -8px rgba(0, 195, 227, 0.32),
-      0 6px 16px rgba(0, 0, 0, 0.10);
+      0 0 0 3px #ffffff,
+      0 0 0 7px #00c3e3,
+      0 14px 28px -6px rgba(0, 195, 227, 0.36),
+      0 6px 16px rgba(0, 0, 0, 0.12);
   }
   50% {
     box-shadow:
-      0 0 0 2px #ffffff,
-      0 0 0 6px #18d8f8,
-      0 16px 32px -6px rgba(0, 195, 227, 0.48),
-      0 8px 20px rgba(0, 0, 0, 0.13);
+      0 0 0 3px #ffffff,
+      0 0 0 7.5px #14d8f8,
+      0 18px 34px -4px rgba(0, 195, 227, 0.52),
+      0 8px 20px rgba(0, 0, 0, 0.15);
   }
 }
 
@@ -85,15 +85,30 @@ html[data-theme="light"] #app {
   background: transparent;
 }
 
-/* 滚动条：Switch 清爽细滑轨 */
-html[data-theme="light"] ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.04);
+/* 滚动条：Switch 清爽悬浮胶囊滑块（同时覆盖 html 根节点与内部容器，彻底消除右侧深色割裂条） */
+html[data-theme="light"]::-webkit-scrollbar,
+html[data-theme="light"] ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
+html[data-theme="light"]::-webkit-scrollbar-track,
+html[data-theme="light"] ::-webkit-scrollbar-track,
+html[data-theme="light"]::-webkit-scrollbar-corner,
+html[data-theme="light"] ::-webkit-scrollbar-corner {
+  background: transparent !important;
+}
+html[data-theme="light"]::-webkit-scrollbar-thumb,
 html[data-theme="light"] ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.20);
+  background: rgba(45, 45, 45, 0.22) !important;
+  border-radius: 9999px !important;
+  border: 2.5px solid transparent !important;
+  background-clip: padding-box !important;
 }
+html[data-theme="light"]::-webkit-scrollbar-thumb:hover,
 html[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
-  background: #00c3e3;
+  background: #00c3e3 !important;
+  border: 2px solid transparent !important;
+  background-clip: padding-box !important;
 }
 
 /* ==========================================================================
@@ -616,15 +631,40 @@ html[data-theme="light"] .hero-fallback {
   background: #f2f2f2 !important;
 }
 
-/* 大屏卡片 Switch 双环青蓝呼吸焦点框 (#00C3E3) */
+/* 大屏卡片 Switch 双环青蓝呼吸焦点框 (#00C3E3) — 移除覆盖关键帧的 !important 让呼吸动效真正生效 */
 html[data-theme="light"] .card.is-focused .card-cover,
 html[data-theme="light"] .card.focused .card-cover {
   animation: switchFocusPulse 1.8s infinite ease-in-out;
   box-shadow:
     0 0 0 3px #ffffff,
     0 0 0 7px #00c3e3,
-    0 18px 36px rgba(0, 195, 227, 0.35),
-    0 8px 20px rgba(0, 0, 0, 0.14) !important;
+    0 16px 32px -4px rgba(0, 195, 227, 0.38),
+    0 8px 20px rgba(0, 0, 0, 0.14);
+}
+html[data-theme="light"] .card-cover-ambient {
+  filter: blur(16px) saturate(140%) brightness(0.96) !important;
+  opacity: 0.85 !important;
+}
+html[data-theme="light"] .badge-mini {
+  background: rgba(255, 255, 255, 0.92) !important;
+  border-color: rgba(0, 0, 0, 0.10) !important;
+  color: #1f2937 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12) !important;
+}
+html[data-theme="light"] .badge-mini.live {
+  background: #ecfdf5 !important;
+  border-color: #34d399 !important;
+  color: #047857 !important;
+}
+html[data-theme="light"] .badge-mini.emerald {
+  background: rgba(236, 253, 245, 0.94) !important;
+  border-color: #6ee7b7 !important;
+  color: #047857 !important;
+}
+html[data-theme="light"] .badge-mini.gold {
+  background: rgba(255, 251, 235, 0.95) !important;
+  border-color: #fbbf24 !important;
+  color: #b45309 !important;
 }
 html[data-theme="light"] .card-caption {
   color: #4b5563 !important;
@@ -1101,7 +1141,7 @@ html[data-theme="light"] .hover\:bg-slate-700:hover {
 
 
 /* ==========================================================================
-   v3.3.0 大屏常驻 Hero 舞台、实时搜索框、索引条、画廊与攻略目录日间适配
+   v3.4.0 大屏常驻 Hero 舞台、实时搜索框、索引条、画廊与攻略目录日间适配
    ========================================================================== */
 html[data-theme="light"] .bs-hero-stage {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(242, 244, 248, 0.92) 100%) !important;
@@ -1171,4 +1211,32 @@ html[data-theme="light"] .reader-toc-item.active {
 html[data-theme="light"] .btn.is-btn-focused {
   border-color: #00c3e3 !important;
   box-shadow: 0 0 0 3px #00c3e3, 0 8px 20px rgba(0, 195, 227, 0.28) !important;
+}
+
+/* ==========================================================================
+   v3.4.0 大屏存档时光机 / 云冲突快速仲裁面板 & 优化状态标签 日间适配
+   ========================================================================== */
+html[data-theme="light"] .bs-conflict-banner {
+  background: #fffbeb !important;
+  border-color: #f59e0b !important;
+  color: #92400e !important;
+}
+html[data-theme="light"] .bs-conflict-banner.synced {
+  background: #ecfdf5 !important;
+  border-color: #10b981 !important;
+  color: #065f46 !important;
+}
+html[data-theme="light"] .bs-diff-card {
+  background: #f8fafc !important;
+  border-color: #dcdcdc !important;
+  color: #1f2937 !important;
+}
+html[data-theme="light"] .bs-diff-card.ahead {
+  background: #f0fdfa !important;
+  border-color: #00c3e3 !important;
+}
+html[data-theme="light"] .bs-slot-pill {
+  background: #ffffff !important;
+  border-color: #dcdcdc !important;
+  color: #374151 !important;
 }

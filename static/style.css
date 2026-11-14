@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ACG Vault v3.3.0 - Collector's Edition Glassmorphic & Ambient UI
+   ACG Vault v3.4.0 - Collector's Edition Glassmorphic & Ambient UI
    GPU-Optimized Compositing, Unobstructed Artwork Hover, Smart Footer & Save Editor
    ========================================================================== */
 
@@ -195,20 +195,30 @@ body {
   pointer-events: none;
 }
 
-/* Custom Scrollbar */
+/* Custom Floating Capsule Scrollbar (No harsh full-window track bar) */
 ::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
-  background: rgba(9, 13, 22, 0.6);
+  background: transparent;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(71, 85, 105, 0.65);
+  background: rgba(100, 116, 139, 0.42);
   border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(var(--ax-500-rgb, 99, 102, 241), 0.85);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.acg-main-scroll {
+  scrollbar-gutter: stable;
 }
 
 .scrollbar-none::-webkit-scrollbar {
@@ -452,7 +462,7 @@ body {
 }
 
 /* ==========================================================================
-   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v3.3.0)
+   Magazine-Grade Walkthrough Markdown Typography & Visual Flowcharts (v3.4.0)
    ========================================================================== */
 .notes-markdown-body {
   line-height: 1.74;
@@ -776,7 +786,7 @@ body {
 
 
 /* ==========================================================================
-   v3.3.0 UI/UX Card Breathing Room & Input Auto-Sense Polish
+   v3.4.0 UI/UX Card Breathing Room & Input Auto-Sense Polish
    ========================================================================== */
 .game-card .poster-badge-pill {
   backdrop-filter: blur(8px);

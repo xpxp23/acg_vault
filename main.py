@@ -1868,6 +1868,13 @@ def update_system_config(cfg: dict):
     return {"success": True, "data": mask_sensitive_config(saved)}
 
 
+
+@app.get("/api/gamepad/ui_state")
+def api_get_gamepad_ui_state():
+    """Fast 60Hz XInput state endpoint for Big Screen Mode gamepad navigation."""
+    return gamepad_engine.get_ui_pad_state()
+
+
 @app.get("/api/gamepad/status")
 def gamepad_status_api():
     """实时手柄状态：连接、按键、摇杆、当前是否在为某个游戏转发。"""

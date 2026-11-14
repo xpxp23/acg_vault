@@ -250,7 +250,23 @@ def _is_junk_file(fp: Path, rel_parts_lower: Tuple[str, ...]) -> Tuple[bool, str
     return False, ""
 
 
-def inspect_game_optimization(game_id: int) -> Dict[str, Any]:
+_OPT_STATUS_CACHE: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+_OPT_CACHE_TTL = 20.0
+
+
+def invalidate_optimizer_cache(game_id: Optional[int] = None) -> None:
+    if game_id is None:
+        _OPT_STATUS_CACHE.clear()
+    else:
+        _OPT_STATUS_CACHE.pop(int(game_id), None)
+
+
+def inspect_game_optimization(game_id: int, force_refresh: bool = False) -> Dict[str, Any]:
+    now_ts = time.time()
+    if not force_refresh and int(game_id) in _OPT_STATUS_CACHE:
+        c_ts, c_val = _OPT_STATUS_CACHE[int(game_id)]
+        if now_ts - c_ts < _OPT_CACHE_TTL:
+            return c_val
     game = get_game_by_id(game_id)
     if not game:
         return {"success": False, "message": "游戏不存在"}
@@ -370,7 +386,7 @@ def inspect_game_optimization(game_id: int) -> Dict[str, Any]:
     est_img_saving = int(compressible_image_bytes * 0.38)
     est_total_saving = junk_bytes + est_img_saving
 
-    return {
+    res_payload = {
         "success": True,
         "game_id": game_id,
         "engine_type": engine_type,
@@ -403,6 +419,8 @@ def inspect_game_optimization(game_id: int) -> Dict[str, Any]:
             "estimated_savings_str": _format_size(est_total_saving),
         }
     }
+    _OPT_STATUS_CACHE[int(game_id)] = (time.time(), res_payload)
+    return res_payload
 
 
 def apply_fps_patch(
@@ -480,7 +498,7 @@ def apply_fps_patch(
             return {
                 "success": True,
                 "message": f"已成功注入 RPG Maker {target_fps}FPS 高刷解锁、{fast_skip_mult}x 快进加速与后台保活补丁（游戏内按 F3 可显隐帧率 HUD）！",
-                "status": inspect_game_optimization(game_id)
+                "status": inspect_game_optimization(game_id, force_refresh=True)
             }
         except Exception as e:
             return {"success": False, "message": f"注入高刷补丁失败: {str(e)}"}
@@ -511,7 +529,7 @@ def apply_fps_patch(
             return {
                 "success": True,
                 "message": "已成功应用 Unity 多线程渲染作业 (Native GFX Jobs) 与帧步进优化配置！",
-                "status": inspect_game_optimization(game_id)
+                "status": inspect_game_optimization(game_id, force_refresh=True)
             }
         except Exception as e:
             return {"success": False, "message": f"优化 Unity 配置失败: {str(e)}"}
@@ -571,7 +589,7 @@ def remove_fps_patch(game_id: int) -> Dict[str, Any]:
         return {
             "success": True,
             "message": "已成功移除高刷性能补丁并恢复游戏原始配置！",
-            "status": inspect_game_optimization(game_id)
+            "status": inspect_game_optimization(game_id, force_refresh=True)
         }
     except Exception as e:
         return {"success": False, "message": f"还原帧率补丁失败: {str(e)}"}
@@ -689,7 +707,7 @@ def run_game_slim(
                 except Exception:
                     pass
 
-    new_status = inspect_game_optimization(game_id)
+    new_status = inspect_game_optimization(game_id, force_refresh=True)
     if new_status.get("success"):
         new_total = new_status["footprint"]["total_bytes"]
         new_str = new_status["footprint"]["total_str"]
@@ -743,7 +761,7 @@ def rollback_game_slim(game_id: int) -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "message": f"回滚瘦身备份失败: {str(e)}"}
 
-    new_status = inspect_game_optimization(game_id)
+    new_status = inspect_game_optimization(game_id, force_refresh=True)
     if new_status.get("success"):
         manual_update_game_metadata(game_id, {
             "folder_size_bytes": new_status["footprint"]["total_bytes"],

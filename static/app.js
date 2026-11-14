@@ -1054,7 +1054,7 @@ createApp({
         drawRoundRect(48, 42, width - 96, 110, 22, 'rgba(19, 27, 46, 0.92)', 'rgba(99, 102, 241, 0.4)');
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 30px "Microsoft YaHei", sans-serif';
-        ctx.fillText('🎮 ACG Vault v3.3.0 · 个人游戏馆藏与通关总结长图', 80, 92);
+        ctx.fillText('🎮 ACG Vault v3.4.0 · 个人游戏馆藏与通关总结长图', 80, 92);
         ctx.fillStyle = '#94a3b8';
         ctx.font = '15px "Microsoft YaHei", sans-serif';
         const nowStr = new Date().toISOString().slice(0, 10);
@@ -1270,7 +1270,7 @@ createApp({
       }
     };
 
-    // ---------------------------------------------------------------- 主题与 Switch 微音效 (v3.3.0)
+    // ---------------------------------------------------------------- 主题与 Switch 微音效 (v3.4.0)
     const themeMode = ref((window.AcgTheme && window.AcgTheme.mode) || 'auto');
     const uiSfxEnabled = ref(window.AcgTheme ? Boolean(window.AcgTheme.sfx) : (localStorage.getItem('acg_ui_sfx') !== 'false'));
     const playUiSfx = (type) => {

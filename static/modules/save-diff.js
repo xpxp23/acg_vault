@@ -1,5 +1,5 @@
 /* ==========================================================================
- * ACG Vault v3.3.0 — Save Snapshot Visual Diff & WebDAV Conflict Resolver Composable
+ * ACG Vault v3.4.0 — Save Snapshot Visual Diff & WebDAV Conflict Resolver Composable
  * Exposes window.AcgSaveDiffModule.create(ctx)
  * ========================================================================== */
 (function () {
