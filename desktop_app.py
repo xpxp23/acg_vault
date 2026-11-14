@@ -445,6 +445,15 @@ class WindowBridge:
             log_desktop_error(f"_get_monitor_rect failed: {e}")
         return None
 
+    def _is_fullscreen(self) -> bool:
+        try:
+            native = getattr(self._window, "native", None)
+            if native is not None and hasattr(native, "is_fullscreen"):
+                return bool(native.is_fullscreen)
+        except Exception:
+            pass
+        return bool(self._fullscreen)
+
     @_safe_api
     def win_set_fullscreen(self, enable=None):
         """
@@ -454,11 +463,14 @@ class WindowBridge:
         """
         if self._window is None:
             return {"ok": False, "fullscreen": False}
-        target = (not self._fullscreen) if enable is None else bool(enable)
-        if target == self._fullscreen:
+
+        curr_fs = self._is_fullscreen()
+        target = (not curr_fs) if enable is None else bool(enable)
+        if target == curr_fs:
             return {"ok": True, "fullscreen": self._fullscreen, "maximized": self._is_zoomed()}
 
         hwnd = self._hwnd()
+        native = getattr(self._window, "native", None)
         try:
             if target:
                 self._pre_fs_maximized = self._is_zoomed()
@@ -469,40 +481,98 @@ class WindowBridge:
                     _, _, sw, sh = self._geom()
                     self._pre_fs_box = (px, py, sw, sh)
 
-                if hwnd and IS_WINDOWS:
+                applied = False
+                if native is not None and hasattr(native, "Invoke"):
+                    try:
+                        from System import Action
+                        import System.Windows.Forms as WinForms
+
+                        def _do_enter_fs():
+                            scr = WinForms.Screen.FromControl(native)
+                            native.WindowState = WinForms.FormWindowState.Normal
+                            native.FormBorderStyle = getattr(WinForms.FormBorderStyle, 'None')
+                            native.Bounds = scr.Bounds
+                            native.TopMost = False
+                            if hwnd and IS_WINDOWS:
+                                ctypes.windll.user32.SetWindowPos(
+                                    native.Handle.ToInt32(),
+                                    0,  # HWND_TOP
+                                    scr.Bounds.X,
+                                    scr.Bounds.Y,
+                                    scr.Bounds.Width,
+                                    scr.Bounds.Height,
+                                    0x0020 | 0x0040  # SWP_FRAMECHANGED | SWP_SHOWWINDOW
+                                )
+                            native.is_fullscreen = True
+
+                        native.Invoke(Action(_do_enter_fs))
+                        applied = True
+                    except Exception as e:
+                        log_desktop_error(f"native.Invoke enter fullscreen failed: {e}")
+
+                if not applied:
+                    try:
+                        self._window.toggle_fullscreen()
+                        applied = True
+                    except Exception as e:
+                        log_desktop_error(f"_window.toggle_fullscreen enter failed: {e}")
+
+                if not applied and hwnd and IS_WINDOWS:
                     u = ctypes.windll.user32
-                    if u.IsZoomed(hwnd):
-                        u.ShowWindow(hwnd, 9)  # SW_RESTORE so WinForms accepts full monitor bounds
-                        time.sleep(0.03)
                     mon = self._get_monitor_rect(hwnd)
-                    if mon:
-                        mx, my, mw, mh = mon
-                    else:
-                        mx, my = 0, 0
-                        mw = int(u.GetSystemMetrics(0) or 1920)
-                        mh = int(u.GetSystemMetrics(1) or 1080)
-                    fw, fh = self._frame_delta(hwnd)
-                    self._window.move(mx, my)
-                    self._window.resize(int(round(mw + fw)), int(round(mh + fh)))
-                    SWP_NOZORDER = 0x0004
-                    SWP_FRAMECHANGED = 0x0020
-                    u.SetWindowPos(hwnd, 0, mx, my, mw, mh, SWP_NOZORDER | SWP_FRAMECHANGED)
-                    _force_relayout(hwnd)
-                else:
-                    self._window.toggle_fullscreen()
+                    mx, my, mw, mh = mon if mon else (0, 0, u.GetSystemMetrics(0) or 1920, u.GetSystemMetrics(1) or 1080)
+                    if u.IsZoomed(hwnd):
+                        u.ShowWindow(hwnd, 9)
+                        time.sleep(0.02)
+                    u.SetWindowPos(hwnd, 0, mx, my, mw, mh, 0x0020 | 0x0040)
+
                 self._fullscreen = True
                 self._maximized = False
             else:
+                applied = False
+                if native is not None and hasattr(native, "Invoke"):
+                    try:
+                        from System import Action
+                        import System.Windows.Forms as WinForms
+                        from System.Drawing import Rectangle
+
+                        def _do_exit_fs():
+                            native.is_fullscreen = False
+                            if self._pre_fs_maximized:
+                                native.WindowState = WinForms.FormWindowState.Maximized
+                            else:
+                                native.WindowState = WinForms.FormWindowState.Normal
+                                box = self._pre_fs_box or self._restore_box or (80, 60, 1460, 920)
+                                scale = getattr(native, "_scale", 1.0) or 1.0
+                                native.Bounds = Rectangle(
+                                    int(box[0] * scale), int(box[1] * scale),
+                                    int(box[2] * scale), int(box[3] * scale)
+                                )
+
+                        native.Invoke(Action(_do_exit_fs))
+                        applied = True
+                    except Exception as e:
+                        log_desktop_error(f"native.Invoke exit fullscreen failed: {e}")
+
+                if not applied:
+                    try:
+                        self._window.toggle_fullscreen()
+                        applied = True
+                    except Exception as e:
+                        log_desktop_error(f"_window.toggle_fullscreen exit failed: {e}")
+
                 self._fullscreen = False
-                if hwnd and IS_WINDOWS:
+                if not applied or self._pre_fs_maximized:
                     if self._pre_fs_maximized:
                         self.apply_maximized(True)
                     else:
                         box = self._pre_fs_box or self._restore_box or (80, 60, 1460, 920)
                         self.win_set_bounds(box[0], box[1], box[2], box[3])
-                    _force_relayout(hwnd)
-                else:
-                    self._window.toggle_fullscreen()
+
+            if hwnd and IS_WINDOWS:
+                _force_relayout(hwnd)
+
+            self._fullscreen = bool(target)
             return {
                 "ok": True,
                 "fullscreen": self._fullscreen,

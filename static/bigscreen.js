@@ -28,7 +28,9 @@
     history: { d: 'M3 12a9 9 0 1 0 2.7-6.4M3 4.5V10h5.5M12 8v4.2l3 1.8' },
     check: { d: 'M20 6.5L9.4 17.2 4 11.8' },
     x: { d: 'M18 6L6 18M6 6l12 12' },
-    volume: { d: 'M11 5L6.5 9H3v6h3.5L11 19zM15.4 8.6a4.8 4.8 0 0 1 0 6.8M18 6a8.5 8.5 0 0 1 0 12' }
+    volume: { d: 'M11 5L6.5 9H3v6h3.5L11 19zM15.4 8.6a4.8 4.8 0 0 1 0 6.8M18 6a8.5 8.5 0 0 1 0 12' },
+    maximize: { d: 'M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3' },
+    minimize: { d: 'M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3' }
   };
 
   /* ---------------------------------------------------------------- helpers */
@@ -1188,20 +1190,41 @@
       }
 
       async function toggleFullscreen() {
-        if (window.AcgWindow && window.AcgWindow.toggleFullscreen) {
-          const fs = await window.AcgWindow.toggleFullscreen();
-          isFullscreen.value = !!fs;
-          play('confirm');
-          showToast(isFullscreen.value ? '已进入全屏模式 (按 F11 可退出)' : '已退出全屏模式', '', 1800);
-          return;
+        play('confirm');
+        let fs = false;
+        if (window.AcgWindow && window.AcgWindow.isDesktop && window.AcgWindow.isDesktop()) {
+          fs = await window.AcgWindow.toggleFullscreen();
+        } else {
+          // 浏览器环境：必须在当前用户交互事件调用栈中立即触发 HTML5 全屏，不能受异步网络请求干扰
+          try {
+            if (!document.fullscreenElement) {
+              const el = document.documentElement;
+              const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+              if (rfs) {
+                await rfs.call(el);
+                fs = true;
+              }
+            } else {
+              const efs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+              if (efs) {
+                await efs.call(document);
+                fs = false;
+              }
+            }
+          } catch (err) {
+            console.warn('[BigScreen] HTML5 fullscreen failed, falling back:', err);
+            if (window.AcgWindow && window.AcgWindow.toggleFullscreen) {
+              fs = await window.AcgWindow.toggleFullscreen();
+            }
+          }
         }
-        if (document.fullscreenElement) {
-          document.exitFullscreen().catch(function () {});
-        } else if (document.documentElement.requestFullscreen) {
-          document.documentElement.requestFullscreen().catch(function () {
-            showToast('当前窗口不允许全屏，可按 F11', 'error');
-          });
-        }
+        const activeFs = Boolean(
+          (window.AcgWindow && window.AcgWindow.isFullscreen) ||
+          document.fullscreenElement ||
+          fs
+        );
+        isFullscreen.value = activeFs;
+        showToast(activeFs ? '已进入全屏模式 (按 F11 可退出)' : '已退出全屏模式', '', 1800);
       }
 
       /* -------------------------------------------------------------- sheet */

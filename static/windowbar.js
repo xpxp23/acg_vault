@@ -121,7 +121,7 @@
   }
 
   async function toggleFullscreen(forceEnable) {
-    if (isDesktop() && api().win_set_fullscreen) {
+    if (isDesktop() && api() && api().win_set_fullscreen) {
       try {
         const res = await api().win_set_fullscreen(forceEnable === undefined ? null : Boolean(forceEnable));
         if (res && res.ok) {
@@ -130,6 +130,38 @@
           return !!res.fullscreen;
         }
       } catch (e) { /* fall through */ }
+    }
+
+    try {
+      const wantFs = forceEnable !== undefined ? Boolean(forceEnable) : !document.fullscreenElement;
+      if (wantFs) {
+        if (!document.fullscreenElement) {
+          const el = document.documentElement;
+          const rfs = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+          if (rfs) {
+            await rfs.call(el);
+            applyFullscreenClass(true);
+            return true;
+          }
+        } else {
+          applyFullscreenClass(true);
+          return true;
+        }
+      } else {
+        if (document.fullscreenElement) {
+          const efs = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+          if (efs) {
+            await efs.call(document);
+            applyFullscreenClass(false);
+            return false;
+          }
+        } else {
+          applyFullscreenClass(false);
+          return false;
+        }
+      }
+    } catch (e) {
+      console.warn('[AcgWindow] HTML5 requestFullscreen error:', e);
     }
 
     try {
@@ -146,20 +178,8 @@
           return !!d.fullscreen;
         }
       }
-    } catch (e) { /* fall through */ }
-
-    try {
-      const wantFs = forceEnable !== undefined ? Boolean(forceEnable) : !document.fullscreenElement;
-      if (wantFs && !document.fullscreenElement && document.documentElement.requestFullscreen) {
-        await document.documentElement.requestFullscreen();
-        applyFullscreenClass(true);
-        return true;
-      } else if (!wantFs && document.fullscreenElement && document.exitFullscreen) {
-        await document.exitFullscreen();
-        applyFullscreenClass(false);
-        return false;
-      }
     } catch (e) { /* ignore */ }
+
     return isFullscreenState;
   }
 
@@ -420,11 +440,13 @@
     }
   }, true);
 
-  document.addEventListener('fullscreenchange', function () {
+  function onDocFullscreenChange() {
     if (!isDesktop()) {
       applyFullscreenClass(!!document.fullscreenElement);
     }
-  });
+  }
+  document.addEventListener('fullscreenchange', onDocFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onDocFullscreenChange);
 
   function mount(options) {
     const opts = options || {};
